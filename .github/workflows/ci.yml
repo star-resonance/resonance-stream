@@ -50,7 +50,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: false
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       - run: just fmt-check
       - run: just core-check
       - run: just ui-check
@@ -86,7 +86,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-bin: false
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v4
       # tauri::generate_context! needs frontendDist to exist; the gate checks
       # the backend, so a placeholder stands in for `trunk build`.
       - name: Placeholder frontend dist
