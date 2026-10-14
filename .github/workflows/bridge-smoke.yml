@@ -75,7 +75,7 @@ jobs:
 
       - name: Take the exe the calling job built
         if: inputs.exe-artifact != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.exe-artifact }}
           path: target/release
