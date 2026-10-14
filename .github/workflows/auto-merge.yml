@@ -14,15 +14,17 @@ on:
     workflows: [CI]
     types: [completed]
 
-permissions:
-  contents: write
-  pull-requests: write
-  actions: write
+permissions: {}
 
 jobs:
   merge:
     name: merge when CI is green
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write       # merge the PR, delete its branch
+      pull-requests: write  # merge the PR
+      actions: write        # dispatch CI on main
     if: >
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success' &&

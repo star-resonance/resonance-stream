@@ -9,8 +9,7 @@ on:
     - cron: "17 0,6,12 * * *"  # 09:17, 15:17, 21:17 KST
   workflow_dispatch:
 
-permissions:
-  contents: write  # push the generated `status` branch
+permissions: {}
 
 concurrency:
   group: project-snapshot
@@ -22,6 +21,8 @@ jobs:
     if: vars.PROJECT_NUMBER != ''  # dormant until the Project is set up
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write  # push the generated `status` branch
     steps:
       - name: Check out the bridge script
         uses: actions/checkout@v7

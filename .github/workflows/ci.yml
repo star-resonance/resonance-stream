@@ -29,12 +29,19 @@ env:
 # 10 GB limit, so PR saves cost time and evict main's entry, which every PR
 # restores from.
 
+permissions: {}
+
 jobs:
   ui:
     name: core + ui gates (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -67,8 +74,13 @@ jobs:
   app:
     name: app gate (Windows)
     runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
