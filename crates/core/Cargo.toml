@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 resonance-types = { path = "../types" }
 chrono = { version = "0.4.43", default-features = false }
-etherparse = "0.19.0"
+etherparse = "0.21.0"
 kakasi = "0.1.0"
 lazy_static = "1.5.0"
 # IPADIC is embedded in the binary; its build script downloads the dictionary
