@@ -1,0 +1,29 @@
+name: actionlint
+
+# Lints the workflow files (actionlint, with shellcheck on `run:` steps) on every pull request
+# that changes them. Auto-merge leaves such a pull request to Kade, so this is the check to read
+# before merging it. Config and the findings it ignores: .github/actionlint.yaml.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.github/actionlint.yaml'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The official image (actionlint + shellcheck), pinned to a release.
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
