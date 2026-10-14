@@ -38,4 +38,5 @@ A new step discovered mid-way that widens scope goes back to the developer.
 - Work on a `claude/<task>` branch; commit as often as useful, code and memory together,
   per `CLAUDE.md` *Version Control*.
   Unrun gates go in the last commit body as `NOT VERIFIED: ...`. Green gate → push the
-  branch and open a PR; CI auto-merges it.
+  branch and open a PR; CI auto-merges it, unless it is a draft or changes
+  `.github/workflows/` (Kade merges those).
