@@ -1,0 +1,51 @@
+# Dependabot version updates (governance HY-03): one PR a week per ecosystem with the minor and
+# patch updates grouped; a major update gets its own PR. Dependabot branches are `dependabot/*`,
+# so auto-merge.yml never merges them: Kade does, once CI is green. Security updates are a repo
+# setting (Settings > Code security), not this file. `cargo audit` stays in audit.yml.
+version: 2
+updates:
+  # The workspace root: the ui crate, src-tauri and crates/*.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  # Tailwind and daisyUI, run by Trunk's pre-build hook.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+
+  # The test bridge (aedes, mqtt); bridge-smoke.yml runs it.
+  - package-ecosystem: npm
+    directory: /runbook/bridge
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      bridge-minor-patch:
+        update-types: [minor, patch]
+
+  # Action tags stay major tags (`@v4`). rust-toolchain's ref names the toolchain, not a version.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]
