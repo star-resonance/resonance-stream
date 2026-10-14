@@ -90,7 +90,8 @@ cd runbook && python -m pytest -q                   # the pipelines against the 
 | Workflow | Trigger | Runs |
 |---|---|---|
 | `ci.yml` | every pull request; push to `main` (non-doc paths) | fmt, core + ui on Linux; the app gate on Windows |
-| `auto-merge.yml` | after `CI` completes | merges a green `claude/*` PR into `main` |
+| `auto-merge.yml` | after `CI` completes | merges a green `claude/*` PR into `main`; leaves a draft or a PR that changes `.github/workflows/` to Kade |
+| `actionlint.yml` | pull requests that change `.github/workflows/` or `.github/actionlint.yaml`; on demand | actionlint with shellcheck on every workflow; the findings it ignores are in `.github/actionlint.yaml` |
 | `audit.yml` | Cargo file changes, Mondays, on demand | `cargo audit` |
 | `mutants.yml` | its own file changes, Mondays, on demand (`file` input) | `cargo mutants` on one core file; green when the tool ran, the missed list is in the summary and the `mutants-out` artifact |
 | `bridge-smoke.yml` | `workflow_dispatch`, and `workflow_call` from `release.yml` | the real-app pipelines |
