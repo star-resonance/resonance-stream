@@ -73,6 +73,8 @@ style/ public/        CSS source; static assets
   that changes `.github/workflows/` waits for a person.
   `workflow_run` workflows are read from `main`: an `auto-merge.yml` change acts after its own merge.
   Workflow merges use `GITHUB_TOKEN` (no `push` run on `main`); the PR's own run is the gate.
+- Dependabot (`.github/dependabot.yml`) opens `dependabot/*` PRs weekly; they never auto-merge:
+  Kade merges them.
 - **Test branches, release candidates, stable releases:** the `release` skill; the rules for release
   files (never publish by hand, release notes) are in `.claude/rules/release.md`.
 - **Never commit:** build output (`target/`, `dist/`, `style/output.css`, `*.exe`); `graft/`,
