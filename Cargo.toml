@@ -18,7 +18,7 @@ console_error_panic_hook = "0.1.7"
 futures = "0.3"
 serde_json = "1.0.149"
 web-sys = { version = "0.3.85", features = ["Window", "Navigator", "Clipboard", "Selection", "HtmlAudioElement", "HtmlMediaElement",] }
-gloo-timers = { version = "0.3.0", features = ["futures"] }
+gloo-timers = { version = "0.4.0", features = ["futures"] }
 chrono = "0.4.44"
 
 [workspace]
