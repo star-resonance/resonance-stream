@@ -25,15 +25,19 @@ concurrency:
   group: release-feed
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   feed:
     name: the update feed works
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Check
         env:
           GH_TOKEN: ${{ github.token }}

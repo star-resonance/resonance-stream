@@ -12,15 +12,19 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   guard:
     name: no test/* branch into main
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Refuse a test/* head branch
         env:
           HEAD_REF: ${{ github.head_ref }}
