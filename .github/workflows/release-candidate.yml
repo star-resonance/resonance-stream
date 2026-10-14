@@ -125,7 +125,7 @@ jobs:
       # release.yml never builds with it.
       - name: Build
         run: npx --yes @tauri-apps/cli@2 build --no-bundle --features test-env
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: exe
           path: target/release/resonance-stream.exe
