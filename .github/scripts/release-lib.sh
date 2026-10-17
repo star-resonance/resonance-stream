@@ -13,6 +13,27 @@ release_version() {
   fi
 }
 
+# May <version> (Cargo.toml's) become a new release? The repository's tags are on
+# stdin, one per line; only stable tags (vX.Y.Z) count. Prints the reason and
+# returns 1 when the version is not X.Y.Z, is already tagged, or is not above the
+# last release; prints nothing and returns 0 when it is new.
+release_new_version_problem() {
+  local version=$1 tag last
+  if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf '버전 %s는 X.Y.Z 형식이 아닙니다\n' "$version"
+    return 1
+  fi
+  last=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+  if [ "$last" = "$version" ]; then
+    printf 'v%s는 이미 릴리스되었습니다. Cargo.toml의 버전을 올리세요\n' "$version"
+    return 1
+  fi
+  if [ -n "$last" ] && [ "$(printf '%s\n%s\n' "$last" "$version" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" != "$version" ]; then
+    printf '%s는 마지막 릴리스 v%s보다 높지 않습니다\n' "$version" "$last"
+    return 1
+  fi
+}
+
 # The exe's file name on the release. The app fetches its signature from the
 # same URL plus ".sig", so the two assets are always <name> and <name>.sig.
 release_asset() {
