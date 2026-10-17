@@ -1,8 +1,16 @@
 name: Release
 
-# A stable release: push a tag v<major>.<minor>.<patch> on a commit of `main`
-# (git tag v0.6.1 && git push origin v0.6.1). The workflow builds the plain
-# exe, signs it, and publishes a GitHub release with three assets:
+# A stable release (D-25, the global release flow; ported from stella-rain/core):
+# the version bump and release notes go to main in a PR, a PR from main into
+# `rc` is merged (release-checks.yml checks it; the merge builds a candidate exe
+# for a Windows test), then Kade starts this workflow by hand on `rc`
+# (Actions > Release > Run workflow > branch rc). It releases the head commit
+# of rc only if that commit is the merge of a PR from main into rc, its tree is
+# that PR's head tree, it carries no v* tag yet, and Cargo.toml's
+# [workspace.package] version is new (release_new_version_problem). The tag
+# v<version> is created by this workflow (annotated, on that rc commit) when it
+# publishes; nobody pushes it by hand. It builds the plain exe, signs it, and
+# publishes a GitHub release with three assets:
 #   Resonance-Stream-v<x>.exe        the app (portable, no installer)
 #   Resonance-Stream-v<x>.exe.sig    its minisign signature -- the app installs
 #                                    an update only if this verifies against a
@@ -19,19 +27,20 @@ name: Release
 # stays offline -- it is only ever used to sign a release by hand if the
 # primary key is lost or leaked.
 #
-# To run it again for a tag (e.g. after fixing a secret): Actions > Release >
-# Run workflow > "Use workflow from" the *tag*. A tag that already has a release
-# is refused, so delete the half-made release first.
+# A failed run before the publish job changes nothing: run it on rc again. A
+# commit that already carries a v* tag is refused, so after a half-made release
+# delete that release and its tag first.
+# The workflow is read from rc, so a change to it acts from the release after the
+# merge into rc that carries it.
 # Tag / feed logic: .github/scripts/release-lib.sh (tests: release-lib.test.sh).
-# Before tagging: write release-notes/v<x>.md (copy release-notes/TEMPLATE.md) -- a
-# short Korean summary for users (the update dialog, top of the release page) and,
-# below "## 개발자용 상세", detail for maintainers (a collapsed block of the release
-# page). The first job refuses a tag without it.
+# Release notes: release-notes/v<x>.md (copy release-notes/TEMPLATE.md), merged to
+# main with the version bump -- a short Korean summary for users (the update
+# dialog, top of the release page) and, below "## 개발자용 상세", detail for
+# maintainers (a collapsed block of the release page). The first job refuses a
+# release without it (release-checks.yml already did on the PR into rc).
 # After publishing, the live feed is read the way the app reads it
 # (.github/scripts/check-release-feed.sh); release-feed-check.yml keeps watching it.
 on:
-  push:
-    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   workflow_dispatch:
 
 # One release at a time.
@@ -45,13 +54,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Is this tag a release we may build? Cheap, so it runs before the gates.
+  # May rc's head become a release? Cheap, so it runs before the gates.
   check:
-    name: check the tag
+    name: check the rc commit
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+      pull-requests: read  # the PR from main merged as the rc commit
     outputs:
       tag: ${{ steps.check.outputs.tag }}
       version: ${{ steps.check.outputs.version }}
@@ -65,41 +75,52 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          REF_TYPE: ${{ github.ref_type }}
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [ "$REF_TYPE" != "tag" ]; then
-            echo "::error::Run this workflow from a tag (git tag v0.6.1 && git push origin v0.6.1), not from a branch."
+          if [ "$GITHUB_REF" != refs/heads/rc ]; then
+            echo "::error::A release is made from rc only (D-25): Actions > Release > Run workflow > branch rc. This run is on $GITHUB_REF."
             exit 1
           fi
           bash .github/scripts/release-lib.test.sh
           source .github/scripts/release-lib.sh
           source .github/scripts/rc-lib.sh
-          version=$(release_version "$TAG")
-          cargo_version=$(rc_version < Cargo.toml)
-          if [ "$version" != "$cargo_version" ]; then
-            echo "::error::Tag $TAG says $version but Cargo.toml's [workspace.package] version is $cargo_version. Bump it (and the gist) first, then tag again."
+          commit=$GITHUB_SHA
+          released=$(git tag --points-at "$commit" --list 'v*')
+          if [ -n "$released" ]; then
+            echo "::error::$commit is already released: $released"
             exit 1
           fi
-          git fetch -q origin main
-          if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo "::error::$TAG is not on main. Releases are built from main only."
+          pr=$(gh api "repos/$GH_REPO/commits/$commit/pulls" --jq \
+                 "[.[] | select(.base.ref == \"rc\" and .head.ref == \"main\" and .merge_commit_sha == \"$commit\")][0] // empty")
+          if [ -z "$pr" ]; then
+            echo "::error::rc's head $commit is not the merge of a pull request from main into rc (D-25). Open one and merge it first."
             exit 1
           fi
+          head=$(jq -r .head.sha <<<"$pr")
+          if [ "$(git rev-parse "$commit^{tree}")" != "$(git rev-parse "$head^{tree}")" ]; then
+            echo "::error::rc at $commit differs from $head, the tested head of $(jq -r .html_url <<<"$pr")."
+            exit 1
+          fi
+          version=$(rc_version < Cargo.toml)
+          if ! problem=$(git tag --list 'v*' | release_new_version_problem "$version"); then
+            echo "::error::$problem"
+            exit 1
+          fi
+          TAG="v$version"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "::error::$TAG already has a release."
             exit 1
           fi
           notes="release-notes/$TAG.md"
           if [ ! -f "$notes" ]; then
-            echo "::error::$notes (한국어 릴리스 노트)가 없습니다. release-notes/TEMPLATE.md를 복사해 쓰고 main에 올린 뒤 다시 태그하세요."
+            echo "::error::$notes (한국어 릴리스 노트)가 없습니다. release-notes/TEMPLATE.md를 복사해 쓰고 main에 올린 뒤 rc로 다시 머지하세요."
             exit 1
           fi
           if ! problem=$(release_notes_problem 12 < "$notes"); then
             echo "::error::$notes: $problem"
             exit 1
           fi
+          echo "Releasing $TAG from rc at $commit ($(jq -r .html_url <<<"$pr"))." >> "$GITHUB_STEP_SUMMARY"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -124,8 +145,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      # No build cache: a run from a tag can only read the default branch's
-      # cache, and main's is CI's dev-profile one. A release is rare.
+      # No build cache: a release builds clean from rc's commit. A release is rare.
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -182,7 +202,7 @@ jobs:
 
   # The real app, started on a hosted Windows runner and driven over the test bridge (eight pipelines, bridge-smoke.yml).
   # The shipped exe has no test bridge, so this builds a separate exe with the test flags from the same commit (see bridge-smoke.yml), in parallel with the signed build.
-  # A red row stops the publish; run the workflow again from the tag after a fix or a runner hiccup.
+  # A red row stops the publish; run the workflow on rc again after a fix or a runner hiccup.
   smoke:
     name: real-app smoke test
     needs: [check, gates]
@@ -227,11 +247,11 @@ jobs:
           # previous stable release in one collapsed block of the release page.
           notes_src="release-notes/$TAG.md"
           release_notes_user_part < "$notes_src" > notes.md
-          prev=$(release_previous_stable_tag "$TAG")
+          prev=$(release_previous_stable_tag "$GITHUB_SHA")
           if [ -n "$prev" ]; then
-            git log --no-merges --format='- %s' "$prev..$TAG" > commits.md
+            git log --no-merges --format='- %s' "$prev..$GITHUB_SHA" > commits.md
           else
-            git log --no-merges --format='- %s' -n 30 "$TAG" > commits.md
+            git log --no-merges --format='- %s' -n 30 "$GITHUB_SHA" > commits.md
           fi
           release_page_body commits.md < "$notes_src" > body.md
 
@@ -239,6 +259,11 @@ jobs:
             "$(release_download_url "$REPO" "$TAG")" "$(cat "$exe.sig")" < notes.md > latest.json
           cat latest.json
 
+          # The tag: an annotated tag object on the rc commit this run checked,
+          # then its ref (`gh release create` alone would make a lightweight tag).
+          object=$(gh api "repos/$REPO/git/tags" -f tag="$TAG" -f message="$TAG" \
+                     -f object="$GITHUB_SHA" -f type=commit --jq .sha)
+          gh api "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" > /dev/null
           gh release create "$TAG" "$exe" "$exe.sig" latest.json SHA256SUMS.txt \
             --verify-tag --latest --title "$TAG" --notes-file body.md
 

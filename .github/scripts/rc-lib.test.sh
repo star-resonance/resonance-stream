@@ -81,7 +81,7 @@ eq "past the end says so" "rc에 4번째 머지가 없습니다 (3개뿐)" "$(rc
 workflows=../workflows
 eq "candidate builds with test-env" "1" "$(grep -c 'tauri-apps/cli@2 build .*--features test-env' "$workflows/release-candidate.yml")"
 eq "stable release never mentions test-env" "0" "$(grep -c 'test-env' "$workflows/release.yml")"
-# The real-app smoke test is slow and starts only from a pushed release tag: no pull request, no push to a branch, no candidate.
+# The real-app smoke test is slow and starts only from the stable release run (release.yml, by hand on rc): no pull request, no push to a branch, no candidate.
 eq "candidate does not run the smoke test" "0" "$(cat "$workflows/release-candidate.yml" ../scripts/rc-lib.sh | grep -c 'bridge-smoke\.yml\|needs\.smoke\|rc_smoke_note')"
 eq "smoke test has no pull_request trigger" "0" "$(grep -c '^  pull_request' "$workflows/bridge-smoke.yml")"
 eq "smoke test has no push trigger" "0" "$(grep -c '^  push' "$workflows/bridge-smoke.yml")"
