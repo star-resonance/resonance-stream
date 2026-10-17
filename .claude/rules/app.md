@@ -10,6 +10,11 @@ paths:
   name in a module shadows its glob re-export (rustc warns) — the item then silently
   stops being exported; call it by path instead.
 
+- **Events are emitted with `resonance_types::ipc::event::*`, never a string literal.** A new
+  event gets its constant there, a place in `event::ALL` (the ui listens to each one) and an entry
+  in the test `the_event_names_are_the_ones_on_the_wire`; a new command's struct also goes in
+  `ipc.rs` (see `.claude/rules/ui.md`).
+
 - **Favorites change only through `save_favorites`** (`FavoritesState`, then the
   `favorites-changed` event reaches every window); `save_config` keeps the stored ones and
   ignores the ones in its payload. A popup window (`open_popup`) saves only what it owns,
