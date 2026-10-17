@@ -1,18 +1,19 @@
 use crate::chat_view::{is_muted, Tab};
 use crate::service_state::SeqGate;
 use crate::store::AppSignals;
-use crate::tauri_bridge::{invoke, listen};
+use crate::tauri_bridge::{call, listen};
 use crate::ui_types::{
-    ChatMessage, ServiceStates, SnifferState, SnifferStatePayload, SystemMessage,
-    TranslationResult, TranslatorState, TranslatorStatePayload,
+    ChatMessage, SnifferState, SnifferStatePayload, SystemMessage, TranslationResult,
+    TranslatorState, TranslatorStatePayload,
 };
 use crate::view_signals::ChatSignals;
 use leptos::logging::log;
 use leptos::prelude::*;
+use resonance_types::ipc::{event, ClearChatHistory, GetServiceStates};
 use wasm_bindgen::prelude::*;
 
 pub async fn clear_backend_history() {
-    let _ = invoke("clear_chat_history", JsValue::NULL).await;
+    let _ = call(&ClearChatHistory {}).await;
 }
 
 /// Listeners are registered once per page load: a second registration (the
@@ -37,13 +38,13 @@ pub async fn setup_event_listeners(signals: AppSignals) {
     crate::favorites_sync::listen_for_changes(signals.config).await;
 
     // 2. Register all listeners
-    listen("packet-event", &packet_closure).await;
-    listen("system-event", &system_closure).await;
-    listen("translator-state", &translator_state_closure).await;
-    listen("sniffer-state", &sniffer_state_closure).await;
-    listen("translation-event", &translation_closure).await;
-    listen("chat-message-update", &update_message_closure).await;
-    listen("firewall-missing", &firewall_closure).await;
+    listen(event::PACKET_EVENT, &packet_closure).await;
+    listen(event::SYSTEM_EVENT, &system_closure).await;
+    listen(event::TRANSLATOR_STATE, &translator_state_closure).await;
+    listen(event::SNIFFER_STATE, &sniffer_state_closure).await;
+    listen(event::TRANSLATION_EVENT, &translation_closure).await;
+    listen(event::CHAT_MESSAGE_UPDATE, &update_message_closure).await;
+    listen(event::FIREWALL_MISSING, &firewall_closure).await;
 
     // 3. Prevent memory leaks / keep closures alive
     packet_closure.forget();
@@ -57,11 +58,9 @@ pub async fn setup_event_listeners(signals: AppSignals) {
     // 4. States emitted before we listened (the translator starts with the
     // app; a reloaded page missed everything): ask once, now that no later
     // event can be missed. The seq gates drop it if an event overtook it.
-    if let Ok(res) = invoke("get_service_states", JsValue::NULL).await {
-        if let Ok(states) = serde_wasm_bindgen::from_value::<ServiceStates>(res) {
-            apply_sniffer_state(signals, states.sniffer);
-            apply_translator_state(signals, states.translator);
-        }
+    if let Ok(states) = call(&GetServiceStates {}).await {
+        apply_sniffer_state(signals, states.sniffer);
+        apply_translator_state(signals, states.translator);
     }
 }
 

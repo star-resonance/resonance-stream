@@ -1,6 +1,7 @@
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use crate::ui_types::SystemLogLevel;
 use leptos::task::spawn_local;
+use resonance_types::ipc::UiSystemMessage;
 use wasm_bindgen::prelude::*;
 
 /// A window-wide listener that ends with the component that made it. Leptos's own
@@ -35,19 +36,15 @@ pub fn copy_to_clipboard(text: &str) {
 }
 
 pub fn add_system_log(level: SystemLogLevel, source: &str, message: &str) {
-    let msg_json = serde_json::json!({
-        "level": level.as_str(),
-        "source": source,
-        "message": message
-    });
+    let line = UiSystemMessage {
+        level: level.as_str().to_string(),
+        source: source.to_string(),
+        message: message.to_string(),
+    };
 
     spawn_local(async move {
         // This triggers the backend which emits 'system-event'
         // that your existing listener already handles
-        let _ = invoke(
-            "ui_system_message",
-            serde_wasm_bindgen::to_value(&msg_json).unwrap(),
-        )
-        .await;
+        let _ = call(&line).await;
     });
 }

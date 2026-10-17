@@ -4,10 +4,11 @@
 //! save, its own included, as `favorites-changed`.
 
 use crate::config_signals::ConfigSignals;
-use crate::tauri_bridge::{invoke, listen};
+use crate::tauri_bridge::{call, listen};
 use crate::ui_types::SystemLogLevel;
 use crate::utils::add_system_log;
 use leptos::task::spawn_local;
+use resonance_types::ipc::{event, SaveFavorites};
 use resonance_types::FavoritesState;
 use wasm_bindgen::prelude::*;
 
@@ -15,13 +16,11 @@ use wasm_bindgen::prelude::*;
 pub fn save(config: ConfigSignals) {
     let favorites = config.favorites_state();
     spawn_local(async move {
-        let args =
-            serde_wasm_bindgen::to_value(&serde_json::json!({ "favorites": favorites })).unwrap();
-        if let Err(e) = invoke("save_favorites", args).await {
+        if let Err(e) = call(&SaveFavorites { favorites }).await {
             add_system_log(
                 SystemLogLevel::Error,
                 "Favorites",
-                &format!("Not saved: {:?}", e),
+                &format!("Not saved: {}", e),
             );
         }
     });
@@ -38,6 +37,6 @@ pub async fn listen_for_changes(config: ConfigSignals) {
             }
         }
     }) as Box<dyn FnMut(JsValue)>);
-    listen("favorites-changed", &closure).await;
+    listen(event::FAVORITES_CHANGED, &closure).await;
     closure.forget();
 }
