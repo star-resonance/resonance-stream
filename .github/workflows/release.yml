@@ -1,6 +1,6 @@
 name: Release
 
-# A stable release (D-25, the global release flow; ported from stella-rain/core):
+# A stable release (D-30, the global release flow; ported from stella-rain/core):
 # the version bump and release notes go to main in a PR, a PR from main into
 # `rc` is merged (release-checks.yml checks it; the merge builds a candidate exe
 # for a Windows test), then Kade starts this workflow by hand on `rc`
@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$GITHUB_REF" != refs/heads/rc ]; then
-            echo "::error::A release is made from rc only (D-25): Actions > Release > Run workflow > branch rc. This run is on $GITHUB_REF."
+            echo "::error::A release is made from rc only (D-30): Actions > Release > Run workflow > branch rc. This run is on $GITHUB_REF."
             exit 1
           fi
           bash .github/scripts/release-lib.test.sh
@@ -93,7 +93,7 @@ jobs:
           pr=$(gh api "repos/$GH_REPO/commits/$commit/pulls" --jq \
                  "[.[] | select(.base.ref == \"rc\" and .head.ref == \"main\" and .merge_commit_sha == \"$commit\")][0] // empty")
           if [ -z "$pr" ]; then
-            echo "::error::rc's head $commit is not the merge of a pull request from main into rc (D-25). Open one and merge it first."
+            echo "::error::rc's head $commit is not the merge of a pull request from main into rc (D-30). Open one and merge it first."
             exit 1
           fi
           head=$(jq -r .head.sha <<<"$pr")

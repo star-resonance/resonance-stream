@@ -1,6 +1,6 @@
 name: Release candidate
 
-# A merge into `rc` -- a pull request from main (D-25, release-checks.yml) --
+# A merge into `rc` -- a pull request from main (D-30, release-checks.yml) --
 # builds the app and publishes it as a GitHub *prerelease* for Kade's test on
 # Windows before he starts release.yml on rc: one plain exe (no installer) +
 # SHA256SUMS.txt, tagged v<workspace version>-rc.<feature>[.<n>], where

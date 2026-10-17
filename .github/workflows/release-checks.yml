@@ -1,6 +1,6 @@
 name: Release checks
 
-# The release checks of a pull request into `rc` (D-25, the global release flow;
+# The release checks of a pull request into `rc` (D-30, the global release flow;
 # ported from stella-rain/core). `rc` takes changes only from `main` of this
 # repository: `the head is main` fails at once for any other head. `version is
 # new` refuses a Cargo.toml version that is already tagged or not above the last
@@ -37,7 +37,7 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ] || [ "$HEAD_REF" != main ]; then
-            echo "::error::rc takes pull requests from main of this repository only (D-25); a fix goes to main first."
+            echo "::error::rc takes pull requests from main of this repository only (D-30); a fix goes to main first."
             exit 1
           fi
 
