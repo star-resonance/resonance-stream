@@ -21,9 +21,6 @@ style/output.css
 # ENV
 .env
 
-# graft's local graph cache — regenerable, not committed (run `graft build`).
-/graft/
-
 # raw game captures (debug): shared out of band, never tracked
 captures/
 *.capture.log

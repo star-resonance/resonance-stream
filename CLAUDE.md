@@ -77,7 +77,7 @@ style/ public/        CSS source; static assets
   Kade merges them.
 - **Test branches, release candidates, stable releases:** the `release` skill; the rules for release
   files (never publish by hand, release notes) are in `.claude/rules/release.md`.
-- **Never commit:** build output (`target/`, `dist/`, `style/output.css`, `*.exe`); `graft/`,
+- **Never commit:** build output (`target/`, `dist/`, `style/output.css`, `*.exe`);
   `node_modules/`, IDE folders; an unformatted tree.
 
 ## Overrides of global rules
