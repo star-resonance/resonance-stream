@@ -631,7 +631,7 @@ Measured on `main` after #283 (the refactoring report's script): 36,969 Rust lin
 | # | Finding (confirmed in code) | Change | Effort |
 |---|---|---|---|
 | E-1 | `metadata.json` read-modify-written from five places with no lock (`config.json` has `config_lock`) | `modify_metadata` under `AppState::metadata_lock` (S8a, done) | Small |
-| E-2 | 15 process statics hold lifetimes: three answers to "is the sniffer alive" (`SnifferHandle.alive`, `IS_SNIFFER_ACTIVE`, `service_states`), the translator split between `Services` and `WORKER_GENERATION` / `SERVER_PID`, update state in five statics | owners in `AppState` (S8b) | Medium |
+| E-2 | 15 process statics hold lifetimes: three answers to "is the sniffer alive" (`SnifferHandle.alive`, `IS_SNIFFER_ACTIVE`, `service_states`), the translator split between `Services` and `WORKER_GENERATION` / `SERVER_PID`, update state in five statics | owners in `AppState` (S8b, done: 10 statics; the other 5 stay on purpose, see the roadmap) | Medium |
 | E-3 | the ui <-> backend contract is strings: about 66 `invoke("...")` sites (41 names), 26 hand-built `json!` argument objects, event names in three places | `crates/types::ipc` (S8c) | Medium |
 | E-4 | the bridge is a second, hand-kept command surface: 17 of its 25 commands call Tauri commands, some through `block_on` | one service layer both call (S8d) | Medium |
 | E-5 | the sniffer dispatch and the translation job live in the Windows-only app; `crates/llama/tests/support/harness.rs` is a hand copy ("keep it in step") | core behind a `Sink` trait (S8e) | Medium |

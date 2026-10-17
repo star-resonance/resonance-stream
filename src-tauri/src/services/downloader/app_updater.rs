@@ -1,6 +1,6 @@
 use super::ProgressPayload;
+use crate::AppState;
 use log::info;
-use parking_lot::Mutex;
 use resonance_core::test_env::UpdateState;
 use resonance_core::update_feed::UpdateFeed;
 use resonance_core::update_signature::verify_with_app_keys;
@@ -8,35 +8,8 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
-
-/// The release whose exe is sitting in `update_temp.exe`, once it has passed
-/// the signature check. `restart_to_apply_update` checks the file again
-/// against it right before the swap.
-static DOWNLOADED: Mutex<Option<UpdateFeed>> = Mutex::new(None);
-
-/// Set by `cancel_app_update`; the running download looks at it every second.
-static CANCEL: AtomicBool = AtomicBool::new(false);
-
-/// Is a `download_app_update` running? Only one may, so a retry started right
-/// after a cancel cannot share `update_temp.exe.part` with the one winding down.
-static RUNNING: AtomicBool = AtomicBool::new(false);
-
-struct RunningGuard;
-
-impl RunningGuard {
-    fn start() -> Option<Self> {
-        (!RUNNING.swap(true, Ordering::SeqCst)).then_some(RunningGuard)
-    }
-}
-
-impl Drop for RunningGuard {
-    fn drop(&mut self) {
-        RUNNING.store(false, Ordering::SeqCst);
-    }
-}
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Is the exe at `exe` signed by one of the app's built-in keys, for the
 /// version `feed` announced? Reads the whole file: it is checked as it will
@@ -49,8 +22,14 @@ fn verify_file(exe: &Path, feed: &UpdateFeed) -> Result<(), String> {
 #[tauri::command]
 pub async fn download_app_update(app: AppHandle, download_url: String) -> Result<(), String> {
     info!("Downloading application update...");
-    let _running = RunningGuard::start().ok_or("An update download is already running")?;
-    CANCEL.store(false, Ordering::SeqCst);
+    // Only one download runs, so a retry started right after a cancel cannot share
+    // `update_temp.exe.part` with the one winding down. A new one starts not cancelled.
+    let state = app.state::<AppState>();
+    let _running = state
+        .updates
+        .download
+        .try_start()
+        .ok_or("An update download is already running")?;
 
     crate::test_env::report_update(UpdateState::Downloading);
     let result = download_announced(&app, download_url).await;
@@ -64,12 +43,13 @@ pub async fn download_app_update(app: AppHandle, download_url: String) -> Result
 /// The download itself: the announced release into `update_temp.exe`, checked.
 async fn download_announced(app: &AppHandle, download_url: String) -> Result<(), String> {
     // 1. Only the release the last check announced.
-    let feed = super::gist::announced_update()
+    let feed = super::gist::announced_update(app)
         .ok_or("No update has been announced; check for updates first")?;
     if download_url != feed.url {
         return Err("The update to download is not the announced one".to_string());
     }
-    *DOWNLOADED.lock() = None;
+    let updates = &app.state::<AppState>().inner().updates;
+    *updates.downloaded.lock() = None;
 
     // 2. Get paths
     let current_exe = env::current_exe().map_err(|e| e.to_string())?;
@@ -85,7 +65,7 @@ async fn download_announced(app: &AppHandle, download_url: String) -> Result<(),
         &temp_exe,
         "앱 업데이트", // Keep this exact string, we check it in the UI!
         None,
-        Some(&CANCEL),
+        Some(updates.download.cancel_flag()),
     )
     .await?;
 
@@ -94,7 +74,7 @@ async fn download_announced(app: &AppHandle, download_url: String) -> Result<(),
         let _ = fs::remove_file(&temp_exe);
         return Err(e);
     }
-    *DOWNLOADED.lock() = Some(feed);
+    *updates.downloaded.lock() = Some(feed);
 
     // Explicit 100% signal
     let _ = app.emit(
@@ -113,10 +93,11 @@ async fn download_announced(app: &AppHandle, download_url: String) -> Result<(),
 /// files (a few seconds at most), so the caller may start another at once.
 /// A download that was cancelled is rejected with `UPDATE_CANCELLED`.
 #[tauri::command]
-pub async fn cancel_app_update() {
-    CANCEL.store(true, Ordering::SeqCst);
+pub async fn cancel_app_update(app: AppHandle) {
+    let download = &app.state::<AppState>().inner().updates.download;
+    download.cancel();
     for _ in 0..100 {
-        if !RUNNING.load(Ordering::SeqCst) {
+        if !download.is_running() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -136,7 +117,10 @@ pub fn restart_to_apply_update(app: AppHandle) -> Result<(), String> {
 
     // Check again what is about to be installed: the file has sat on disk
     // since the download.
-    let feed = DOWNLOADED
+    let feed = app
+        .state::<AppState>()
+        .updates
+        .downloaded
         .lock()
         .clone()
         .ok_or("No verified update has been downloaded")?;

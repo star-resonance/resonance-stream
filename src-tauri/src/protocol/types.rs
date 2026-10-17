@@ -40,6 +40,8 @@ pub struct AppState {
     /// The last state each service emitted (`get_service_states`): a UI that
     /// was not listening yet still learns it.
     pub service_states: Mutex<ServiceStates>,
+    /// The last update check's answers and the app update download (`services/downloader`).
+    pub updates: crate::services::downloader::Updates,
     /// What the global shortcuts are bound to (see `shortcut.rs`).
     pub shortcuts: Mutex<crate::shortcut::GlobalShortcuts>,
 }

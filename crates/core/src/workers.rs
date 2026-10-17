@@ -3,6 +3,7 @@
 
 use resonance_types::{ComputeMode, Tier};
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// What to do with a worker after a settings change.
@@ -285,6 +286,72 @@ impl TranslationLedger {
         };
         self.owed = newest;
         self.owed.iter().copied().collect()
+    }
+}
+
+/// Which translator worker is current. A worker that was stopped or replaced while it was still
+/// starting up sees the number move and stays silent instead of reporting on a server that is not
+/// its own. Owned by `Services`, one per app run.
+#[derive(Debug, Default)]
+pub struct WorkerGenerations(AtomicU64);
+
+impl WorkerGenerations {
+    /// A new worker starts: it becomes the current one, and every earlier one is superseded.
+    pub fn begin(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Marks every running or starting worker as superseded (the translator was stopped).
+    pub fn retire(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Is the worker that began as `generation` still the current one?
+    pub fn is_current(&self, generation: u64) -> bool {
+        self.0.load(Ordering::SeqCst) == generation
+    }
+}
+
+/// Whether game traffic is coming in: the Unix seconds of the last game packet (0: none yet) and
+/// whether the sniffer has said "active" since it last said otherwise. Owned by `Services` for the
+/// whole app run, not by one sniffer start, so a restart keeps the time of the last packet and the
+/// watchdog still speaks when a new adapter sees nothing.
+#[derive(Debug, Default)]
+pub struct SnifferActivity {
+    last_traffic: AtomicU64,
+    active: AtomicBool,
+}
+
+impl SnifferActivity {
+    /// A game packet arrived at `now`. Returns `true` when the sniffer was not active, so the caller
+    /// emits the "active" state once, not for every packet.
+    pub fn record_packet(&self, now: u64) -> bool {
+        self.last_traffic.store(now, Ordering::Relaxed);
+        !self.active.swap(true, Ordering::Relaxed)
+    }
+
+    /// A sniffer starts at `now`: the watchdog gets a full [`WATCHDOG_LIMIT_SECS`] before it speaks,
+    /// even when the adapter never sees a game packet. Whether it is active is left alone.
+    pub fn start_clock(&self, now: u64) {
+        self.last_traffic.store(now, Ordering::Relaxed);
+    }
+
+    /// The sniffer said something other than "active" (starting, pending): the next packet says
+    /// "active" again.
+    pub fn mark_inactive(&self) {
+        self.active.store(false, Ordering::Relaxed);
+    }
+
+    /// The watchdog reported a stall at `now`: not active, and the clock starts over, so it waits
+    /// another [`WATCHDOG_LIMIT_SECS`] before it speaks again.
+    pub fn stall(&self, now: u64) {
+        self.mark_inactive();
+        self.start_clock(now);
+    }
+
+    /// Unix seconds of the last game packet, 0 before the first.
+    pub fn last_traffic(&self) -> u64 {
+        self.last_traffic.load(Ordering::Relaxed)
     }
 }
 
@@ -675,5 +742,95 @@ mod tests {
     fn a_long_log_line_is_cut() {
         let tail = log_tail(&"x".repeat(1000), 1);
         assert!(tail.chars().count() <= LOG_TAIL_LINE_CHARS + 1);
+    }
+
+    #[test]
+    fn a_worker_that_began_is_current() {
+        let generations = WorkerGenerations::default();
+        let first = generations.begin();
+        assert!(generations.is_current(first));
+    }
+
+    #[test]
+    fn a_new_worker_supersedes_the_one_before() {
+        let generations = WorkerGenerations::default();
+        let first = generations.begin();
+        let second = generations.begin();
+        assert_ne!(first, second);
+        assert!(!generations.is_current(first));
+        assert!(generations.is_current(second));
+    }
+
+    #[test]
+    fn a_retired_translator_leaves_no_worker_current() {
+        let generations = WorkerGenerations::default();
+        let worker = generations.begin();
+        generations.retire();
+        assert!(!generations.is_current(worker));
+    }
+
+    #[test]
+    fn no_traffic_is_recorded_before_the_first_packet() {
+        let activity = SnifferActivity::default();
+        assert_eq!(activity.last_traffic(), 0);
+        // ...so the watchdog has nothing to judge yet.
+        assert_eq!(
+            watchdog_check(activity.last_traffic(), 1_000, true),
+            WatchdogVerdict::NotStarted
+        );
+    }
+
+    #[test]
+    fn a_started_sniffer_that_sees_no_packet_is_reported_after_the_limit() {
+        let activity = SnifferActivity::default();
+        activity.start_clock(1_000);
+        assert_eq!(
+            watchdog_check(activity.last_traffic(), 1_000 + WATCHDOG_LIMIT_SECS, true),
+            WatchdogVerdict::Healthy
+        );
+        assert_eq!(
+            watchdog_check(
+                activity.last_traffic(),
+                1_000 + WATCHDOG_LIMIT_SECS + 1,
+                true
+            ),
+            WatchdogVerdict::Stalled
+        );
+        // Starting the clock is not a packet: the first one still says "active".
+        assert!(activity.record_packet(1_001));
+    }
+
+    #[test]
+    fn only_the_first_packet_says_the_sniffer_became_active() {
+        let activity = SnifferActivity::default();
+        assert!(activity.record_packet(1_000));
+        assert!(!activity.record_packet(1_001));
+        assert_eq!(activity.last_traffic(), 1_001);
+    }
+
+    #[test]
+    fn after_another_state_the_next_packet_says_active_again() {
+        let activity = SnifferActivity::default();
+        activity.record_packet(1_000);
+        activity.mark_inactive();
+        assert!(activity.record_packet(1_002));
+    }
+
+    #[test]
+    fn a_stall_starts_the_watchdog_clock_over_and_waits_for_active_again() {
+        let activity = SnifferActivity::default();
+        activity.record_packet(1_000);
+        let now = 1_000 + WATCHDOG_LIMIT_SECS + 1;
+        assert_eq!(
+            watchdog_check(activity.last_traffic(), now, true),
+            WatchdogVerdict::Stalled
+        );
+        activity.stall(now);
+        assert_eq!(activity.last_traffic(), now);
+        assert_eq!(
+            watchdog_check(activity.last_traffic(), now + 1, true),
+            WatchdogVerdict::Healthy
+        );
+        assert!(activity.record_packet(now + 2));
     }
 }

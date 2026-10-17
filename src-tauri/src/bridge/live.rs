@@ -205,7 +205,7 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             crate::services::sniffer::replay::start_file(app.clone(), path);
             answer(Ok(()));
         }
-        Command::StartUpdate => match crate::services::downloader::announced_update() {
+        Command::StartUpdate => match crate::services::downloader::announced_update(app) {
             None => answer(Err(
                 "No update has been announced; check for updates first".into()
             )),
