@@ -55,6 +55,134 @@ fn the_only_one_character_terms_are_the_known_ones() {
     assert_eq!(one_character, known);
 }
 
+/// The two-character keys, each with why it may stay. A key like these is shielded wherever the two
+/// characters stand next to each other, inside a longer word too (Japanese has no word boundary to
+/// match on), so a new one is added here on purpose, with the reason it is safe.
+const TWO_CHARACTER_KEYS: &[(&str, &str)] = &[
+    (
+        "PT",
+        "the party abbreviation players write as is (파티); Latin letters, not part of Japanese words",
+    ),
+    (
+        "募集",
+        "the recruiting call (모집); a recruiting-chat word, and 모집 is also its ordinary Korean reading",
+    ),
+    (
+        "完凸",
+        "the game's word for a fully upgraded breakthrough (풀돌); not an ordinary word",
+    ),
+    (
+        "周回",
+        "repeat runs of a dungeon (주회), the game's chat term; its ordinary meaning, going around, reads the same",
+    ),
+    (
+        "雷刃",
+        "short name of the 발도 tree of the Stormblade, from the cheat sheet; only the 刃 ending is common",
+    ),
+    (
+        "烈風",
+        "short name of the 질풍 tree of the Gale Lancer, from the cheat sheet",
+    ),
+    (
+        "乱風",
+        "short name of the 난무 tree of the Gale Lancer, from the cheat sheet",
+    ),
+    (
+        "剛守",
+        "short name of the 가드 tree of the Heavy Guardian, from the cheat sheet",
+    ),
+    (
+        "狂音",
+        "short name of the 음파 tree of the Beat Performer, from the cheat sheet",
+    ),
+    (
+        "響奏",
+        "short name of the 협주 tree of the Beat Performer, from the cheat sheet",
+    ),
+    (
+        "光砕",
+        "short name of the 방패 tree of the Shield Knight, from the cheat sheet",
+    ),
+    (
+        "光盾",
+        "short name of the 광휘 tree of the Shield Knight, from the cheat sheet",
+    ),
+    (
+        "浮島",
+        "the floating islands (부유섬), a dungeon name",
+    ),
+    (
+        "遺跡",
+        "ruins (유적), a dungeon name; it reads the same in the ordinary word",
+    ),
+    (
+        "虚飾",
+        "the eroded-dungeon prefix (침식), a season 3 name",
+    ),
+    (
+        "千夢",
+        "the dream-weaving raid name (꿈엮기), a season 3 name",
+    ),
+    (
+        "巨塔",
+        "the tower (거탑); an existing spelling, kept as it was",
+    ),
+    (
+        "巨龍",
+        "the giant dragon (거룡); one of its two spellings",
+    ),
+    (
+        "巨竜",
+        "the giant dragon (거룡); the other spelling",
+    ),
+    (
+        "暗霧",
+        "the dark fog (검은 안개), a dungeon and a monster name",
+    ),
+    (
+        "工場",
+        "the factory dungeon (기계화 처리소); the ordinary word means a factory, a possible false hit",
+    ),
+    (
+        "霧海",
+        "the sea of fog hunting ground (안개 속 사냥터), a season 3 name",
+    ),
+    (
+        "珊瑚",
+        "the coral valley (환해 암초), a season 3 name; the ordinary word means coral, a possible false hit",
+    ),
+    (
+        "迷妄",
+        "the forest of delusion (미망의 숲), a season 3 name",
+    ),
+    (
+        "鉄牙",
+        "a monster name (무쇠 이빨)",
+    ),
+];
+
+#[test]
+fn every_two_character_term_is_listed_with_its_reason() {
+    let two: BTreeSet<_> = meanings()
+        .into_keys()
+        .filter(|ja| ja.chars().count() == 2)
+        .collect();
+    let listed: BTreeSet<_> = TWO_CHARACTER_KEYS
+        .iter()
+        .map(|(ja, _)| (*ja).to_string())
+        .collect();
+    let new: Vec<_> = two.difference(&listed).collect();
+    let gone: Vec<_> = listed.difference(&two).collect();
+    assert!(new.is_empty(), "short keys with no reason listed: {new:?}");
+    assert!(
+        gone.is_empty(),
+        "listed, but not in the dictionary: {gone:?}"
+    );
+    for (ja, why) in TWO_CHARACTER_KEYS {
+        assert!(why.chars().count() >= 12, "{ja}: give the reason");
+    }
+}
+
 #[test]
 fn season_3_dungeons_are_named_as_the_cheat_sheet_names_them() {
     // The official Japanese name and the short name the players write, for each season 3 dungeon.

@@ -2,7 +2,7 @@
 
 use crate::config_signals::ConfigSignals;
 use crate::hooks::use_events::setup_event_listeners;
-use crate::setup_plan::{check_failed_message, plan_downloads, SetupDownloads};
+use crate::setup_plan::{check_failed_message, plan_downloads};
 use crate::status_signals::{ServiceSignals, SetupSignals};
 use crate::store::AppSignals;
 use crate::tauri_bridge::{invoke, listen};
@@ -106,18 +106,10 @@ pub fn start_download(
                     return;
                 }
             };
-            let SetupDownloads {
-                model_url,
-                model_version,
-                model_hash,
-                dict_version,
-            } = match plan_downloads(&check) {
-                Ok(plan) => plan,
-                Err(message) => {
-                    stop("Error: model information refused".to_string(), message);
-                    return;
-                }
-            };
+            if let Err(message) = plan_downloads(&check) {
+                stop("Error: model information refused".to_string(), message);
+                return;
+            }
 
             // 1. Setup the progress listener
             let closure = Closure::wrap(Box::new(move |event_obj: JsValue| {
@@ -133,15 +125,9 @@ pub fn start_download(
             }) as Box<dyn FnMut(JsValue)>);
             let _ = listen("download-progress", &closure).await;
 
-            // 2. Download the AI Model (.gguf)
-            let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                "downloadUrl": model_url,
-                "version": model_version,
-                "expectedHash": model_hash
-            }))
-            .unwrap();
-
-            if let Err(e) = invoke("download_model", args).await {
+            // 2. Download the AI Model (.gguf): the backend takes its address and hash from the
+            // verified metadata.
+            if let Err(e) = invoke("download_model", JsValue::NULL).await {
                 let why = reason(e);
                 stop(
                     format!("Model Error: {why}"),
@@ -163,12 +149,7 @@ pub fn start_download(
             }
 
             // 4. Sync dictionary
-            let dict_args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                "version": dict_version
-            }))
-            .unwrap();
-
-            if let Err(e) = invoke("sync_dictionary", dict_args).await {
+            if let Err(e) = invoke("sync_dictionary", JsValue::NULL).await {
                 let why = reason(e);
                 stop(
                     format!("Dict Error: {why}"),

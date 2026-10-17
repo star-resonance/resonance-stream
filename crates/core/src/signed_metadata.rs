@@ -12,7 +12,7 @@
 //! Pure: no clock, no network, no files; the caller passes the bytes and the last accepted revision.
 
 use crate::update_signature::{verify_update, UpdateSignatureError, TRUSTED_UPDATE_KEYS};
-use resonance_types::GistMetadata;
+use resonance_types::{DictionaryState, GistMetadata};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
@@ -146,6 +146,34 @@ pub fn refusal_line(error: &MetadataError) -> String {
     )
 }
 
+/// Where the model comes from: what the verified metadata names, never what a caller hands over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSource {
+    pub url: String,
+    pub version: String,
+    /// SHA-256 (hex) the downloaded file must have.
+    pub sha256: String,
+}
+
+/// The model entry of verified metadata as something to download. A model with no published
+/// SHA-256 or no address is refused before anything is downloaded.
+pub fn model_source(metadata: &GistMetadata) -> Result<ModelSource, String> {
+    let model = &metadata.model;
+    let sha256 = model.sha256.trim();
+    if sha256.is_empty() {
+        return Err("No SHA-256 published for this model; refusing to download it".into());
+    }
+    let url = model.download_url.trim();
+    if url.is_empty() {
+        return Err("No download address published for this model; refusing to download it".into());
+    }
+    Ok(ModelSource {
+        url: url.to_string(),
+        version: model.latest_version.clone(),
+        sha256: sha256.to_string(),
+    })
+}
+
 /// Can the app read these bytes as its dictionary (text, and the categorised JSON)?
 pub fn check_dictionary_reads(dictionary: &[u8]) -> Result<(), MetadataError> {
     let text = std::str::from_utf8(dictionary)
@@ -181,6 +209,23 @@ pub fn verify_dictionary(dictionary: &[u8], metadata: &GistMetadata) -> Result<(
     }
 }
 
+/// Is the dictionary file on disk the one that was synced? `file` is its SHA-256 (`None`: there is no
+/// file), `recorded` the one kept at the last sync. Without both there is nothing to compare, and
+/// that is `Unknown` -- never `Same`, so two empty hashes do not agree.
+pub fn dictionary_state(file: Option<&str>, recorded: &str) -> DictionaryState {
+    let recorded = recorded.trim().to_ascii_lowercase();
+    let Some(file) = file.map(|hash| hash.trim().to_ascii_lowercase()) else {
+        return DictionaryState::Unknown;
+    };
+    if file.is_empty() || recorded.is_empty() {
+        DictionaryState::Unknown
+    } else if file == recorded {
+        DictionaryState::Same
+    } else {
+        DictionaryState::Modified
+    }
+}
+
 /// The system-log line for a dictionary that was refused although the metadata was accepted. A hash
 /// mismatch is often only timing -- a file published a moment ago can still be an old copy on some
 /// server -- so it says to try again later.
@@ -197,6 +242,77 @@ pub fn dictionary_refusal_line(error: &MetadataError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn published(model: &str) -> GistMetadata {
+        serde_json::from_str(&format!(
+            r#"{{"revision":3,"model":{model},"dictionary":{{"version":"1.0.8","updated_at":"2026-10-07","sha256":"cd34"}}}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_model_is_downloaded_from_what_the_signed_metadata_names() {
+        let verified = published(
+            r#"{"latest_version":"1.1.0","download_url":" https://example.com/m.gguf ","release_notes":"","sha256":" AB12 "}"#,
+        );
+        assert_eq!(
+            model_source(&verified),
+            Ok(ModelSource {
+                url: "https://example.com/m.gguf".into(),
+                version: "1.1.0".into(),
+                sha256: "AB12".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_model_with_no_published_hash_or_address_is_refused() {
+        let no_hash = published(
+            r#"{"latest_version":"1.1.0","download_url":"https://example.com/m.gguf","release_notes":"","sha256":"  "}"#,
+        );
+        let err = model_source(&no_hash).unwrap_err();
+        assert!(err.contains("No SHA-256 published"), "{err}");
+        let no_url = published(
+            r#"{"latest_version":"1.1.0","download_url":"","release_notes":"","sha256":"ab12"}"#,
+        );
+        let err = model_source(&no_url).unwrap_err();
+        assert!(err.contains("No download address"), "{err}");
+    }
+
+    #[test]
+    fn the_dictionary_on_disk_is_the_synced_one_only_when_the_hashes_agree() {
+        let recorded = "ab12cd";
+        assert_eq!(
+            dictionary_state(Some("ab12cd"), recorded),
+            DictionaryState::Same
+        );
+        // Case and stray whitespace in either do not make a file "modified".
+        assert_eq!(
+            dictionary_state(Some("AB12CD\n"), " ab12cd "),
+            DictionaryState::Same
+        );
+        assert_eq!(
+            dictionary_state(Some("ab12ce"), recorded),
+            DictionaryState::Modified
+        );
+    }
+
+    #[test]
+    fn with_nothing_to_compare_the_dictionary_is_not_claimed_to_be_the_same() {
+        // No file, or no hash recorded (never synced; a copy from before the hash was kept): unknown,
+        // never "same" -- two empty strings must not agree.
+        assert_eq!(dictionary_state(None, "ab12cd"), DictionaryState::Unknown);
+        assert_eq!(
+            dictionary_state(Some("ab12cd"), ""),
+            DictionaryState::Unknown
+        );
+        assert_eq!(
+            dictionary_state(Some("ab12cd"), "  "),
+            DictionaryState::Unknown
+        );
+        assert_eq!(dictionary_state(Some(""), ""), DictionaryState::Unknown);
+        assert_eq!(dictionary_state(None, ""), DictionaryState::Unknown);
+    }
 
     // Throwaway keys and signatures made with the `minisign` crate (what `tauri signer` uses); they
     // sign nothing real. BODY is what was signed; SIG_<n>_<key> is its signature for revision <n>.

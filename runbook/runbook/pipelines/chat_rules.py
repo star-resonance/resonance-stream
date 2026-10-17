@@ -12,15 +12,15 @@ call), and what comes out is read from the events the app publishes. Rows:
   CR-unblock      unblocking takes the flag off again
   CR-clear        clearing the history empties the log
 
-And the Study view's furigana (`annotate-furigana`, the app's `annotate_furigana`; nine lines, one of them empty):
+And the Study view's furigana (`annotate-furigana`, the app's `annotate_furigana`; six lines, one of them empty):
 
   CR-ruby-answer   one list of spans per line, in order, and nothing for the empty line
   CR-ruby-join     the spans of a line, joined, are the line (nothing lost, nothing added)
   CR-ruby-plain    a line without kanji is one plain span, no reading
   CR-ruby-reading  a line with kanji has readings, and they are hiragana
-  CR-ruby-probe    what the built exe reads for 一人, 二人, 一人前 (roadmap K16: IPADIC said イチ ニン): a measurement, so it passes
-                   whenever the answer is consistent; the readings are the evidence, and whether an override list is needed is
-                   Kade's call
+
+Which reading a word gets is not asked here: the dictionary is embedded in the exe, so the core tests pin the readings on any OS
+(`crates/core/tests/golden_text.rs`; roadmap K16).
 
 `min_sender_level` is the window's filter, not the backend's (the backend publishes every line), so it is not tested here.
 """
@@ -37,8 +37,7 @@ from runbook.common import Recorder
 ALICE, BOB = 1001, 2002
 PLAIN = ["ありがとう!", "[스티커]よろしく", "hello"]
 KANJI = ["日韓辞書", "今日はパーティー募集します"]
-PROBES = ["一人", "二人で行きます", "一人前"]
-RUBY_LINES = KANJI + PLAIN + [""] + PROBES
+RUBY_LINES = KANJI + PLAIN + [""]
 HIRAGANA = re.compile(r"^[ぁ-ゖゝゞー・]+$")
 
 
@@ -151,18 +150,18 @@ class ChatRules:
             pass
 
     def ruby(self, events: bridge.Serve) -> None:
-        """`annotate-furigana` on lines with and without kanji, and on the lines roadmap K16 asks about."""
+        """`annotate-furigana` on lines with and without kanji."""
         try:
             answer = events.send("annotate-furigana", {"texts": RUBY_LINES})["data"]
         except RuntimeError as e:
-            for check in ("CR-ruby-answer", "CR-ruby-join", "CR-ruby-plain", "CR-ruby-reading", "CR-ruby-probe"):
+            for check in ("CR-ruby-answer", "CR-ruby-join", "CR-ruby-plain", "CR-ruby-reading"):
                 self.rec.auto(check, "annotate-furigana answers", False, str(e))
             return
         shaped = isinstance(answer, list) and len(answer) == len(RUBY_LINES) and all(isinstance(spans, list) for spans in answer)
         self.rec.auto("CR-ruby-answer", "one list of spans per line, in order, and nothing for the empty line",
                       shaped and answer[RUBY_LINES.index("")] == [], f"{len(RUBY_LINES)} lines asked, answer: {answer}"[:400])
         if not shaped:
-            for check in ("CR-ruby-join", "CR-ruby-plain", "CR-ruby-reading", "CR-ruby-probe"):
+            for check in ("CR-ruby-join", "CR-ruby-plain", "CR-ruby-reading"):
                 self.rec.auto(check, "the furigana can be judged", False, "the answer was not one list per line")
             return
         by_line = dict(zip(RUBY_LINES, answer))
@@ -176,9 +175,6 @@ class ChatRules:
         bare = [line for line in KANJI if not any(s.get("reading") for s in by_line[line])]
         self.rec.auto("CR-ruby-reading", "a line with kanji has readings, and they are hiragana", not bad and not bare,
                       f"not hiragana: {bad}; no reading at all: {bare}" if bad or bare else f"{ {line: by_line[line] for line in KANJI} }"[:300])
-        readings = {line: [(s["text"], s.get("reading")) for s in by_line[line]] for line in PROBES}
-        self.rec.auto("CR-ruby-probe", "the readings of 一人, 二人 and 一人前 (a measurement for K16, not a verdict)",
-                      all(joined[line] == line for line in PROBES), f"(text, reading): {readings}")
 
     @staticmethod
     def wait_update(events: bridge.Serve, uid: int, blocked: bool) -> bool:

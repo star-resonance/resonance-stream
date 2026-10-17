@@ -69,7 +69,7 @@ The zip pin protects the download, not the files later on disk. A process of the
 
 | Check | Status |
 |---|---|
-| `download_model` takes URL and SHA-256 **from the UI, which got them from the gist**; an empty hash is refused (`model.rs:57-64`) | confirmed |
+| `download_model` takes URL and SHA-256 **from the signed metadata, verified at every download** (`gist::verified_metadata_fresh`, core `signed_metadata::model_source`), never from the caller; an empty hash or address is refused (N-5, 2026-10-08) | confirmed reading; the real-app proof is the `download-integrity` runbook |
 | The download is checked for length and SHA-256 against that hash (`model.rs:123`); an installed model with a matching hash is not downloaded again (`:76-80`) | confirmed |
 | The hash and the URL come from the same unsigned source, so the check protects against corruption, **not against a tampered gist** | confirmed reading; gap W-8 (A-6.3). Being closed (D-28): the verifier (`signed_metadata.rs`) and the signing workflow (`metadata.yml`) exist; **the app reads the signed `metadata` branch from M3b on** (a bad or missing signature, a rollback or a dictionary that is not the named file is refused and logged; `gist.rs`), but copies built before that still trust the gist |
 | The signing workflow runs only for a pushed tag `metadata-v<N>` (never for a merge: `claude/*` PRs auto-merge) and uses the same secret as `release.yml`. A workflow file in a tag's own commit is the one that runs, so anyone who can push a tag could run a changed copy with the secret: the same exposure as releases; limiting the secret to an Environment that only tags `metadata-v*` / `v*` may use closes it (a repository setting, optional) | confirmed reading; known |

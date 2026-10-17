@@ -1,21 +1,16 @@
-use super::core::{server_url, set_server_port, PREFERRED_SERVER_PORT};
-use crate::protocol::types::{SystemLogLevel, TranslatorState};
+use super::core::{server_url, ServerSlot, PREFERRED_SERVER_PORT};
+use crate::protocol::types::{AppState, SystemLogLevel, TranslatorState};
 use crate::{inject_system_message, AI_SERVER_FILENAME, AI_SERVER_FOLDER};
 use resonance_core::workers::{log_tail, pick_local_port, SERVER_START_TIMEOUT};
 use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-/// PID of the llama-server this app started (0: none). Only this process,
-/// or the one recorded in the PID file by a previous run, is ever killed --
-/// never other llama-server.exe instances the user may be running.
-static SERVER_PID: AtomicU32 = AtomicU32::new(0);
 
 fn pid_file(app: &AppHandle) -> Option<PathBuf> {
     let dir = crate::app_dirs::data(app)
@@ -42,6 +37,8 @@ fn kill_server_pid(pid: u32) {
 pub struct ServerGuard {
     /// `None`: a stand-in server a test run named (`--llama-url`) -- not ours to start, watch or kill.
     child: Option<Child>,
+    /// Where this app records the PID of the server it started; `None` with `child`.
+    slot: Option<Arc<ServerSlot>>,
     pid_file: Option<PathBuf>,
     log_file: Option<PathBuf>,
 }
@@ -51,6 +48,7 @@ impl ServerGuard {
     fn external() -> Self {
         Self {
             child: None,
+            slot: None,
             pid_file: None,
             log_file: None,
         }
@@ -58,13 +56,15 @@ impl ServerGuard {
 
     fn new(app: &AppHandle, child: Child, log_file: Option<PathBuf>) -> Self {
         let pid = child.id();
-        SERVER_PID.store(pid, Ordering::SeqCst);
+        let slot = app.state::<AppState>().services.server().clone();
+        slot.set_pid(pid);
         let pid_file = pid_file(app);
         if let Some(path) = &pid_file {
             let _ = fs::write(path, pid.to_string());
         }
         Self {
             child: Some(child),
+            slot: Some(slot),
             pid_file,
             log_file,
         }
@@ -98,7 +98,9 @@ impl Drop for ServerGuard {
         let pid = child.id();
         let _ = child.kill();
         // A newer server may already have replaced these; only clear our own.
-        let _ = SERVER_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
+        if let Some(slot) = &self.slot {
+            slot.clear_pid(pid);
+        }
         if let Some(path) = &self.pid_file {
             if fs::read_to_string(path).is_ok_and(|s| s.trim() == pid.to_string()) {
                 let _ = fs::remove_file(path);
@@ -157,7 +159,7 @@ pub fn launch_ai_server(
     let mut server_cmd = Command::new(&server_path);
     server_cmd.arg("-m").arg(model_path);
     let port = pick_local_port(PREFERRED_SERVER_PORT);
-    set_server_port(port);
+    app.state::<AppState>().services.server().set_port(port);
     server_cmd.arg("--port").arg(port.to_string());
 
     // The server's own output goes to a log file (new each start), so an
@@ -246,9 +248,9 @@ pub fn wait_for_server(
         }
         // Once a second for as long as the model loads: the log file only, not
         // the 200-line system history, where it pushes out the useful lines.
-        log::trace!("[Translator] Polling {}/health...", server_url());
+        log::trace!("[Translator] Polling {}/health...", server_url(app));
 
-        if resonance_llama::health_ok(&client, &server_url()) {
+        if resonance_llama::health_ok(&client, &server_url(app)) {
             inject_system_message(
                 app,
                 SystemLogLevel::Trace,
@@ -272,7 +274,7 @@ pub fn wait_for_server(
 #[tauri::command]
 pub async fn ai_server_health_check(app: AppHandle) -> bool {
     // async: a blocking HTTP call here would freeze the window
-    match reqwest::get(format!("{}/health", server_url())).await {
+    match reqwest::get(format!("{}/health", server_url(&app))).await {
         Ok(res) => res.status().is_success(),
         Err(_) => {
             inject_system_message(
@@ -296,7 +298,7 @@ pub fn kill_orphaned_servers(app: &AppHandle) {
         "Cleaning up any orphaned AI server processes...",
     );
 
-    let current = SERVER_PID.swap(0, Ordering::SeqCst);
+    let current = app.state::<AppState>().services.server().take_pid();
     if current != 0 {
         kill_server_pid(current);
     }

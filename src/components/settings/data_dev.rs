@@ -1,6 +1,7 @@
+use crate::dictionary_status::{status_line, SyncOutcome};
 use crate::store::{AppActions, AppSignals};
 use crate::tauri_bridge::invoke;
-use crate::ui_types::{LogLevel, NetworkInterface};
+use crate::ui_types::{DictionaryStatus, LogLevel, NetworkInterface};
 use leptos::prelude::*;
 use leptos::reactive::spawn_local;
 use wasm_bindgen::JsValue;
@@ -11,13 +12,29 @@ use wasm_bindgen::JsValue;
 #[component]
 pub fn DataDevSection(
     interfaces: ReadSignal<Vec<NetworkInterface>>,
-    sync_dict_action: Action<(), String>,
+    sync_dict_action: Action<(), SyncOutcome>,
     save_chat_action: Action<(), String>,
 ) -> impl IntoView {
     let signals = use_context::<AppSignals>().expect("AppSignals missing");
     let actions = use_context::<AppActions>().expect("AppActions missing");
     let is_syncing = sync_dict_action.pending();
     let is_saving_chat = save_chat_action.pending();
+
+    // Which dictionary is in use. Asked again when the section shows, after a sync, and when the
+    // dictionary editor closes (it saves over the file, which makes it "modified").
+    let (dictionary_status, set_dictionary_status) = signal(None::<DictionaryStatus>);
+    let sync_result = sync_dict_action.value();
+    Effect::new(move |_| {
+        sync_result.track();
+        signals.ui.show_dictionary.track();
+        spawn_local(async move {
+            if let Ok(value) = invoke("get_dictionary_status", JsValue::NULL).await {
+                if let Ok(status) = serde_wasm_bindgen::from_value::<DictionaryStatus>(value) {
+                    set_dictionary_status.set(Some(status));
+                }
+            }
+        });
+    });
 
     view! {
         // ==========================================
@@ -31,6 +48,20 @@ pub fn DataDevSection(
                     <div class="flex flex-col">
                         <span class="text-xs font-bold text-base-content/80">"사용자 사전 동기화"</span>
                         <span class="text-[9px] opacity-60">"GitHub에서 최신 단어장을 불러옵니다."</span>
+                        <span class="text-[9px] opacity-60" data-testid="dictionary-status">
+                            {move || dictionary_status.get().map(|status| status_line(&status)).unwrap_or_default()}
+                        </span>
+                        // How the last sync ended, and why when it did not work.
+                        <Show when=move || !is_syncing.get() && sync_result.get().is_some()>
+                            <span
+                                class="text-[9px] break-words"
+                                class:text-success=move || sync_result.get().is_some_and(|o| o.ok)
+                                class:text-error=move || sync_result.get().is_some_and(|o| !o.ok)
+                                data-testid="dictionary-sync-result"
+                            >
+                                {move || sync_result.get().map(|o| o.text).unwrap_or_default()}
+                            </span>
+                        </Show>
                     </div>
                     <button class="btn btn-xs btn-outline relative"
                         class:btn-success=move || signals.service.dict_update_available.get()

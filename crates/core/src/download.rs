@@ -6,6 +6,7 @@ use crate::test_env::is_local_http_url;
 use sha2::{Digest, Sha256};
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Only HTTPS downloads: the app runs as Administrator and executes what it
@@ -393,6 +394,49 @@ pub fn is_newer_version(remote: &str, current: &str) -> bool {
     match (parse(remote), parse(current)) {
         (Some(remote), Some(current)) => remote > current,
         _ => remote != current,
+    }
+}
+
+/// A download of which only one may run at a time, and that can be cancelled: the app update. A
+/// retry started right after a cancel cannot share the `.part` file with the one winding down.
+#[derive(Debug, Default)]
+pub struct SingleRun {
+    running: AtomicBool,
+    cancel: AtomicBool,
+}
+
+/// Held for as long as the run lasts; dropping it lets the next one start.
+#[derive(Debug)]
+pub struct RunGuard<'a>(&'a SingleRun);
+
+impl SingleRun {
+    /// Starts a run, unless one is running. A new run starts not cancelled.
+    pub fn try_start(&self) -> Option<RunGuard<'_>> {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        self.cancel.store(false, Ordering::SeqCst);
+        Some(RunGuard(self))
+    }
+
+    /// Asks the running download to stop; it reads [`SingleRun::cancel_flag`].
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// The flag the running download looks at.
+    pub fn cancel_flag(&self) -> &AtomicBool {
+        &self.cancel
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for RunGuard<'_> {
+    fn drop(&mut self) {
+        self.0.running.store(false, Ordering::SeqCst);
     }
 }
 
@@ -904,5 +948,39 @@ mod tests {
         assert!(is_newer_version("2026-09", "2026-08"));
         assert!(!is_newer_version("2026-09", "2026-09"));
         assert!(is_newer_version("model-b", ""));
+    }
+
+    #[test]
+    fn a_second_download_is_refused_while_the_first_runs() {
+        let download = SingleRun::default();
+        let first = download.try_start();
+        assert!(first.is_some());
+        assert!(download.is_running());
+        assert!(download.try_start().is_none());
+    }
+
+    #[test]
+    fn a_finished_download_lets_the_next_one_start() {
+        let download = SingleRun::default();
+        drop(download.try_start());
+        assert!(!download.is_running());
+        assert!(download.try_start().is_some());
+    }
+
+    #[test]
+    fn a_cancel_reaches_the_running_download() {
+        let download = SingleRun::default();
+        let _run = download.try_start();
+        assert!(!download.cancel_flag().load(Ordering::SeqCst));
+        download.cancel();
+        assert!(download.cancel_flag().load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_new_download_does_not_inherit_an_old_cancel() {
+        let download = SingleRun::default();
+        download.cancel();
+        let _run = download.try_start();
+        assert!(!download.cancel_flag().load(Ordering::SeqCst));
     }
 }

@@ -1,16 +1,16 @@
 use crate::inject_system_message;
-use crate::protocol::types::SystemLogLevel;
-use parking_lot::Mutex;
+use crate::protocol::types::{AppState, SystemLogLevel};
 use resonance_core::download::{
     is_newer_version, BodyCap, BodyTooLarge, CONNECT_TIMEOUT, REMOTE_CALL_TIMEOUT,
 };
 use resonance_core::signed_metadata::{
-    accept_dictionary, accept_metadata, dictionary_refusal_line, refusal_line, signature_url,
-    trusted_metadata_keys, MetadataError,
+    accept_dictionary, accept_metadata, dictionary_refusal_line, dictionary_state, refusal_line,
+    signature_url, trusted_metadata_keys, MetadataError,
 };
 use resonance_core::test_env::UpdateState;
 use resonance_core::text::Dictionary;
 use resonance_core::update_feed::{parse_feed_allowing, UpdateFeed};
+use resonance_types::DictionaryStatus;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,18 +65,10 @@ async fn read_capped(mut res: reqwest::Response, limit: usize) -> Result<Vec<u8>
     Ok(body)
 }
 
-/// The release the last update check announced. The app updater downloads
-/// and verifies exactly this one: its url, its version and its signature.
-static LAST_FEED: Mutex<Option<UpdateFeed>> = Mutex::new(None);
-
 /// The release the last update check announced, if there was one.
-pub fn announced_update() -> Option<UpdateFeed> {
-    LAST_FEED.lock().clone()
+pub fn announced_update(app: &AppHandle) -> Option<UpdateFeed> {
+    app.state::<AppState>().updates.announced.lock().clone()
 }
-
-/// The signed metadata the last check accepted. `sync_dictionary` checks the dictionary against it,
-/// so the UI cannot name another version or hash.
-static LAST_VERIFIED: Mutex<Option<GistMetadata>> = Mutex::new(None);
 
 /// GET `url`, up to `limit` bytes. `Ok(None)`: nothing is published there (404). `what` names the
 /// file in an error.
@@ -128,25 +120,29 @@ async fn fetch_verified_metadata(
 /// `sync_dictionary`. The revision is stored once the metadata's signature has held -- the
 /// dictionary is checked later, at the sync, and a mismatch there refuses only the dictionary.
 fn accept_verified(app: &AppHandle, verified: &GistMetadata) {
-    let metadata = crate::config::load_metadata(app);
-    if verified.revision > metadata.accepted_revision {
-        crate::config::save_metadata(
-            app,
-            &crate::config::AppMetadata {
-                accepted_revision: verified.revision,
-                ..metadata
-            },
-        );
-    }
-    *LAST_VERIFIED.lock() = Some(verified.clone());
+    crate::config::modify_metadata(app, |metadata| {
+        let newer = verified.revision > metadata.accepted_revision;
+        if newer {
+            metadata.accepted_revision = verified.revision;
+        }
+        newer
+    });
+    *app.state::<AppState>().updates.verified.lock() = Some(verified.clone());
 }
 
 /// The metadata the last check accepted, or a fresh check when there was none (the test bridge
 /// syncs without one).
 async fn verified_metadata(app: &AppHandle) -> Result<GistMetadata, String> {
-    if let Some(verified) = LAST_VERIFIED.lock().clone() {
+    let last = app.state::<AppState>().updates.verified.lock().clone();
+    if let Some(verified) = last {
         return Ok(verified);
     }
+    verified_metadata_fresh(app).await
+}
+
+/// The published metadata, fetched and verified now; accepted like an update check's. A refusal is
+/// written to the system log and returned as the error. `download_model` takes the model from it.
+pub async fn verified_metadata_fresh(app: &AppHandle) -> Result<GistMetadata, String> {
     let accepted = crate::config::load_metadata(app).accepted_revision;
     match fetch_verified_metadata(accepted).await? {
         Ok(verified) => {
@@ -222,7 +218,7 @@ pub async fn check_all_updates(app: AppHandle) -> Result<UpdateCheckResult, Stri
             None
         }
     };
-    *LAST_FEED.lock() = feed.clone();
+    *app.state::<AppState>().updates.announced.lock() = feed.clone();
     let app_info = feed
         .as_ref()
         .map(|feed| VersionInfo {
@@ -259,7 +255,7 @@ pub async fn check_all_updates(app: AppHandle) -> Result<UpdateCheckResult, Stri
             verified
         }
         Err(refused) => {
-            *LAST_VERIFIED.lock() = None;
+            *app.state::<AppState>().updates.verified.lock() = None;
             let line = refusal_line(&refused);
             inject_system_message(&app, SystemLogLevel::Error, "Metadata", line.clone());
             return Ok(UpdateCheckResult::refused(
@@ -307,23 +303,15 @@ fn install_dictionary(app: &AppHandle, dict: Dictionary) {
 }
 
 /// Fetches the custom dictionary, checks it against the signed metadata (its SHA-256 is named
-/// there) and installs it. `version` is what the UI believes it is syncing; what is recorded as
-/// installed is the verified metadata's version, so a UI (or a caller of the bridge) cannot name
-/// another one.
+/// there) and installs it. What is recorded as installed is the verified metadata's version, so a
+/// UI (or a caller of the bridge) cannot name another one.
 #[tauri::command]
-pub async fn sync_dictionary(app: AppHandle, version: String) -> Result<String, String> {
+pub async fn sync_dictionary(app: AppHandle) -> Result<String, String> {
     // 1. Resolve Local Path
     let dict_path = dictionary_path(&app);
 
     // 2. What the signed metadata says the dictionary is
     let verified = verified_metadata(&app).await?;
-    if verified.dictionary.version != version {
-        log::warn!(
-            "[Dictionary] The UI asked to sync version {:?}; the verified metadata has {:?}",
-            version,
-            verified.dictionary.version
-        );
-    }
 
     // 3. Fetch from Remote
     let body = fetch_published(
@@ -369,9 +357,12 @@ pub async fn sync_dictionary(app: AppHandle, version: String) -> Result<String, 
         verified.dictionary.version
     );
 
-    let mut metadata = crate::config::load_metadata(&app);
-    metadata.current_dict_version = verified.dictionary.version;
-    crate::config::save_metadata(&app, &metadata);
+    crate::config::modify_metadata(&app, |metadata| {
+        metadata.current_dict_version = verified.dictionary.version;
+        metadata.current_dict_sha256 = verified.dictionary.sha256.trim().to_ascii_lowercase();
+        metadata.current_dict_revision = verified.revision;
+        true
+    });
 
     Ok("Dictionary updated and reloaded!".to_string())
 }
@@ -380,6 +371,19 @@ pub async fn sync_dictionary(app: AppHandle, version: String) -> Result<String, 
 pub fn get_dict_version(app: tauri::AppHandle) -> String {
     let metadata = crate::config::load_metadata(&app);
     metadata.current_dict_version
+}
+
+/// Which dictionary is in use: the version and signed revision of the last sync, and whether the
+/// file on disk is still that one (the editor saves over it, which makes it `modified`).
+#[tauri::command(async)]
+pub fn get_dictionary_status(app: tauri::AppHandle) -> DictionaryStatus {
+    let metadata = crate::config::load_metadata(&app);
+    let file = resonance_core::download::sha256_file(&dictionary_path(&app)).ok();
+    DictionaryStatus {
+        version: metadata.current_dict_version,
+        revision: metadata.current_dict_revision,
+        state: dictionary_state(file.as_deref(), &metadata.current_dict_sha256),
+    }
 }
 
 #[tauri::command]
@@ -404,11 +408,12 @@ pub fn save_local_dictionary(app: tauri::AppHandle, content: String) -> Result<(
 
 #[tauri::command]
 pub fn ignore_update(app: AppHandle, target: String, version: String) {
-    let mut metadata = crate::config::load_metadata(&app);
-    if target == "app" {
-        metadata.ignored_app_version = Some(version);
-    } else if target == "model" {
-        metadata.ignored_model_version = Some(version);
-    }
-    crate::config::save_metadata(&app, &metadata);
+    crate::config::modify_metadata(&app, |metadata| {
+        if target == "app" {
+            metadata.ignored_app_version = Some(version);
+        } else if target == "model" {
+            metadata.ignored_model_version = Some(version);
+        }
+        true
+    });
 }

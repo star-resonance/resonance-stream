@@ -205,7 +205,7 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             crate::services::sniffer::replay::start_file(app.clone(), path);
             answer(Ok(()));
         }
-        Command::StartUpdate => match crate::services::downloader::announced_update() {
+        Command::StartUpdate => match crate::services::downloader::announced_update(app) {
             None => answer(Err(
                 "No update has been announced; check for updates first".into()
             )),
@@ -246,10 +246,10 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             crate::commands::clear_chat_history(app.state());
             answer(Ok(()));
         }
-        Command::SyncDictionary { version } => {
+        Command::SyncDictionary => {
             // The settings view's sync: an async command that fetches, validates, saves and installs; its error is the ack's.
             let synced = tauri::async_runtime::block_on(
-                crate::services::downloader::sync_dictionary(app.clone(), version.clone()),
+                crate::services::downloader::sync_dictionary(app.clone()),
             );
             answer(synced.map(|_| ()));
         }
@@ -309,18 +309,11 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             crate::commands::launch_translator(app.clone(), app.state());
             answer(Ok(()));
         }
-        Command::DownloadModel {
-            url,
-            version,
-            sha256,
-        } => {
+        Command::DownloadModel => {
             // The wizard's download; its end (the return value the UI shows) comes as a `download-result` event.
             let (app, id) = (app.clone(), request.id.clone());
-            let (url, version, sha256) = (url.clone(), version.clone(), sha256.clone());
             tauri::async_runtime::spawn(async move {
-                let result =
-                    crate::services::downloader::model::download_model(app, url, version, sha256)
-                        .await;
+                let result = crate::services::downloader::model::download_model(app).await;
                 publish_event(
                     wire::DOWNLOAD_RESULT_EVENT,
                     serde_json::json!({

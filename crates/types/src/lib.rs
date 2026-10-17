@@ -450,6 +450,31 @@ impl Theme {
     }
 }
 
+// --- Which dictionary is in use ---
+
+/// Whether the dictionary file on disk is the one that was last synced (the settings view says so
+/// next to the sync button). The wire form is the lower-case name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DictionaryState {
+    /// The file's SHA-256 is the one recorded at the last sync.
+    Same,
+    /// It differs: edited here since the sync (the editor saves over the file).
+    Modified,
+    /// Nothing to compare: never synced, a copy from before the hash was kept, or no file.
+    #[default]
+    Unknown,
+}
+
+/// `get_dictionary_status`: the version last synced, the revision of the signed metadata it came from
+/// (0 when unknown) and whether the file still is that one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DictionaryStatus {
+    pub version: String,
+    pub revision: u64,
+    pub state: DictionaryState,
+}
+
 // --- Favorite messages ---
 
 /// A saved chat line: copied from the favorites panel, or pasted into the
@@ -761,6 +786,34 @@ mod tests {
         let msg: ChatMessage = serde_json::from_str(old).expect("old line must parse");
         assert_eq!((msg.pid, msg.uid, msg.message.as_str()), (3, 9, "hi"));
         assert_eq!((msg.class_id, msg.level, msg.sequence_id), (0, 0, 0));
+    }
+
+    #[test]
+    fn the_dictionary_status_has_a_fixed_wire_form() {
+        let status = DictionaryStatus {
+            version: "1.0.8".into(),
+            revision: 3,
+            state: DictionaryState::Modified,
+        };
+        assert_eq!(
+            serde_json::to_string(&status).unwrap(),
+            r#"{"version":"1.0.8","revision":3,"state":"modified"}"#
+        );
+        for (state, wire) in [
+            (DictionaryState::Same, r#""same""#),
+            (DictionaryState::Modified, r#""modified""#),
+            (DictionaryState::Unknown, r#""unknown""#),
+        ] {
+            assert_eq!(serde_json::to_string(&state).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<DictionaryState>(wire).unwrap(),
+                state
+            );
+        }
+        // Nothing synced yet: no version, revision 0, and not known to be the published one.
+        let none = DictionaryStatus::default();
+        assert_eq!((none.version.as_str(), none.revision), ("", 0));
+        assert_eq!(none.state, DictionaryState::Unknown);
     }
 
     #[test]

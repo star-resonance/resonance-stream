@@ -7,7 +7,7 @@ name: Release feed
 #
 # What breaks it: a release made by hand (no latest.json, or a different exe), a
 # candidate that is not a prerelease, deleting the newest stable release. Stable
-# releases are made by release.yml only (CLAUDE.md, *Stable releases*).
+# releases are made by release.yml only (the `release` skill, *Stable releases*).
 #
 # Runs when a person publishes, edits or deletes a release (releases made by a
 # workflow with GITHUB_TOKEN start no workflows; release.yml checks its own),
@@ -25,15 +25,19 @@ concurrency:
   group: release-feed
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   feed:
     name: the update feed works
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Check
         env:
           GH_TOKEN: ${{ github.token }}

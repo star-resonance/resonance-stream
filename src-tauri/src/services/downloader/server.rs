@@ -89,7 +89,7 @@ async fn stage_ai_server(app: &AppHandle, staging: &std::path::Path) -> Result<(
             None => continue,
         };
 
-        if file.name().ends_with('/') {
+        if file.is_dir() {
             continue; // Skip directories
         }
 

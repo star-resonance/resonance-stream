@@ -344,7 +344,7 @@ class TranslatorStub:
         self.rec.auto("TS-dict-before", "before any dictionary the server is sent the line as it is", sent == BOSS[0] and "ボス" in shown,
                       f"sent {sent!r}, shown {shown!r}")
         try:
-            events.send("sync-dictionary", {"version": "dict-v1"}, timeout=30)
+            events.send("sync-dictionary", {}, timeout=30)
             sent, shown = self.say(events, exe, stub, BOSS[1], 102)
             saved = on_disk.read_text(encoding="utf-8") if on_disk.exists() else None
             asked = server.hits.count("GET /custom_dict.json")
@@ -488,7 +488,7 @@ class TranslatorStub:
         on_disk = exe.parent / "data" / "data" / "custom_dict.json"
         server.dictionary_override = '{"term": {"ボス": "evil"}}'
         try:
-            events.send("sync-dictionary", {"version": "dict-v1"}, timeout=30)
+            events.send("sync-dictionary", {}, timeout=30)
             refused, detail = False, "the app took a dictionary that is not the signed one"
         except RuntimeError as e:
             refused, detail = "does not match" in str(e), str(e)
@@ -496,7 +496,7 @@ class TranslatorStub:
         saved = on_disk.exists()
         server.dictionary_override = None
         try:
-            events.send("sync-dictionary", {"version": "dict-v1"}, timeout=30)
+            events.send("sync-dictionary", {}, timeout=30)
             again = on_disk.exists() and on_disk.read_text(encoding="utf-8") == server.dictionary_text
             again_detail = "synced"
         except RuntimeError as e:

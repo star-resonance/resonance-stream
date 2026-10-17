@@ -8,11 +8,12 @@
 //! overlap, each with its own pipeline, so a chat packet in the overlap could be shown twice).
 
 use crate::services::sniffer::{start_sniffer_worker, SnifferHandle};
-use crate::services::translator::{self, TranslationJob};
+use crate::services::translator::{self, core::ServerSlot, TranslationJob};
 use crate::{inject_system_message, AppState, SystemLogLevel};
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
-use resonance_core::workers::SNIFFER_STOP_WAIT;
+use resonance_core::workers::{SnifferActivity, WorkerGenerations, SNIFFER_STOP_WAIT};
+use std::sync::Arc;
 use std::thread;
 use tauri::{AppHandle, Manager};
 
@@ -23,6 +24,14 @@ pub struct Services {
     /// The running sniffer, or `None`. Held for the whole of a restart, so two starts and restarts
     /// never interleave.
     sniffer: Mutex<Option<SnifferHandle>>,
+    /// Which translator worker is current: one that was stopped or replaced while it was still
+    /// starting up sees the number move and stays silent.
+    generations: Arc<WorkerGenerations>,
+    /// The llama-server this app started: its PID and port.
+    server: Arc<ServerSlot>,
+    /// Game traffic: the last packet and whether "active" was said. For the whole run, not one
+    /// sniffer start, so a restart keeps the time of the last packet.
+    sniffer_activity: Arc<SnifferActivity>,
 }
 
 impl Services {
@@ -35,6 +44,7 @@ impl Services {
         *slot = Some(translator::start_translator_worker(
             app.clone(),
             crate::get_model_path(app),
+            self.generations.clone(),
         ));
         true
     }
@@ -47,6 +57,7 @@ impl Services {
         *slot = Some(translator::start_translator_worker(
             app.clone(),
             crate::get_model_path(app),
+            self.generations.clone(),
         ));
     }
 
@@ -55,8 +66,18 @@ impl Services {
     /// running.
     pub fn stop_translator(&self) -> bool {
         let was_running = self.translator.lock().take().is_some();
-        translator::retire_translator_workers();
+        self.generations.retire();
         was_running
+    }
+
+    /// The llama-server this app started (its PID and port).
+    pub fn server(&self) -> &Arc<ServerSlot> {
+        &self.server
+    }
+
+    /// Whether game traffic is coming in, for the sniffer's threads and its start command.
+    pub fn sniffer_activity(&self) -> &Arc<SnifferActivity> {
+        &self.sniffer_activity
     }
 
     /// A handle to the running translator's queue, for the sniffer's per-message dispatch.
@@ -72,7 +93,10 @@ impl Services {
         if slot.as_ref().is_some_and(SnifferHandle::is_alive) {
             return false;
         }
-        *slot = Some(start_sniffer_worker(app.clone()));
+        *slot = Some(start_sniffer_worker(
+            app.clone(),
+            self.sniffer_activity.clone(),
+        ));
         true
     }
 
@@ -100,7 +124,10 @@ impl Services {
     pub fn restart_sniffer(&self, app: &AppHandle) {
         let mut slot = self.sniffer.lock();
         Self::stop_sniffer_in(&mut slot, app);
-        *slot = Some(start_sniffer_worker(app.clone()));
+        *slot = Some(start_sniffer_worker(
+            app.clone(),
+            self.sniffer_activity.clone(),
+        ));
     }
 
     /// Stops the sniffer and leaves it stopped (an adapter change before the setup is done).

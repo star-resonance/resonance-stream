@@ -3,7 +3,7 @@ use resonance_core::download::{keep_bad_copy, read_text_retrying, write_atomic};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppMetadata {
@@ -16,6 +16,13 @@ pub struct AppMetadata {
     /// one is a rollback and is refused. 0 before the first (and in a file from before this field).
     #[serde(default)]
     pub accepted_revision: u64,
+    /// SHA-256 of the dictionary the last sync installed (the signed metadata names it), and the
+    /// revision of the metadata it came from. A local edit does not change them, so a file that no
+    /// longer hashes to this one shows as modified. Empty / 0 before the first sync with them.
+    #[serde(default)]
+    pub current_dict_sha256: String,
+    #[serde(default)]
+    pub current_dict_revision: u64,
 }
 
 impl Default for AppMetadata {
@@ -27,6 +34,8 @@ impl Default for AppMetadata {
             ignored_model_version: None,
             last_update_check: 0,
             accepted_revision: 0,
+            current_dict_sha256: String::new(),
+            current_dict_revision: 0,
         }
     }
 }
@@ -76,7 +85,7 @@ fn unusable(app: &AppHandle, path: &std::path::Path, why: &str) {
     );
 }
 
-pub fn save_metadata(app: &AppHandle, metadata: &AppMetadata) {
+fn save_metadata(app: &AppHandle, metadata: &AppMetadata) {
     inject_system_message(
         &app,
         SystemLogLevel::Info,
@@ -94,6 +103,18 @@ pub fn save_metadata(app: &AppHandle, metadata: &AppMetadata) {
                 format!("metadata.json was not saved ({e})"),
             );
         }
+    }
+}
+
+/// Reads `metadata.json`, lets `change` edit it, and writes it when `change` says it changed
+/// something -- all under `AppState::metadata_lock`, so concurrent writers do not lose each other's
+/// change. The only way the app writes the file (besides the first run's defaults).
+pub fn modify_metadata(app: &AppHandle, change: impl FnOnce(&mut AppMetadata) -> bool) {
+    let state = app.state::<crate::AppState>();
+    let _writing = state.metadata_lock.lock();
+    let mut metadata = load_metadata(app);
+    if change(&mut metadata) {
+        save_metadata(app, &metadata);
     }
 }
 
@@ -119,5 +140,29 @@ mod tests {
         let text = serde_json::to_string_pretty(&metadata).unwrap();
         let back: AppMetadata = serde_json::from_str(&text).unwrap();
         assert_eq!(back.accepted_revision, 7);
+    }
+
+    #[test]
+    fn a_file_from_before_the_dictionary_hash_has_none_and_it_survives_a_save() {
+        let old = r#"{"current_model_version":"1.1.0","current_dict_version":"1.0.6",
+            "ignored_app_version":null,"ignored_model_version":null,"last_update_check":0}"#;
+        let metadata: AppMetadata = serde_json::from_str(old).expect("an older file parses");
+        assert_eq!(metadata.current_dict_sha256, "");
+        assert_eq!(metadata.current_dict_revision, 0);
+
+        let synced = AppMetadata {
+            current_dict_sha256: "ab12".into(),
+            current_dict_revision: 3,
+            ..AppMetadata::default()
+        };
+        let back: AppMetadata =
+            serde_json::from_str(&serde_json::to_string_pretty(&synced).unwrap()).unwrap();
+        assert_eq!(
+            (
+                back.current_dict_sha256.as_str(),
+                back.current_dict_revision
+            ),
+            ("ab12", 3)
+        );
     }
 }

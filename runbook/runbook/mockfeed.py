@@ -38,13 +38,13 @@ def feed_json(version: str, url: str, signature: str, notes: str = "") -> str:
 
 
 def metadata_json(model_url: str = "http://127.0.0.1:1/model.gguf", *, revision: int = 0, dictionary_sha256: str = "",
-                  dictionary_version: str = "runbook-mock") -> str:
+                  dictionary_version: str = "runbook-mock", model_sha256: str = "") -> str:
     """The published `metadata.json` (`GistMetadata`): the `app` entry is ignored by the app and left out. With a `revision`
     (and the dictionary's SHA-256) it is the signed kind `metadata.yml` publishes; without, the old gist's shape."""
     out: dict = {}
     if revision:
         out["revision"] = revision
-    out["model"] = {"latest_version": "runbook-mock", "download_url": model_url, "release_notes": "", "sha256": ""}
+    out["model"] = {"latest_version": "runbook-mock", "download_url": model_url, "release_notes": "", "sha256": model_sha256}
     out["dictionary"] = {"version": dictionary_version, "updated_at": "2026-10-05"}
     if dictionary_sha256:
         out["dictionary"]["sha256"] = dictionary_sha256
@@ -200,7 +200,8 @@ class MockServer:
     With a `signer` (a `MetadataSigner`) the metadata is the signed kind: `revision`, the dictionary's SHA-256, and the signature at
     `/metadata.json.sig`. `metadata_mode`: ok | no-signature (the `.sig` is 404) | wrong-key (signed by `foreign_signer`, another key) |
     tampered (the signature is for another text). `revision` and `dictionary_override` (the text served at `/custom_dict.json`
-    instead of `dictionary_text`, so it no longer matches the signed hash) can be set while it runs. Without a signer the metadata is
+    instead of `dictionary_text`, so it no longer matches the signed hash) can be set while it runs, and so can the model entry the
+    app downloads from: `model_sha256` (its published SHA-256) and `model_url` (None: this server's `/model.gguf`). Without a signer the metadata is
     the old gist's shape and there is no `.sig`.
     """
 
@@ -215,6 +216,8 @@ class MockServer:
         self.exe_mode = "ok"
         self.model_bytes = b""
         self.model_mode = "ok"
+        self.model_url: str | None = None  # the model address the signed metadata names (None: this server's /model.gguf)
+        self.model_sha256 = ""  # the model SHA-256 the signed metadata names
         self.dictionary_text = '{"term": {"ボス": "보스"}}'  # what `/custom_dict.json` serves (the gist's custom dictionary)
         self.dictionary_override: str | None = None
         self.signer = signer
@@ -260,8 +263,9 @@ class MockServer:
         """The metadata as published (before any fault): signed kind when there is a signer."""
         if self.signer is None:
             return metadata_json(self.base_url + "/model.gguf")
-        return metadata_json(self.base_url + "/model.gguf", revision=self.revision,
-                             dictionary_sha256=hashlib.sha256(self.dictionary_text.encode("utf-8")).hexdigest())
+        return metadata_json(self.model_url or self.base_url + "/model.gguf", revision=self.revision,
+                             dictionary_sha256=hashlib.sha256(self.dictionary_text.encode("utf-8")).hexdigest(),
+                             model_sha256=self.model_sha256)
 
     def metadata_served(self) -> str:
         """What `/metadata.json` answers: the published text, or -- `tampered` -- that text changed after it was signed."""

@@ -10,10 +10,9 @@ Four steps, in order. Do not skip ahead.
 
 ## 1 · Plan (no edits)
 
-- Locate the code with graft, not by reading whole files:
-  `graft ask "<task>" --source`, `graft skeleton <file>`.
-- For every symbol you will move, rename, split or change the signature of, run
-  `graft callers <sym> --depth all`. List the files it reaches — that is the impact.
+- Locate the code with `rg` (the Grep tool) and read only the spans you need, not whole files.
+- For every symbol you will move, rename, split or change the signature of, search its uses:
+  `rg -nw '<sym>' crates src src-tauri`. List the files it reaches — that is the impact.
 - Say which part(s) are touched (ui / app, per `CLAUDE.md`) and therefore which gate
   applies, and whether this session can run it (Linux cannot build `src-tauri/`).
 - Present: what changes, what does not, the impact list, the gate, the commit(s).
@@ -27,7 +26,7 @@ A new step discovered mid-way that widens scope goes back to the developer.
 
 - One task at a time. Refactors are behaviour-preserving: move first, change later,
   never both in one commit.
-- After each move, re-run `graft callers` on the moved symbol and confirm every caller
+- After each move, re-run that search on the moved symbol and confirm every caller
   compiles against the new path.
 - At most **2** self-corrections on a failing gate; then stop and report.
 
@@ -38,4 +37,5 @@ A new step discovered mid-way that widens scope goes back to the developer.
 - Work on a `claude/<task>` branch; commit as often as useful, code and memory together,
   per `CLAUDE.md` *Version Control*.
   Unrun gates go in the last commit body as `NOT VERIFIED: ...`. Green gate → push the
-  branch and open a PR; CI auto-merges it.
+  branch and open a PR; CI auto-merges it, unless it is a draft or changes
+  `.github/workflows/` (Kade merges those).
