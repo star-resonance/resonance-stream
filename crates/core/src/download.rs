@@ -412,24 +412,32 @@ pub struct RunGuard<'a>(&'a SingleRun);
 impl SingleRun {
     /// Starts a run, unless one is running. A new run starts not cancelled.
     pub fn try_start(&self) -> Option<RunGuard<'_>> {
-        None
+        if self.running.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        self.cancel.store(false, Ordering::SeqCst);
+        Some(RunGuard(self))
     }
 
     /// Asks the running download to stop; it reads [`SingleRun::cancel_flag`].
-    pub fn cancel(&self) {}
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
 
     /// The flag the running download looks at.
     pub fn cancel_flag(&self) -> &AtomicBool {
-        &self.running
+        &self.cancel
     }
 
     pub fn is_running(&self) -> bool {
-        true
+        self.running.load(Ordering::SeqCst)
     }
 }
 
 impl Drop for RunGuard<'_> {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        self.0.running.store(false, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]

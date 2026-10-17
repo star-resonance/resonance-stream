@@ -298,15 +298,17 @@ pub struct WorkerGenerations(AtomicU64);
 impl WorkerGenerations {
     /// A new worker starts: it becomes the current one, and every earlier one is superseded.
     pub fn begin(&self) -> u64 {
-        0
+        self.0.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     /// Marks every running or starting worker as superseded (the translator was stopped).
-    pub fn retire(&self) {}
+    pub fn retire(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
 
     /// Is the worker that began as `generation` still the current one?
-    pub fn is_current(&self, _generation: u64) -> bool {
-        false
+    pub fn is_current(&self, generation: u64) -> bool {
+        self.0.load(Ordering::SeqCst) == generation
     }
 }
 
@@ -323,25 +325,33 @@ pub struct SnifferActivity {
 impl SnifferActivity {
     /// A game packet arrived at `now`. Returns `true` when the sniffer was not active, so the caller
     /// emits the "active" state once, not for every packet.
-    pub fn record_packet(&self, _now: u64) -> bool {
-        false
+    pub fn record_packet(&self, now: u64) -> bool {
+        self.last_traffic.store(now, Ordering::Relaxed);
+        !self.active.swap(true, Ordering::Relaxed)
     }
 
     /// A sniffer starts at `now`: the watchdog gets a full [`WATCHDOG_LIMIT_SECS`] before it speaks,
     /// even when the adapter never sees a game packet. Whether it is active is left alone.
-    pub fn start_clock(&self, _now: u64) {}
+    pub fn start_clock(&self, now: u64) {
+        self.last_traffic.store(now, Ordering::Relaxed);
+    }
 
     /// The sniffer said something other than "active" (starting, pending): the next packet says
     /// "active" again.
-    pub fn mark_inactive(&self) {}
+    pub fn mark_inactive(&self) {
+        self.active.store(false, Ordering::Relaxed);
+    }
 
     /// The watchdog reported a stall at `now`: not active, and the clock starts over, so it waits
     /// another [`WATCHDOG_LIMIT_SECS`] before it speaks again.
-    pub fn stall(&self, _now: u64) {}
+    pub fn stall(&self, now: u64) {
+        self.mark_inactive();
+        self.start_clock(now);
+    }
 
     /// Unix seconds of the last game packet, 0 before the first.
     pub fn last_traffic(&self) -> u64 {
-        u64::MAX
+        self.last_traffic.load(Ordering::Relaxed)
     }
 }
 
