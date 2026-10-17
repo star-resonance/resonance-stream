@@ -25,22 +25,8 @@ use serde_json::{json, Value};
 use std::fmt;
 use std::path::PathBuf;
 
-/// Every backend -> UI event name the app emits. The bridge listens to each.
-pub const EVENT_NAMES: [&str; 13] = [
-    "chat-message-update",
-    "sniffer-state",
-    "translator-state",
-    "translation-event",
-    "system-event",
-    "packet-event",
-    "favorites-changed",
-    "firewall-missing",
-    "download-progress",
-    "popup-shown",
-    "global-tab-switch",
-    "tray-toggle-always-on-top",
-    "tray-toggle-click-through",
-];
+/// Every backend -> UI event name the app emits (`resonance_types::ipc::event`). The bridge listens to each.
+pub const EVENT_NAMES: [&str; 13] = resonance_types::ipc::event::ALL;
 
 /// Published by the app itself, not heard from the window: the update's state after every change
 /// (`{"state": "none" | "available:<version>" | "downloading" | "downloaded" | "error:<reason>"}`).

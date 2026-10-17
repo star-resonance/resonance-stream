@@ -163,7 +163,10 @@ pub fn save_favorites(
         config.favorite_messages = favorites.messages;
         config.favorite_tabs = favorites.tabs;
     });
-    let _ = app.emit("favorites-changed", state.config.read().favorites());
+    let _ = app.emit(
+        resonance_types::ipc::event::FAVORITES_CHANGED,
+        state.config.read().favorites(),
+    );
 }
 
 /// Read-modify-write of the live config under the save lock, so a change

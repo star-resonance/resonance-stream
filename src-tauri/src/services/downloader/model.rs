@@ -84,7 +84,7 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
                 "Existing model is a perfect match! Skipping download.",
             );
             let _ = app.emit(
-                "download-progress",
+                resonance_types::ipc::event::DOWNLOAD_PROGRESS,
                 ProgressPayload {
                     current_file: "로컬 AI 모델 확인 완료 (Skipped download)".to_string(),
                     percent: 100,
@@ -160,7 +160,7 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
     }
 
     let _ = app.emit(
-        "download-progress",
+        resonance_types::ipc::event::DOWNLOAD_PROGRESS,
         ProgressPayload {
             current_file: "완료".into(),
             percent: 100,

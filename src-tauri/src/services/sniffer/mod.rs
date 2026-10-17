@@ -78,7 +78,7 @@ pub fn emit_sniffer_state(app: &tauri::AppHandle, state: SnifferState, message: 
     };
     let mut states = app_state.service_states.lock();
     let payload = states.set_sniffer(state, message);
-    let _ = app.emit("sniffer-state", payload);
+    let _ = app.emit(resonance_types::ipc::event::SNIFFER_STATE, payload);
 }
 
 /// async: `start_sniffer_worker` asks `netsh` whether the firewall rule exists, which takes
@@ -131,7 +131,7 @@ pub fn start_sniffer_worker(app: AppHandle, activity: Arc<SnifferActivity>) -> S
         );
 
         // Tell the frontend to show the Setup Wizard!
-        let _ = app.emit("firewall-missing", ());
+        let _ = app.emit(resonance_types::ipc::event::FIREWALL_MISSING, ());
 
         // Return immediately without spawning the network thread
         return handle;
@@ -343,7 +343,10 @@ fn dispatch_pipeline_actions(app: &AppHandle, actions: Vec<PipelineAction>) {
                 if let Some(existing_msg) = history.get_mut(chat.pid) {
                     if !existing_msg.is_blocked {
                         existing_msg.is_blocked = true;
-                        let _ = app.emit("chat-message-update", existing_msg.clone());
+                        let _ = app.emit(
+                            resonance_types::ipc::event::CHAT_MESSAGE_UPDATE,
+                            existing_msg.clone(),
+                        );
                     }
                 }
             }
@@ -420,7 +423,7 @@ fn scrub_rows(app: &AppHandle, state: &AppState, uid: u64, blocked: bool) {
         resonance_core::history::set_blocked_for_uid(history.values_mut(), uid, blocked)
     };
     for message in changed {
-        let _ = app.emit("chat-message-update", message);
+        let _ = app.emit(resonance_types::ipc::event::CHAT_MESSAGE_UPDATE, message);
     }
 }
 

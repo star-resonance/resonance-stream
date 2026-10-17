@@ -431,7 +431,7 @@ fn process_translation_job(
     state.translation_ledger.lock().settle(chat.pid);
 
     let _ = app.emit(
-        "translation-event",
+        resonance_types::ipc::event::TRANSLATION_EVENT,
         &crate::protocol::types::TranslationResult {
             pid: chat.pid,
             translated: final_str,
@@ -448,5 +448,5 @@ pub fn emit_translator_state(app: &tauri::AppHandle, state: TranslatorState, mes
     };
     let mut states = app_state.service_states.lock();
     let payload = states.set_translator(state, message);
-    let _ = app.emit("translator-state", payload);
+    let _ = app.emit(resonance_types::ipc::event::TRANSLATOR_STATE, payload);
 }

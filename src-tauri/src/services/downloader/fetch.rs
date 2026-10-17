@@ -90,7 +90,7 @@ pub async fn download_file_cancellable(
             check.update(&chunk);
             if let Some(percent) = progress.update(check.received(), total_size.unwrap_or(0)) {
                 let _ = app.emit(
-                    "download-progress",
+                    resonance_types::ipc::event::DOWNLOAD_PROGRESS,
                     ProgressPayload {
                         current_file: label.to_string(),
                         percent,
