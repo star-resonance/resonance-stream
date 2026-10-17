@@ -1,0 +1,76 @@
+name: Release checks
+
+# The release checks of a pull request into `rc` (D-25, the global release flow;
+# ported from stella-rain/core). `rc` takes changes only from `main` of this
+# repository: `the head is main` fails at once for any other head. `version is
+# new` refuses a Cargo.toml version that is already tagged or not above the last
+# stable release, and release notes that `release.yml` would refuse
+# (release_new_version_problem / release_notes_problem, tests in
+# release-lib.test.sh), so a bad candidate fails here, not at release time.
+# The gates themselves run in ci.yml, which checks every pull request.
+#
+# Kade merges such a pull request by hand (auto-merge only acts on claude/* heads
+# into main); the merge builds a candidate exe (release-candidate.yml), and after
+# his Windows test he starts release.yml on `rc` by hand.
+#
+# The ruleset on `rc` should require both checks of this file: a skipped job
+# counts as passed, so `the head is main` must be required on its own too.
+on:
+  pull_request:
+    branches: [rc]
+
+permissions: {}
+
+concurrency:
+  group: release-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  head-is-main:
+    name: the head is main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Only main, from this repository, may be merged into rc
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ] || [ "$HEAD_REF" != main ]; then
+            echo "::error::rc takes pull requests from main of this repository only (D-25); a fix goes to main first."
+            exit 1
+          fi
+
+  version-is-new:
+    name: version is new
+    needs: head-is-main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The workspace version is a new release, with release notes
+        run: |
+          set -euo pipefail
+          bash .github/scripts/release-lib.test.sh
+          source .github/scripts/release-lib.sh
+          source .github/scripts/rc-lib.sh
+          version=$(rc_version < Cargo.toml)
+          if ! problem=$(git tag --list 'v*' | release_new_version_problem "$version"); then
+            echo "::error::$problem"
+            exit 1
+          fi
+          notes="release-notes/v$version.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::$notes (한국어 릴리스 노트)가 없습니다. release-notes/TEMPLATE.md를 복사해 main에 먼저 올리세요."
+            exit 1
+          fi
+          if ! problem=$(release_notes_problem 12 < "$notes"); then
+            echo "::error::$notes: $problem"
+            exit 1
+          fi
+          echo "This release candidate becomes v$version." >> "$GITHUB_STEP_SUMMARY"
