@@ -93,7 +93,6 @@ src-tauri/src/       5,530 lines  Tauri 2 app: sockets, translator server, downl
 runbook/             8,501 lines  Python: 11 bridge pipelines, notebooks, stand-in app
 .github/workflows/   9 files      gate, audit, mutation, smoke, release
 .memory/, MEMORY.md               working memory (17 session notes, 9 roadmaps, 4 active-issue files)
-graft/                            generated code cards (gitignored)
 ```
 
 ### 2.2 Data flow and layers
@@ -428,6 +427,7 @@ Below, the recommendations per feature (module) with the finding IDs they come f
 | A-2.4 | Close the six gaps the mutation run showed (`TranslationCache` eviction order, `is_empty`, `Dictionary` accessors) | PR #202 | the cache's eviction is pinned by tests | Small |
 | A-2.5 | Shorten the preprocessing lock scope | P-6 | less waiting on the capture path | Small |
 | A-2.6 | (proposal) A **golden set of real sentences** with dictionary terms, emotes and number units, as input and expected masking, 20 to 50 lines | concept | the effect of preprocessing or dictionary changes shows as a diff | Small |
+| A-2.7 | **Short dictionary keys** (N-4): `Dictionary` shields a key wherever its characters stand, inside longer words too, because Japanese has no word boundary to match on, so a boundary rule is not possible. Instead `crates/core/tests/repo_dictionary.rs` pins the keys of one character (`〆 凸 ＠`) and of two (25, each with its reason), so a new short key has to be added there on purpose | N-4 | a short key cannot slip in and hit ordinary words unseen | Small |
 
 ### A-3 Chat storage and history (`core/history`, `io/archive`, `events.rs`)
 
@@ -622,6 +622,23 @@ Refactoring stages (S4 to S6) **do not change behaviour** (the wire format is th
 - UI click automation (`tauri-driver` / WebDriver): Kade's decision (2026-10-06); `ui-preview` is the UI check.
 
 ---
+
+### 8.5 Second pass after the refactor (2026-10-08)
+
+Measured on `main` after #283 (the refactoring report's script): 36,969 Rust lines, 15.0% Windows-only, 772 tests. The layering
+(`types <- core <- llama <- src-tauri`, the ui on `types` only) holds and is kept. What is left is at the edges between the parts:
+
+| # | Finding (confirmed in code) | Change | Effort |
+|---|---|---|---|
+| E-1 | `metadata.json` read-modify-written from five places with no lock (`config.json` has `config_lock`) | `modify_metadata` under `AppState::metadata_lock` (S8a, done) | Small |
+| E-2 | 15 process statics hold lifetimes: three answers to "is the sniffer alive" (`SnifferHandle.alive`, `IS_SNIFFER_ACTIVE`, `service_states`), the translator split between `Services` and `WORKER_GENERATION` / `SERVER_PID`, update state in five statics | owners in `AppState` (S8b, done: 10 statics; the other 5 stay on purpose, see the roadmap) | Medium |
+| E-3 | the ui <-> backend contract is strings: about 66 `invoke("...")` sites (41 names), 26 hand-built `json!` argument objects, event names in three places | `crates/types::ipc` (S8c) | Medium |
+| E-4 | the bridge is a second, hand-kept command surface: 17 of its 25 commands call Tauri commands, some through `block_on` | one service layer both call (S8d) | Medium |
+| E-5 | the sniffer dispatch and the translation job live in the Windows-only app; `crates/llama/tests/support/harness.rs` is a hand copy ("keep it in step") | core behind a `Sink` trait (S8e) | Medium |
+
+Considered and not chosen: `tauri-specta` bindings (a heavier dependency for what E-3's module does by hand), an actor / tokio rewrite of the
+services (E-2 reaches one owner with less churn), several processes or another ui framework (no problem calls for them), splitting the big
+views first (worth doing, but cosmetic next to E-1..E-5). Moving the bridge / `test_env` out of core stays "not doing" (8.4).
 
 ## 9. Decisions made
 

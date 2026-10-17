@@ -3,19 +3,11 @@
 
 use crate::ui_types::UpdateCheckResult;
 
-/// What the wizard asks the backend to download.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetupDownloads {
-    pub model_url: String,
-    pub model_version: String,
-    pub model_hash: String,
-    pub dict_version: String,
-}
-
-/// The downloads the check announced, or why the wizard cannot start them. A refused publication
+/// Whether the wizard can start the model download, or why not. The backend takes the model's address
+/// and hash from the verified metadata itself; this only says the check found them. A refused publication
 /// (`metadata_error`: the model's address and hash could not be trusted) is said as that, not as the
 /// empty hash it leaves behind.
-pub fn plan_downloads(check: &UpdateCheckResult) -> Result<SetupDownloads, String> {
+pub fn plan_downloads(check: &UpdateCheckResult) -> Result<(), String> {
     if let Some(reason) = &check.metadata_error {
         return Err(format!(
             "모델 정보의 서명을 확인하지 못해 설치를 시작하지 않았습니다. ({reason})"
@@ -28,12 +20,7 @@ pub fn plan_downloads(check: &UpdateCheckResult) -> Result<SetupDownloads, Strin
                 .to_string(),
         );
     }
-    Ok(SetupDownloads {
-        model_url: model.download_url.clone(),
-        model_version: model.latest_version.clone(),
-        model_hash: model.sha256.clone(),
-        dict_version: check.remote_data.dictionary.version.clone(),
-    })
+    Ok(())
 }
 
 /// The text for a check that could not be made at all (`reason` is what the backend said).
@@ -60,16 +47,9 @@ mod tests {
             "dictionary":{"version":"1.0.6","updated_at":"2026-03-08","sha256":"cd34"}}}"#;
 
     #[test]
-    fn a_good_check_gives_the_model_and_the_dictionary_version() {
-        assert_eq!(
-            plan_downloads(&checked(GOOD)),
-            Ok(SetupDownloads {
-                model_url: "https://example.com/m.gguf".into(),
-                model_version: "1.1.0".into(),
-                model_hash: "ab12".into(),
-                dict_version: "1.0.6".into(),
-            })
-        );
+    fn a_good_check_lets_the_wizard_start_the_download() {
+        // Only a go: the backend takes the model's address and hash from the verified metadata itself (N-5).
+        assert_eq!(plan_downloads(&checked(GOOD)), Ok(()));
     }
 
     #[test]

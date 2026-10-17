@@ -65,6 +65,7 @@ pub fn run() {
             app.manage(AppState {
                 config: RwLock::new(config.clone()),
                 config_lock: Mutex::new(()),
+                metadata_lock: Mutex::new(()),
                 chat_history: Mutex::new(ChatHistory::new(
                     resonance_core::history::ChannelLimits::new(&config.tab_limits),
                 )),
@@ -76,6 +77,7 @@ pub fn run() {
                 translation_ledger: Mutex::new(Default::default()),
                 data_factory_tx: Mutex::new(None),
                 service_states: Mutex::new(Default::default()),
+                updates: Default::default(),
                 shortcuts: Mutex::new(shortcut::GlobalShortcuts {
                     tab_modifier: config.tab_switch_modifier,
                     tab_key: config.tab_switch_key.clone(),
@@ -180,6 +182,7 @@ pub fn run() {
             restart_to_apply_update,
             sync_dictionary,
             get_dict_version,
+            get_dictionary_status,
             get_local_dictionary,
             save_local_dictionary,
             clear_chat_history,

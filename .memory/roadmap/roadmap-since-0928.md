@@ -137,8 +137,11 @@ Small and independent first; the ones that wait on Kade last.
   needs Lindera.dev reachable.
 - [ ] **K14. Compact-mode hover** -- never looked at; the row may re-wrap on hover. Base it on
   current `main` and screenshot with `ui-preview`.
-- [ ] **K16. Furigana misses** -- IPADIC reads 一人 as イチ ニン; CI's dictionary may differ from
-  the one the core tests ran on. Check CI's readings, add an override list if it matters.
+- [x] **K16. Furigana misses** -- done 2026-10-10 (`claude/k16-counter-readings`). The built exe read
+  一人 as いち・じん (`CR-ruby-probe`, smoke run 37613640483), and so did a core test: the dictionary is
+  embedded, the same on every OS. The cause was the single-kanji on'yomi rule (響奏), not the dictionary.
+  Now a run that starts with a numeral keeps the dictionary's readings (三人 さんにん) and 一人 / 二人 are
+  ひとり / ふたり; 一人前 stays いちにんまえ. Readings are Claude's; Kade's reference list was not used.
 - [ ] **K15. Cheat-sheet data** -- the nine classes with their trees and the season dungeons are
   in (#113-#116, as Kade gave them). Left: check the names against the official JP/KO sites, then
   clear `SOURCE_NOTE`; add fan names as Kade learns them (`Entry.ja`, after the official one);

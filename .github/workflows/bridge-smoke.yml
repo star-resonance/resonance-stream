@@ -29,8 +29,7 @@ concurrency:
   group: bridge-smoke-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -40,8 +39,12 @@ jobs:
     name: bridge smoke (Windows)
     runs-on: windows-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         if: inputs.exe-artifact == ''
         with:
@@ -53,11 +56,11 @@ jobs:
           shared-key: release-candidate
           save-if: false
           cache-bin: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: npm ci
@@ -72,7 +75,7 @@ jobs:
 
       - name: Take the exe the calling job built
         if: inputs.exe-artifact != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.exe-artifact }}
           path: target/release
@@ -145,7 +148,7 @@ jobs:
 
       - name: Keep the logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bridge-smoke-logs
           path: |

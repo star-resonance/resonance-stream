@@ -26,16 +26,28 @@ pub type Token<'a> = (&'a str, Option<&'a str>);
 pub fn spans_from_tokens<'a>(tokens: impl IntoIterator<Item = Token<'a>>) -> Vec<RubySpan> {
     let tokens: Vec<Token> = tokens.into_iter().collect();
     let mut out = Vec::new();
+    let mut counted = false;
     for (i, &(surface, reading)) in tokens.iter().enumerate() {
+        // 人, already part of the 一人 / 二人 before it.
+        if std::mem::take(&mut counted) {
+            continue;
+        }
+        if let Some(reading) = irregular_count(&tokens, i) {
+            let word = format!("{surface}{}", tokens[i + 1].0);
+            push(&mut out, RubySpan::with_reading(word, reading));
+            counted = true;
+            continue;
+        }
         let reading = reading
             .filter(|r| *r != "*")
             .map(to_hiragana)
             .filter(|r| !r.is_empty() && r.chars().all(is_hiragana_or_mark));
         // A kanji the dictionary knows only apart from its neighbours (響奏:
         // 響 ひびき, 奏 そう) is no word of Japanese: on'yomi, like a coined
-        // Sino-Japanese compound, where the table has one.
+        // Sino-Japanese compound, where the table has one. Not a count (三人):
+        // the dictionary reads the counter after a number, さんにん.
         let reading = match single_kanji(surface) {
-            Some(kanji) if in_single_kanji_run(&tokens, i) => {
+            Some(kanji) if in_single_kanji_run(&tokens, i) && !in_count(&tokens, i) => {
                 on_reading(kanji).map(str::to_string).or(reading)
             }
             _ => reading,
@@ -76,6 +88,35 @@ fn single_kanji(surface: &str) -> Option<char> {
 fn in_single_kanji_run(tokens: &[Token], i: usize) -> bool {
     let single = |j: usize| single_kanji(tokens[j].0).is_some();
     single(i) && ((i > 0 && single(i - 1)) || (i + 1 < tokens.len() && single(i + 1)))
+}
+
+/// Whether the run of single-kanji tokens around `i` starts with a numeral.
+fn in_count(tokens: &[Token], i: usize) -> bool {
+    single_kanji(tokens[run_start(tokens, i)].0).is_some_and(is_numeral)
+}
+
+/// Where the run of single-kanji tokens that holds `i` starts.
+fn run_start(tokens: &[Token], i: usize) -> usize {
+    let mut start = i;
+    while start > 0 && single_kanji(tokens[start - 1].0).is_some() {
+        start -= 1;
+    }
+    start
+}
+
+/// The reading of the token at `i` together with the 人 after it, when the
+/// two are 一人 or 二人: the dictionary has 一 and 人 apart (いち, にん), and
+/// these two counts are said as words of their own. Only at the start of the
+/// count: 十二人 is じゅうににん.
+fn irregular_count(tokens: &[Token], i: usize) -> Option<&'static str> {
+    if tokens.get(i + 1)?.0 != "人" || run_start(tokens, i) != i {
+        return None;
+    }
+    match tokens[i].0 {
+        "一" => Some("ひとり"),
+        "二" => Some("ふたり"),
+        _ => None,
+    }
 }
 
 /// A word's surface cut so the reading sits over its kanji only. When the
@@ -163,6 +204,10 @@ fn push(spans: &mut Vec<RubySpan>, span: RubySpan) {
         }
         _ => spans.push(span),
     }
+}
+
+fn is_numeral(c: char) -> bool {
+    "一二三四五六七八九十百千万".contains(c)
 }
 
 fn is_kanji(c: char) -> bool {
@@ -351,6 +396,47 @@ mod tests {
                 ("畑", Some("ハタケ"))
             ]),
             [r("泡", "ほう"), r("影", "えい"), r("畑", "はたけ")]
+        );
+    }
+
+    #[test]
+    fn a_run_that_starts_with_a_numeral_is_a_count_and_keeps_the_dictionary_readings() {
+        // 三人 is さんにん: 人 after a number is the counter にん, not じん.
+        assert_eq!(
+            spans(&[("三", Some("サン")), ("人", Some("ニン"))]),
+            [r("三", "さん"), r("人", "にん")]
+        );
+        // A numeral inside a run does not make it a count.
+        assert_eq!(
+            spans(&[("響", Some("ヒビキ")), ("一", Some("イチ"))]),
+            [r("響", "きょう"), r("一", "いち")]
+        );
+    }
+
+    #[test]
+    fn one_person_and_two_people_are_read_as_whole_words() {
+        // The dictionary gives 一 (いち) and 人 (にん) apart; nobody says いちにん.
+        assert_eq!(
+            spans(&[("一", Some("イチ")), ("人", Some("ニン"))]),
+            [r("一人", "ひとり")]
+        );
+        assert_eq!(
+            spans(&[("二", Some("ニ")), ("人", Some("ニン")), ("で", Some("デ"))]),
+            [r("二人", "ふたり"), p("で")]
+        );
+        // Only at the start of the count: 十二人 is じゅうににん.
+        assert_eq!(
+            spans(&[
+                ("十", Some("ジュウ")),
+                ("二", Some("ニ")),
+                ("人", Some("ニン"))
+            ]),
+            [r("十", "じゅう"), r("二", "に"), r("人", "にん")]
+        );
+        // 一人前 (一 + 人前) is いちにんまえ: 人前 is not the counter.
+        assert_eq!(
+            spans(&[("一", Some("イチ")), ("人前", Some("ニンマエ"))]),
+            [r("一", "いち"), r("人前", "にんまえ")]
         );
     }
 
@@ -577,6 +663,22 @@ mod tests {
                 p("の"),
                 r("力", "ちから")
             ]
+        );
+    }
+
+    #[test]
+    fn people_are_counted_the_way_they_are_said() {
+        // Roadmap K16: the built exe read 一人 as いち・じん.
+        let f = analyser();
+        assert_eq!(f.annotate("一人"), [r("一人", "ひとり")]);
+        assert_eq!(
+            f.annotate("二人で行きます"),
+            [r("二人", "ふたり"), p("で"), r("行", "い"), p("きます")]
+        );
+        assert_eq!(f.annotate("三人"), [r("三", "さん"), r("人", "にん")]);
+        assert_eq!(
+            f.annotate("一人前"),
+            [r("一", "いち"), r("人前", "にんまえ")]
         );
     }
 

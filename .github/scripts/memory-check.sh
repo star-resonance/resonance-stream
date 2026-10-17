@@ -2,10 +2,12 @@
 #
 # MEMORY.md is the first file a new session reads. It holds only what would be false the moment it goes
 # stale (what is next, what is written but not verified); everything else lives under .memory/.
-# Decision D-2 (docs/decisions.md): at most 40 lines and 6 KB.
+# Decision D-2 (docs/decisions.md): at most 40 lines and 6 KB. No line over 200 characters (refactor plan R3,
+# Kade 2026-10-08), so a single line cannot hold a whole paragraph. Characters, not bytes: perl -CSD reads UTF-8.
 
 MEMORY_MAX_LINES=40
 MEMORY_MAX_BYTES=6144
+MEMORY_MAX_LINE_CHARS=200
 
 # Succeeds, and says why on stdout, when the file breaks the limits (or cannot be read);
 # fails quietly when it is within them.
@@ -23,6 +25,13 @@ memory_index_problem() {
       "Move the detail to .memory/ (sessions/, roadmap/, active-issues/) and keep one or two lines per item here."
     return 0
   fi
+  local long
+  long=$(MAX="$MEMORY_MAX_LINE_CHARS" perl -CSD -ne 's/\r?\n\z//; if (length > $ENV{MAX}) { print "$. " . length; exit }' "$file")
+  if [ -n "$long" ]; then
+    echo "$file line ${long% *} has ${long#* } characters; a line may have at most $MEMORY_MAX_LINE_CHARS." \
+      "Keep one short line per item here and move the detail to .memory/."
+    return 0
+  fi
   return 1
 }
 
@@ -33,5 +42,5 @@ if [ "${BASH_SOURCE[0]}" == "$0" ]; then
     echo "$reason" >&2
     exit 1
   fi
-  echo "ok   $file is within the index limits ($MEMORY_MAX_LINES lines, $MEMORY_MAX_BYTES bytes)"
+  echo "ok   $file is within the index limits ($MEMORY_MAX_LINES lines, $MEMORY_MAX_BYTES bytes, $MEMORY_MAX_LINE_CHARS characters a line)"
 fi

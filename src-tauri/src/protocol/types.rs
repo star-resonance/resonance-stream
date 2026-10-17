@@ -21,6 +21,9 @@ pub struct AppState {
     pub config: RwLock<AppConfig>,
     /// Held while a config change is applied (see `save_config`).
     pub config_lock: Mutex<()>,
+    /// Held while `metadata.json` is read, changed and written (`modify_metadata`), so two
+    /// writers (a sync and a download, say) cannot lose each other's change.
+    pub metadata_lock: Mutex<()>,
     pub chat_history: Mutex<ChatHistory>,
     pub system_history: Mutex<VecDeque<SystemMessage>>,
     pub next_pid: AtomicU64,
@@ -37,6 +40,8 @@ pub struct AppState {
     /// The last state each service emitted (`get_service_states`): a UI that
     /// was not listening yet still learns it.
     pub service_states: Mutex<ServiceStates>,
+    /// The last update check's answers and the app update download (`services/downloader`).
+    pub updates: crate::services::downloader::Updates,
     /// What the global shortcuts are bound to (see `shortcut.rs`).
     pub shortcuts: Mutex<crate::shortcut::GlobalShortcuts>,
 }

@@ -6,7 +6,7 @@ pub use server_manager::*;
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use reqwest::blocking::Client;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -20,7 +20,9 @@ use resonance_core::text::{
     nicknames_in, preprocess_with_nicknames, translate_masked, TranslationCache,
     TRANSLATION_CACHE_SIZE,
 };
-use resonance_core::workers::{translation_is_stale, ServerSupervisor, SupervisorAction};
+use resonance_core::workers::{
+    translation_is_stale, ServerSupervisor, SupervisorAction, WorkerGenerations,
+};
 use resonance_llama::translate_text;
 
 pub struct TranslationJob {
@@ -37,18 +39,13 @@ impl TranslationJob {
     }
 }
 
-/// Identifies the translator worker that is current. A worker that was
-/// stopped or replaced while it was still starting up sees the number move
-/// and stays silent instead of reporting on a server that is not its own.
-static WORKER_GENERATION: AtomicU64 = AtomicU64::new(0);
-
-/// Marks every running or starting worker as superseded (call when the
-/// translator is stopped or its sender dropped).
-pub fn retire_translator_workers() {
-    WORKER_GENERATION.fetch_add(1, Ordering::SeqCst);
-}
-
-pub fn start_translator_worker(app: AppHandle, model_path: PathBuf) -> Sender<TranslationJob> {
+/// Starts a translator worker; `generations` (owned by `Services`) tells it whether it is still
+/// the current one.
+pub fn start_translator_worker(
+    app: AppHandle,
+    model_path: PathBuf,
+    generations: Arc<WorkerGenerations>,
+) -> Sender<TranslationJob> {
     let (tx, rx) = unbounded::<TranslationJob>();
     if crate::test_env::no_translator() {
         // As if the translator were off: no server, and each chat is archived
@@ -65,8 +62,8 @@ pub fn start_translator_worker(app: AppHandle, model_path: PathBuf) -> Sender<Tr
         });
         return tx;
     }
-    let generation = WORKER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    let is_current = move || WORKER_GENERATION.load(Ordering::SeqCst) == generation;
+    let generation = generations.begin();
+    let is_current = move || generations.is_current(generation);
     let config = crate::config::current_config(&app);
 
     thread::spawn(move || {
@@ -410,7 +407,7 @@ fn process_translation_job(
     // 2. HTTP Request (Blocking), unless this line was translated before;
     // 3. Postprocess
     let final_str = match translate_masked(&shield, cache, |masked| {
-        translate_text(client, &server_url(), masked)
+        translate_text(client, &server_url(app), masked)
     }) {
         Ok(text) => text,
         Err(reason) => {

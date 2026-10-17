@@ -8,12 +8,13 @@
 //! `git diff`). The snapshots record today's behaviour -- they are not a claim
 //! that every line is the best answer.
 //!
-//! Furigana is not here on purpose: its readings depend on the dictionary build
-//! (roadmap K16), so a snapshot would freeze an answer nobody has chosen.
+//! Furigana is here too: its dictionary is embedded in the binary, so the
+//! readings are the same on every OS (roadmap K16).
 
 use std::collections::HashMap;
 use std::fmt::Write;
 
+use resonance_core::furigana;
 use resonance_core::text::{
     completion_request, convert_to_romaji, normalize_emotes, postprocess_text, preprocess_text,
     translation_prompt, Dictionary, ShieldData,
@@ -223,6 +224,37 @@ fn nicknames_become_romaji() {
 /// and comes back as typed: the player's `[P0]` is not mistaken for the placeholder
 /// the shield issues for a dictionary term. Until 2026-10-07 this snapshot recorded
 /// the collision (`딜러딜러`); it changed on purpose.
+#[test]
+fn furigana_over_the_kanji_of_a_chat_line() {
+    let lines = [
+        "一人",
+        "二人で行きます",
+        "三人募集",
+        "十二人",
+        "一人前",
+        "響奏の力",
+        "巨塔M6",
+        "今日はパーティー募集します",
+        "明日22時から深淵行く人いますか",
+        "お疲れ様です、周回手伝ってください",
+        "@abc 募集 [스티커] 大人気の剣士",
+        "ありがとう!",
+        "",
+    ];
+    let mut table = String::new();
+    for line in lines {
+        let spans: String = furigana::annotate(line)
+            .iter()
+            .map(|span| match &span.reading {
+                Some(reading) => format!("{}({reading})", span.text),
+                None => span.text.clone(),
+            })
+            .collect();
+        writeln!(table, "{line:?} -> {spans:?}").unwrap();
+    }
+    insta::assert_snapshot!(table);
+}
+
 #[test]
 fn a_placeholder_typed_in_chat_keeps_its_own_text() {
     let dict = dictionary(&[("火力", "딜러")]);

@@ -117,10 +117,11 @@ pub enum Command {
     /// Replace the favorites as the favorites popup does (`save_favorites`): the favorites only, every other setting stays; the
     /// config file is written and `favorites-changed` tells every window.
     SaveFavorites { favorites: FavoritesState },
-    /// Fetch the custom dictionary and install it, as the settings view's sync does (`sync_dictionary`, `version` is what
-    /// the gist announced and is kept as the current one). With `--dictionary-url` it reads that instead of the public gist.
-    /// A failed fetch or a dictionary that does not parse is the ack's error.
-    SyncDictionary { version: String },
+    /// Fetch the custom dictionary and install it, as the settings view's sync does (`sync_dictionary`; the version kept
+    /// as the current one is the signed metadata's). With `--dictionary-url` it reads that instead of the public gist.
+    /// A failed fetch or a dictionary that does not parse is the ack's error. A `version` field, which older callers
+    /// send, is ignored.
+    SyncDictionary,
     /// Save the dictionary editor's text and install it from the translator's next job on (`save_local_dictionary`).
     /// A text that does not parse is the ack's error and nothing is saved.
     SaveLocalDictionary { content: String },
@@ -144,14 +145,10 @@ pub enum Command {
     SnapshotPopups,
     /// Pin the overlay over the game or let it go (`set_always_on_top`); the popups follow it.
     PinMain { on: bool },
-    /// Download the translation model as the setup wizard does (`download_model`), from what the UI would take out of the
-    /// gist: the url, the version and the SHA-256 the file must have (empty is allowed here -- the app must refuse it).
+    /// Download the translation model as the setup wizard does (`download_model`): the url, version and SHA-256 come
+    /// from the verified metadata, never from the caller (fields an older caller still sends are ignored).
     /// The ack only says it started; the end is a [`DOWNLOAD_RESULT_EVENT`] carrying this command's id.
-    DownloadModel {
-        url: String,
-        version: String,
-        sha256: String,
-    },
+    DownloadModel,
 }
 
 /// The word a test writes for a popup (`PopupKind`'s wire name).
@@ -252,27 +249,18 @@ pub fn parse_command(topic: &str, payload: &[u8]) -> Result<Request, CommandErro
         "clear-history" => Command::ClearHistory,
         "restart-sniffer" => Command::RestartSniffer,
         "get-favorites" => Command::GetFavorites,
-        "sync-dictionary" | "save-local-dictionary" => {
-            let (key, what) = if name == "sync-dictionary" {
-                ("version", "the dictionary version the gist announced")
-            } else {
-                ("content", "the dictionary's JSON text")
-            };
-            match args.get(key).and_then(Value::as_str) {
-                Some(text) if name == "sync-dictionary" => Command::SyncDictionary {
-                    version: text.to_string(),
-                },
-                Some(text) => Command::SaveLocalDictionary {
-                    content: text.to_string(),
-                },
-                None => {
-                    return Err(CommandError::BadArgument {
-                        id,
-                        reason: format!("{name} needs \"{key}\": {what} (a string)"),
-                    })
-                }
-            }
-        }
+        "sync-dictionary" => Command::SyncDictionary,
+        "save-local-dictionary" => match args.get("content").and_then(Value::as_str) {
+            Some(text) => Command::SaveLocalDictionary {
+                content: text.to_string(),
+            },
+            None => return Err(CommandError::BadArgument {
+                id,
+                reason:
+                    "save-local-dictionary needs \"content\": the dictionary's JSON text (a string)"
+                        .into(),
+            }),
+        },
         "annotate-furigana" => {
             let texts = args
                 .get("texts")
@@ -337,32 +325,7 @@ pub fn parse_command(topic: &str, payload: &[u8]) -> Result<Request, CommandErro
                 Command::BlockUser { uid, nickname }
             }
         }
-        "download-model" => {
-            let text = |key: &str| match args.get(key) {
-                None => Ok(None),
-                Some(Value::String(text)) => Ok(Some(text.clone())),
-                Some(_) => Err(format!("download-model's \"{key}\" must be a string")),
-            };
-            let fields = (text("url"), text("version"), text("sha256"));
-            match fields {
-                (Ok(Some(url)), Ok(version), Ok(Some(sha256))) if !url.is_empty() => {
-                    Command::DownloadModel {
-                        url,
-                        version: version.unwrap_or_else(|| "test".into()),
-                        sha256,
-                    }
-                }
-                (Err(reason), _, _) | (_, Err(reason), _) | (_, _, Err(reason)) => {
-                    return Err(CommandError::BadArgument { id, reason })
-                }
-                _ => return Err(CommandError::BadArgument {
-                    id,
-                    reason:
-                        "download-model needs a \"url\" and a \"sha256\" (a string, may be empty)"
-                            .into(),
-                }),
-            }
-        }
+        "download-model" => Command::DownloadModel,
         "snapshot-popups" => Command::SnapshotPopups,
         "pin-main" => match args.get("on").and_then(Value::as_bool) {
             Some(on) => Command::PinMain { on },
@@ -744,14 +707,23 @@ mod tests {
 
     #[test]
     fn the_dictionary_commands_parse() {
-        // What the settings view (`sync_dictionary`, with the version the gist announced) and the dictionary editor
+        // What the settings view (`sync_dictionary`, no arguments) and the dictionary editor
         // (`save_local_dictionary`, the whole JSON text) invoke.
         assert_eq!(
-            parse("sync-dictionary", r#"{"id":"s","version":"runbook-mock"}"#).map(|r| r.command),
-            Ok(Command::SyncDictionary {
-                version: "runbook-mock".into()
-            })
+            parse("sync-dictionary", r#"{"id":"s"}"#).map(|r| r.command),
+            Ok(Command::SyncDictionary)
         );
+        // An older caller that still names a version is not refused: the app syncs what the signed metadata says.
+        for payload in [
+            r#"{"id":"s","version":"runbook-mock"}"#,
+            r#"{"id":"s","version":7}"#,
+        ] {
+            assert_eq!(
+                parse("sync-dictionary", payload).map(|r| r.command),
+                Ok(Command::SyncDictionary),
+                "{payload}"
+            );
+        }
         assert_eq!(
             parse(
                 "save-local-dictionary",
@@ -772,18 +744,13 @@ mod tests {
     }
 
     #[test]
-    fn the_dictionary_commands_need_their_text() {
+    fn the_dictionary_editor_save_needs_its_text() {
         for (name, payload) in [
-            ("sync-dictionary", r#"{"id":"s"}"#),
-            ("sync-dictionary", r#"{"id":"s","version":7}"#),
             ("save-local-dictionary", r#"{"id":"d"}"#),
             ("save-local-dictionary", r#"{"id":"d","content":{"a":1}}"#),
         ] {
             let err = parse(name, payload).unwrap_err();
-            assert_eq!(
-                err.id(),
-                Some(if name == "sync-dictionary" { "s" } else { "d" })
-            );
+            assert_eq!(err.id(), Some("d"));
             assert!(
                 matches!(err, CommandError::BadArgument { .. }),
                 "{name} {payload}"
@@ -813,45 +780,21 @@ mod tests {
     }
 
     #[test]
-    fn download_model_carries_what_the_ui_hands_the_command() {
+    fn download_model_takes_nothing_from_the_caller() {
+        // The model comes from the verified metadata (N-5): the command carries no url, version or hash.
+        assert_eq!(
+            parse("download-model", r#"{"id":"d"}"#).map(|r| r.command),
+            Ok(Command::DownloadModel)
+        );
+        // A caller from before N-5 still sends them: they are ignored, not refused.
         assert_eq!(
             parse(
                 "download-model",
                 r#"{"id":"d","url":"http://127.0.0.1:9/model.gguf","version":"m2","sha256":"ab"}"#
             )
             .map(|r| r.command),
-            Ok(Command::DownloadModel {
-                url: "http://127.0.0.1:9/model.gguf".into(),
-                version: "m2".into(),
-                sha256: "ab".into()
-            })
+            Ok(Command::DownloadModel)
         );
-        // An empty hash is a case worth sending (the app refuses it), but the key must be there; the version may be left out.
-        assert_eq!(
-            parse(
-                "download-model",
-                r#"{"id":"d","url":"http://x/y","sha256":""}"#
-            )
-            .map(|r| r.command),
-            Ok(Command::DownloadModel {
-                url: "http://x/y".into(),
-                version: "test".into(),
-                sha256: String::new()
-            })
-        );
-        for payload in [
-            r#"{"id":"d","sha256":"ab"}"#,
-            r#"{"id":"d","url":"","sha256":"ab"}"#,
-            r#"{"id":"d","url":"http://x/y"}"#,
-            r#"{"id":"d","url":"http://x/y","sha256":7}"#,
-            r#"{"id":"d","url":"http://x/y","sha256":"ab","version":3}"#,
-        ] {
-            let err = parse("download-model", payload).unwrap_err();
-            assert!(
-                matches!(&err, CommandError::BadArgument { id, .. } if id == "d"),
-                "{payload}: {err:?}"
-            );
-        }
     }
 
     #[test]

@@ -726,4 +726,122 @@ mod tests {
         assert!(left(&elbow).is_some());
         assert_eq!(left(&elbow), left(&stem));
     }
+    // --- the cheat sheet and the dictionary name the same things (roadmap N-3) ----------------------
+    // Two hand-maintained copies of one set of names. They drifted once (ten class trees, one spelling);
+    // this keeps them from drifting silently again: every Japanese name here is in the dictionary with
+    // the same Korean, or is listed below with the reason it is not.
+
+    const DICTIONARY: &str = include_str!("../metadata/custom_dict.json");
+
+    /// Korean as compared: a label's "(nickname)" and the spaces do not count.
+    fn plain(korean: &str) -> String {
+        let mut out = String::new();
+        let mut depth = 0;
+        for c in korean.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' if depth > 0 => depth -= 1,
+                c if depth == 0 && !c.is_whitespace() => out.push(c),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Every Japanese key of the dictionary, with each Korean it has, across all categories.
+    fn dictionary() -> std::collections::BTreeMap<String, Vec<String>> {
+        let root: serde_json::Value =
+            serde_json::from_str(DICTIONARY).expect("the dictionary parses");
+        let mut all = std::collections::BTreeMap::<String, Vec<String>>::new();
+        for terms in root.as_object().expect("categories").values() {
+            for (ja, ko) in terms.as_object().expect("terms") {
+                all.entry(ja.clone())
+                    .or_default()
+                    .push(ko.as_str().expect("text").to_string());
+            }
+        }
+        all
+    }
+
+    /// Cheat-sheet names the dictionary does not match, each with why. A class tree is also looked up with
+    /// the `型` the dictionary writes after it (`雷刃` / `雷刃型`). Empty a line when it is settled: the test
+    /// fails while a name is listed here and no longer needs to be.
+    const KNOWN_DISAGREEMENTS: &[(&str, &str)] = &[
+        // Short forms that would mean something else, or hit ordinary words, as dictionary terms.
+        (
+            "ティナ",
+            "already the NPC (티나); the cheat sheet uses it for the 침식 티나 dungeon",
+        ),
+        (
+            "巨塔",
+            "the dictionary's 거탑 is the tower; the cheat sheet's 침식 거탑 is one dungeon of it",
+        ),
+        (
+            "墓",
+            "one character: it would be replaced inside ordinary words",
+        ),
+        (
+            "始",
+            "one character: it would be replaced inside ordinary words (始める)",
+        ),
+        (
+            "継",
+            "one character: it would be replaced inside ordinary words",
+        ),
+        (
+            "終",
+            "one character: it would be replaced inside ordinary words (終わり)",
+        ),
+        // Not a season 3 name; nobody decided to add it.
+        (
+            "開拓",
+            "always-available dungeon, two characters of an ordinary word: not added",
+        ),
+    ];
+
+    /// Japanese names of the cheat sheet that the dictionary does not carry with the same Korean.
+    fn disagreements() -> std::collections::BTreeSet<String> {
+        let words = dictionary();
+        let mut out = std::collections::BTreeSet::new();
+        let entries = all().flat_map(|e| std::iter::once(e).chain(e.children.iter().copied()));
+        for e in entries {
+            for ja in e.ja {
+                let matches = |key: &str| {
+                    words
+                        .get(key)
+                        .is_some_and(|korean| korean.iter().any(|k| plain(k) == plain(e.ko)))
+                };
+                if !(matches(ja) || matches(&format!("{ja}型"))) {
+                    out.insert((*ja).to_string());
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_cheat_sheet_and_the_dictionary_name_things_alike_except_where_listed() {
+        let known: std::collections::BTreeSet<String> = KNOWN_DISAGREEMENTS
+            .iter()
+            .map(|(ja, _)| (*ja).to_string())
+            .collect();
+        let found = disagreements();
+        let new: Vec<_> = found.difference(&known).collect();
+        let settled: Vec<_> = known.difference(&found).collect();
+        assert!(
+            new.is_empty(),
+            "in the cheat sheet, not (or differently) in the dictionary: {new:?}"
+        );
+        assert!(
+            settled.is_empty(),
+            "listed as disagreeing but they agree now; remove them: {settled:?}"
+        );
+    }
+
+    #[test]
+    fn every_listed_disagreement_says_why() {
+        for (ja, why) in KNOWN_DISAGREEMENTS {
+            assert!(why.chars().count() >= 12, "{ja}: give the reason");
+        }
+    }
 }

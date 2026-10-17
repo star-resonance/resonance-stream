@@ -4,6 +4,7 @@ pub mod cheatsheet;
 pub mod components;
 pub mod config_signals;
 pub mod dictionary_edit;
+pub mod dictionary_status;
 pub mod download_progress;
 pub mod favorites;
 pub mod favorites_sync;

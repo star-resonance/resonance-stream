@@ -42,7 +42,7 @@ def run(exe, tmp_path):
 
 
 CHECKS = ("CR-dedupe", "CR-history", "CR-block", "CR-block-later", "CR-unblock", "CR-clear",
-          "CR-ruby-answer", "CR-ruby-join", "CR-ruby-plain", "CR-ruby-reading", "CR-ruby-probe")
+          "CR-ruby-answer", "CR-ruby-join", "CR-ruby-plain", "CR-ruby-reading")
 
 
 def test_a_backend_that_follows_the_rules_passes_every_row(env, tmp_path):

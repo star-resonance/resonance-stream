@@ -151,11 +151,7 @@ pub async fn hydrate_from_backend(signals: AppSignals) {
                                         "Updater",
                                         "New dictionary found. Applying silently...",
                                     );
-                                    let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                                            "version": update_data.remote_data.dictionary.version.clone()
-                                        }))
-                                        .unwrap();
-                                    let _ = invoke("sync_dictionary", args).await;
+                                    let _ = invoke("sync_dictionary", JsValue::NULL).await;
                                 }
 
                                 set_dict_update_available.set(update_data.dict_update_available);

@@ -51,15 +51,14 @@ pub async fn check_model_status(app: tauri::AppHandle) -> Result<FolderStatus, S
 }
 
 #[tauri::command]
-pub async fn download_model(
-    app: AppHandle,
-    download_url: String,
-    version: String,
-    expected_hash: String, // from the gist, via the UI
-) -> Result<(), String> {
-    if expected_hash.trim().is_empty() {
-        return Err("No SHA-256 published for this model; refusing to download it".into());
-    }
+pub async fn download_model(app: AppHandle) -> Result<(), String> {
+    // The url, version and hash come from the signed metadata, checked now -- never from the caller.
+    let verified = super::gist::verified_metadata_fresh(&app).await?;
+    let resonance_core::signed_metadata::ModelSource {
+        url: download_url,
+        version,
+        sha256: expected_hash,
+    } = resonance_core::signed_metadata::model_source(&verified)?;
     let model_dir = get_model_dir(&app)?;
     fs::create_dir_all(&model_dir).map_err(|e| e.to_string())?;
     let dest_path = model_dir.join(MODEL_FILENAME);
@@ -77,7 +76,7 @@ pub async fn download_model(
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
-        if local_hash.eq_ignore_ascii_case(expected_hash.trim()) {
+        if local_hash.eq_ignore_ascii_case(&expected_hash) {
             inject_system_message(
                 &app,
                 SystemLogLevel::Success,
@@ -92,9 +91,10 @@ pub async fn download_model(
                     total_percent: 100,
                 },
             );
-            let mut metadata = crate::config::load_metadata(&app);
-            metadata.current_model_version = version;
-            crate::config::save_metadata(&app, &metadata);
+            crate::config::modify_metadata(&app, |metadata| {
+                metadata.current_model_version = version;
+                true
+            });
             return Ok(());
         }
         inject_system_message(
@@ -120,7 +120,7 @@ pub async fn download_model(
         &download_url,
         &staged,
         "AI 모델 다운로드 중...",
-        Some(expected_hash.trim()),
+        Some(&expected_hash),
     )
     .await?;
 
@@ -169,9 +169,10 @@ pub async fn download_model(
     );
 
     // 3. Commit the new version to metadata so the update checker knows we have it
-    let mut metadata = crate::config::load_metadata(&app);
-    metadata.current_model_version = version;
-    crate::config::save_metadata(&app, &metadata);
+    crate::config::modify_metadata(&app, |metadata| {
+        metadata.current_model_version = version;
+        true
+    });
 
     Ok(())
 }

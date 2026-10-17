@@ -233,7 +233,7 @@ pub fn ModelUpdateModal() -> impl IntoView {
     } = signals.updates;
 
     // --- MODEL UPDATE LOGIC ---
-    let start_model_update = move |download_url: String, version: String, expected_hash: String| {
+    let start_model_update = move || {
         set_model_update_step.set(1);
         set_model_update_progress.set(0);
 
@@ -256,13 +256,8 @@ pub fn ModelUpdateModal() -> impl IntoView {
             listen("download-progress", &progress_closure).await;
             progress_closure.forget(); // Keep alive during download
 
-            let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                "downloadUrl": download_url,
-                "version": version,
-                "expectedHash": expected_hash
-            }))
-            .unwrap();
-            let _ = invoke("download_model", args).await;
+            // The backend takes the model's address and hash from the verified metadata.
+            let _ = invoke("download_model", JsValue::NULL).await;
         });
     };
 
@@ -303,15 +298,7 @@ pub fn ModelUpdateModal() -> impl IntoView {
                                                 "건너뛰기"
                                             </button>
                                             <button class="btn btn-info"
-                                                on:click={
-                                                    // CLONE DATA BEFORE THE CLOSURE
-                                                    let url = data.model.download_url.clone();
-                                                    let version = data.model.latest_version.clone();
-                                                    let hash = data.model.sha256.clone();
-                                                    move |_| {
-                                                        start_model_update(url.clone(), version.clone(), hash.clone());
-                                                    }
-                                                }>
+                                                on:click=move |_| start_model_update()>
                                                 "다운로드 시작 (약 2.4GB)"
                                             </button>
                                         </div>
