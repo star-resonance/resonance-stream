@@ -39,7 +39,7 @@ the app owns the file and the real defaults, the ui re-exports the same type).
 ## Repository Layout (top level; per file: `.claude/rules/{core,ui,app}.md`)
 
 ```
-.claude/              rules/ (path-scoped), skills/: release, ui-preview, workflow-control
+.claude/              rules/ (path-scoped), skills/: ui-preview
 .memory/              working memory; see .memory/README.md
 .github/ justfile     CI (gates per OS; release, rc, metadata workflows); the gates as commands
 crates/               core, llama, types — pure logic, tested on any OS
@@ -75,8 +75,9 @@ style/ public/        CSS source; static assets
   Workflow merges use `GITHUB_TOKEN` (no `push` run on `main`); the PR's own run is the gate.
 - Dependabot (`.github/dependabot.yml`) opens `dependabot/*` PRs weekly; they never auto-merge:
   Kade merges them.
-- **Test branches, release candidates, stable releases:** the `release` skill; the rules for release
-  files (never publish by hand, release notes) are in `.claude/rules/release.md`.
+- **Releases** follow the global `release-flow` skill (main -> rc -> a Release run Kade starts on
+  `rc`, D-30); this repository's release files: `.claude/rules/release.md`. A `test/<job>` branch
+  is a throw-away experiment for Kade's Windows PC: never merged into `main` (`test-branch-guard.yml`).
 - **Never commit:** build output (`target/`, `dist/`, `style/output.css`, `*.exe`);
   `node_modules/`, IDE folders; an unformatted tree.
 

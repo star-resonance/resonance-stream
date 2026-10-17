@@ -1,11 +1,13 @@
 name: Release candidate
 
-# A merge into `rc` builds the app and publishes it as a GitHub *prerelease*
-# for testing on Windows: one plain exe (no installer) + SHA256SUMS.txt,
-# tagged v<workspace version>-rc.<feature>[.<n>], where <feature> is the
-# merged branch's name without its prefix (candidate/main-ui -> main-ui) and
-# .<n> counts repeat builds of the same feature. The CI gates must pass before anything is published.
-# No real-app smoke test runs here: it is slow and starts only from a pushed release tag (release.yml).
+# A merge into `rc` -- a pull request from main (D-30, release-checks.yml) --
+# builds the app and publishes it as a GitHub *prerelease* for Kade's test on
+# Windows before he starts release.yml on rc: one plain exe (no installer) +
+# SHA256SUMS.txt, tagged v<workspace version>-rc.<feature>[.<n>], where
+# <feature> is the merged branch's name without its prefix (main -> main) and
+# .<n> counts repeat builds. The notes list what the merge brings into rc.
+# The CI gates must pass before anything is published.
+# No real-app smoke test runs here: it is slow and starts only from the stable release run (release.yml).
 # Only the newest 5 candidate releases (and their tags) are kept.
 #
 # Prereleases never become "Latest", and the app does not read GitHub
@@ -192,7 +194,6 @@ jobs:
           mv artifact/resonance-stream.exe "$exe"
           sha256sum "$exe" > SHA256SUMS.txt
           sum=$(cut -d' ' -f1 SHA256SUMS.txt)
-          git fetch -q origin main
           # Backticks in the printf formats are markdown, not substitutions.
           # shellcheck disable=SC2016
           {
@@ -213,10 +214,11 @@ jobs:
               jq -r '.body // ""' pr.json
               printf '\n\n'
             fi
-            printf '## main 대비 포함된 변경\n'
-            git log --no-merges --format='- %s (`%h`)' origin/main.."$SHA" | rc_changes
+            # What this merge brings into rc: main's commits not yet in the previous candidate.
+            printf '## 이번 머지로 rc에 들어온 변경\n'
+            git log --no-merges --format='- %s (`%h`)' "$SHA^1..$SHA" | rc_changes
             printf '\n'
-            unverified=$(git log --no-merges --format=%B origin/main.."$SHA" | rc_unverified)
+            unverified=$(git log --no-merges --format=%B "$SHA^1..$SHA" | rc_unverified)
             if [ -n "$unverified" ]; then
               printf '## Windows에서 확인할 것\n'
               printf 'CI와 Linux 세션에서 확인하지 못한 항목입니다 (커밋의 NOT VERIFIED).\n\n'

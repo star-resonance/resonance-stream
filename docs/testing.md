@@ -119,7 +119,7 @@ A pull request does not run the smoke test (Kade's rule, 2026-10-06): a bridge o
 |---|---|---|
 | The stand-in app does not model the real client's limits | the 10 KiB MQTT packet limit was invisible in every dry run (found by the real run, PR #203) | A-7.7: move known real limits into the stand-in |
 | A failing smoke step hides every later step | one red row hid five pipelines in the last run | decision D-3, stage S0b: `if: always()`, while a release still needs all steps green |
-| Smoke runs only from a tag or by hand | a bridge change is not proven on the real app before it merges | accepted (Kade); read the result after a manual dispatch |
+| Smoke runs only from the release run (by hand on `rc`) or by its own manual dispatch | a bridge change is not proven on the real app before it merges | accepted (Kade); read the result after a manual dispatch |
 | The real-app rows `CP-fav-*`, `CR-ruby-*` (the 一人 reading, K16), `TS-dict-*`, popups and download have not been read since they were built | their real-app result is unknown | S0c |
 | Mutation testing covers `text.rs` only | the rest of core has no measure of test strength | A-7.4: rotate files |
 | The app's 21 unit tests run only on Windows | a Linux session cannot run them | Windows CI |

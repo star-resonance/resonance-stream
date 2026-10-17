@@ -8,7 +8,13 @@ paths:
 
 # Release rules
 
-The procedure (test branches, release candidates, stable releases) is the `release` skill (`.claude/skills/release/SKILL.md`).
+The release flow is the global `release-flow` skill (D-30). Its steps here:
+`release-checks.yml` checks the PR from `main` into `rc`; `release-candidate.yml` builds the
+candidate exe (prerelease `v<version>-rc.main`); `release.yml`, Kade's manual run on `rc`,
+runs the real-app smoke test (the only place it runs, D-6), signs the exe with the
+`TAURI_SIGNING_PRIVATE_KEY` secret, tags and publishes. The app installs an update only if a
+key in `TRUSTED_UPDATE_KEYS` (`crates/core/src/update_signature.rs`) signed it for that
+version; the private keys are never committed, the backup key stays offline.
 
 **Never publish a stable release by hand.** Every installed app reads
 `releases/latest/download/latest.json`; a hand-made release (no `latest.json`, another

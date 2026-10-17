@@ -52,11 +52,11 @@ toml=$'[package]\nversion = "9.9.9"\n\n[workspace.package]\nversion = "0.6.0"\n\
 eq "workspace version" "0.6.0" "$(rc_version <<<"$toml")"
 eq "the repo's own"    "$(sed -n 's/^version = "\(.*\)"/\1/p' ../../Cargo.toml | head -1)" "$(rc_version < ../../Cargo.toml)"
 
-# --- rc_changes: the "changes vs main" list, never an empty section ---
+# --- rc_changes: the list of what this merge brings into rc, never an empty section ---
 # shellcheck disable=SC2016 # backticks are markdown, not substitutions
 eq "commits listed"   $'- a (`1`)\n- b (`2`)' "$(printf -- '- a (`1`)\n- b (`2`)\n' | rc_changes)"
-eq "nothing -> (없음)" "- (없음 -- main과 같은 빌드)" "$(printf '' | rc_changes)"
-eq "blank lines only -> (없음)" "- (없음 -- main과 같은 빌드)" "$(printf '\n\n' | rc_changes)"
+eq "nothing -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '' | rc_changes)"
+eq "blank lines only -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '\n\n' | rc_changes)"
 
 # --- rc_rank: which merge the dispatch dropdown picked (1 = the latest) ---
 eq "rank from a choice"       "1" "$(rc_rank '1 — 가장 최근 머지')"
@@ -81,7 +81,7 @@ eq "past the end says so" "rc에 4번째 머지가 없습니다 (3개뿐)" "$(rc
 workflows=../workflows
 eq "candidate builds with test-env" "1" "$(grep -c 'tauri-apps/cli@2 build .*--features test-env' "$workflows/release-candidate.yml")"
 eq "stable release never mentions test-env" "0" "$(grep -c 'test-env' "$workflows/release.yml")"
-# The real-app smoke test is slow and starts only from a pushed release tag: no pull request, no push to a branch, no candidate.
+# The real-app smoke test is slow and starts only from the stable release run (release.yml, by hand on rc): no pull request, no push to a branch, no candidate.
 eq "candidate does not run the smoke test" "0" "$(cat "$workflows/release-candidate.yml" ../scripts/rc-lib.sh | grep -c 'bridge-smoke\.yml\|needs\.smoke\|rc_smoke_note')"
 eq "smoke test has no pull_request trigger" "0" "$(grep -c '^  pull_request' "$workflows/bridge-smoke.yml")"
 eq "smoke test has no push trigger" "0" "$(grep -c '^  push' "$workflows/bridge-smoke.yml")"

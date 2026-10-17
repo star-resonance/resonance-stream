@@ -13,6 +13,27 @@ release_version() {
   fi
 }
 
+# May <version> (Cargo.toml's) become a new release? The repository's tags are on
+# stdin, one per line; only stable tags (vX.Y.Z) count. Prints the reason and
+# returns 1 when the version is not X.Y.Z, is already tagged, or is not above the
+# last release; prints nothing and returns 0 when it is new.
+release_new_version_problem() {
+  local version=$1 tag last
+  if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf '버전 %s는 X.Y.Z 형식이 아닙니다\n' "$version"
+    return 1
+  fi
+  last=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+  if [ "$last" = "$version" ]; then
+    printf 'v%s는 이미 릴리스되었습니다. Cargo.toml의 버전을 올리세요\n' "$version"
+    return 1
+  fi
+  if [ -n "$last" ] && [ "$(printf '%s\n%s\n' "$last" "$version" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" != "$version" ]; then
+    printf '%s는 마지막 릴리스 v%s보다 높지 않습니다\n' "$version" "$last"
+    return 1
+  fi
+}
+
 # The exe's file name on the release. The app fetches its signature from the
 # same URL plus ".sig", so the two assets are always <name> and <name>.sig.
 release_asset() {
@@ -141,8 +162,14 @@ release_page_body() {
 }
 
 # The nearest earlier stable release tag (vX.Y.Z only: no -rc, -beta, -test
-# suffix), where <tag>'s commit list starts; empty when there is none. Run in
-# the repository, with its tags fetched.
+# suffix), where the commit list of <commit> starts; empty when there is none.
+# A commit that carries a stable tag itself looks from its parent; an untagged
+# one (the rc merge release.yml is about to tag) looks from itself, so a release
+# on main's side of the merge counts. Run in the repository, with its tags fetched.
 release_previous_stable_tag() {
-  git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "$1^" 2>/dev/null || true
+  local from=$1
+  if git tag --points-at "$1" --list 'v*' | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+    from="$1^"
+  fi
+  git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "$from" 2>/dev/null || true
 }

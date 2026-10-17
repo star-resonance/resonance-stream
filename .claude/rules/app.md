@@ -19,7 +19,7 @@ paths:
 
 - **Remote metadata:** a public gist (`downloader/gist.rs`) carries model/dictionary
   versions and the custom dictionary; the app's own update comes from the newest stable
-  release's `latest.json` (see the `release` skill, *Stable releases*), checked against signing keys built into
+  release's `latest.json` (see `.claude/rules/release.md`), checked against signing keys built into
   the app. The gist's `app` entry is ignored by the app and kept only for copies that
   predate the signed updater (the 0.6.0 bridge release). Public URLs, not secrets.
 
