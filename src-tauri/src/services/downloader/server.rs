@@ -71,7 +71,7 @@ async fn stage_ai_server(app: &AppHandle, staging: &std::path::Path) -> Result<(
 
     // 2. Extract the ZIP file
     let _ = app.emit(
-        "download-progress",
+        resonance_types::ipc::event::DOWNLOAD_PROGRESS,
         ProgressPayload {
             current_file: "압축 해제 중...".to_string(),
             percent: 100,

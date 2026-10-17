@@ -83,7 +83,7 @@ pub fn apply_global_shortcuts(app: &AppHandle) {
                 let registered = global.on_shortcut(shortcut, |app_handle, _shortcut, event| {
                     if event.state == ShortcutState::Pressed {
                         // When the global shortcut is pressed, tell the frontend to switch tabs!
-                        let _ = app_handle.emit("global-tab-switch", ());
+                        let _ = app_handle.emit(resonance_types::ipc::event::GLOBAL_TAB_SWITCH, ());
                     }
                 });
                 match registered {

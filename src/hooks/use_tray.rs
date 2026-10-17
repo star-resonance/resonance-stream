@@ -2,10 +2,11 @@
 
 use crate::config_signals::ConfigSignals;
 use crate::store::{AppActions, AppSignals};
-use crate::tauri_bridge::{invoke, listen};
+use crate::tauri_bridge::{call, listen};
 use crate::view_signals::UiSignals;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use resonance_types::ipc::{event, SetAlwaysOnTop, SetClickThrough, UpdateTrayMenu};
 use wasm_bindgen::prelude::*;
 
 /// Listens for the tray's click-through and always-on-top menu items.
@@ -29,16 +30,11 @@ pub fn setup_tray_listeners(signals: AppSignals, actions: AppActions) {
             actions.save_config.dispatch(());
 
             spawn_local(async move {
-                let _ = invoke(
-                    "set_click_through",
-                    serde_wasm_bindgen::to_value(&serde_json::json!({ "enabled": !current }))
-                        .unwrap(),
-                )
-                .await;
+                let _ = call(&SetClickThrough { enabled: !current }).await;
             });
         }) as Box<dyn FnMut(JsValue)>);
 
-        let _ = listen("tray-toggle-click-through", &tray_closure).await;
+        let _ = listen(event::TRAY_TOGGLE_CLICK_THROUGH, &tray_closure).await;
         tray_closure.forget();
 
         // 2. Always on Top Listener (NEW)
@@ -48,14 +44,11 @@ pub fn setup_tray_listeners(signals: AppSignals, actions: AppActions) {
             actions.save_config.dispatch(()); // Save to config file
 
             spawn_local(async move {
-                // Tauri command expects { "onTop": bool }
-                let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "onTop": !current }))
-                    .unwrap();
-                let _ = invoke("set_always_on_top", args).await;
+                let _ = call(&SetAlwaysOnTop { on_top: !current }).await;
             });
         }) as Box<dyn FnMut(JsValue)>);
 
-        let _ = listen("tray-toggle-always-on-top", &tray_top_closure).await;
+        let _ = listen(event::TRAY_TOGGLE_ALWAYS_ON_TOP, &tray_top_closure).await;
         tray_top_closure.forget();
     });
 }
@@ -74,13 +67,11 @@ pub fn sync_tray_menu(signals: AppSignals) {
         let aot = is_pinned.get();
 
         spawn_local(async move {
-            let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                "clickThrough": ct,
-                "alwaysOnTop": aot
-            }))
-            .unwrap();
-
-            let _ = invoke("update_tray_menu", args).await;
+            let _ = call(&UpdateTrayMenu {
+                click_through: ct,
+                always_on_top: aot,
+            })
+            .await;
         });
     });
 }

@@ -78,7 +78,7 @@ async fn download_announced(app: &AppHandle, download_url: String) -> Result<(),
 
     // Explicit 100% signal
     let _ = app.emit(
-        "download-progress",
+        resonance_types::ipc::event::DOWNLOAD_PROGRESS,
         ProgressPayload {
             current_file: "앱 업데이트 완료".to_string(),
             percent: 100,

@@ -67,7 +67,7 @@ pub fn inject_system_message<S: Into<String>>(
             sys_hist.push_back(system_message.clone());
         }
 
-        let _ = app.emit("system-event", &system_message);
+        let _ = app.emit(resonance_types::ipc::event::SYSTEM_EVENT, &system_message);
     }
 }
 
@@ -80,6 +80,6 @@ pub fn store_and_emit(app: &tauri::AppHandle, packet: ChatMessage) {
         state.chat_history.lock().push(packet.clone());
 
         // Emit "packet-event" for Game Chat
-        let _ = app.emit("packet-event", &packet);
+        let _ = app.emit(resonance_types::ipc::event::PACKET_EVENT, &packet);
     }
 }

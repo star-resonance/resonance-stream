@@ -43,11 +43,11 @@ pub fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| {
             match event.id.as_ref() {
                 "toggle_always_on_top" => {
-                    let _ = app.emit("tray-toggle-always-on-top", ());
+                    let _ = app.emit(resonance_types::ipc::event::TRAY_TOGGLE_ALWAYS_ON_TOP, ());
                 }
                 "toggle_click_through" => {
                     // Tell the frontend to flip the toggle and update the window
-                    let _ = app.emit("tray-toggle-click-through", ());
+                    let _ = app.emit(resonance_types::ipc::event::TRAY_TOGGLE_CLICK_THROUGH, ());
                 }
                 "show" => {
                     if let Some(window) = app.get_webview_window("main") {

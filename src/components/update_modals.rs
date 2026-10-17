@@ -3,17 +3,15 @@
 use crate::download_progress::{bar_label, bar_value, is_cancelled, RELEASES_URL};
 use crate::status_signals::UpdateSignals;
 use crate::store::AppSignals;
-use crate::tauri_bridge::{invoke, listen};
+use crate::tauri_bridge::{call, listen};
 use crate::ui_types::ProgressPayload;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use resonance_types::ipc::{
+    event, CancelAppUpdate, DownloadAppUpdate, DownloadModel, IgnoreUpdate, OpenBrowser,
+    RestartToApplyUpdate,
+};
 use wasm_bindgen::prelude::*;
-
-/// What the backend said went wrong: Tauri rejects a command with its error
-/// string.
-fn error_text(error: &JsValue) -> String {
-    error.as_string().unwrap_or_else(|| format!("{:?}", error))
-}
 
 /// App update: release notes, skip, download with progress, restart to apply;
 /// a failed download or signature check ends in an error step (3) with a retry.
@@ -55,16 +53,12 @@ pub fn AppUpdateModal() -> impl IntoView {
                 }
             }) as Box<dyn FnMut(JsValue)>);
 
-            listen("download-progress", &progress_closure).await;
+            listen(event::DOWNLOAD_PROGRESS, &progress_closure).await;
             progress_closure.forget(); // Keep alive during download
 
-            let args =
-                serde_wasm_bindgen::to_value(&serde_json::json!({ "downloadUrl": download_url }))
-                    .unwrap();
-            match invoke("download_app_update", args).await {
-                Ok(_) => set_app_update_step.set(2),
-                Err(e) => {
-                    let reason = error_text(&e);
+            match call(&DownloadAppUpdate { download_url }).await {
+                Ok(()) => set_app_update_step.set(2),
+                Err(reason) => {
                     // A cancel already put the dialog back to step 0.
                     if !is_cancelled(&reason) {
                         set_app_update_error.set(reason);
@@ -100,11 +94,7 @@ pub fn AppUpdateModal() -> impl IntoView {
                                                     move |_| {
                                                         let v = version.clone();
                                                         spawn_local(async move {
-                                                            let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                                                                "target": "app",
-                                                                "version": v
-                                                            })).unwrap();
-                                                            let _ = invoke("ignore_update", args).await;
+                                                            let _ = call(&IgnoreUpdate { target: "app".to_string(), version: v }).await;
                                                         });
                                                         set_show_app_update_modal.set(false);
                                                     }
@@ -136,7 +126,7 @@ pub fn AppUpdateModal() -> impl IntoView {
                                                 on:click=move |_| {
                                                     spawn_local(async move {
                                                         // Returns once the download has let go of its file.
-                                                        let _ = invoke("cancel_app_update", JsValue::NULL).await;
+                                                        let _ = call(&CancelAppUpdate {}).await;
                                                         set_app_update_progress.set(0);
                                                         set_app_update_step.set(0);
                                                     });
@@ -157,8 +147,8 @@ pub fn AppUpdateModal() -> impl IntoView {
                                                 set_status_text.set("재시작 중...".to_string());
                                                 spawn_local(async move {
                                                     // On success the app exits and nothing comes back.
-                                                    if let Err(e) = invoke("restart_to_apply_update", JsValue::NULL).await {
-                                                        set_app_update_error.set(error_text(&e));
+                                                    if let Err(why) = call(&RestartToApplyUpdate {}).await {
+                                                        set_app_update_error.set(why);
                                                         set_app_update_step.set(3);
                                                     }
                                                 });
@@ -189,8 +179,7 @@ pub fn AppUpdateModal() -> impl IntoView {
                                             <button class="btn btn-outline"
                                                 on:click=move |_| {
                                                     spawn_local(async move {
-                                                        let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "url": RELEASES_URL })).unwrap();
-                                                        let _ = invoke("open_browser", args).await;
+                                                        let _ = call(&OpenBrowser { url: RELEASES_URL.to_string() }).await;
                                                     });
                                                 }>
                                                 "직접 다운로드"
@@ -253,11 +242,11 @@ pub fn ModelUpdateModal() -> impl IntoView {
                 }
             }) as Box<dyn FnMut(JsValue)>);
 
-            listen("download-progress", &progress_closure).await;
+            listen(event::DOWNLOAD_PROGRESS, &progress_closure).await;
             progress_closure.forget(); // Keep alive during download
 
             // The backend takes the model's address and hash from the verified metadata.
-            let _ = invoke("download_model", JsValue::NULL).await;
+            let _ = call(&DownloadModel {}).await;
         });
     };
 
@@ -286,11 +275,7 @@ pub fn ModelUpdateModal() -> impl IntoView {
                                                     move |_| {
                                                         let v = version.clone();
                                                         spawn_local(async move {
-                                                            let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                                                                "target": "model",
-                                                                "version": v
-                                                            })).unwrap();
-                                                            let _ = invoke("ignore_update", args).await;
+                                                            let _ = call(&IgnoreUpdate { target: "model".to_string(), version: v }).await;
                                                         });
                                                         set_show_model_update_modal.set(false);
                                                     }

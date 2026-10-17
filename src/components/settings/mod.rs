@@ -14,17 +14,13 @@ use self::translation::TranslationSection;
 use crate::dictionary_status::sync_outcome;
 use crate::settings_nav::SettingsCategory;
 use crate::store::AppSignals;
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use crate::ui_types::{NetworkInterface, WindowRect};
 use leptos::prelude::*;
 use leptos::reactive::spawn_local;
-use wasm_bindgen::JsValue;
-
-#[cfg(target_arch = "wasm32")] // only the wasm click handler builds it
-#[derive(serde::Serialize)]
-struct OpenBrowserArgs {
-    url: String,
-}
+use resonance_types::ipc::{
+    ExportChatLog, GetNetworkInterfaces, GrowWindow, RestoreWindow, SyncDictionary,
+};
 
 /// The smallest window (logical px) the settings view opens in; a smaller
 /// window grows to it while settings is open and shrinks back on close.
@@ -69,15 +65,11 @@ pub fn Settings() -> impl IntoView {
     Effect::new(move |_| {
         if signals.ui.show_settings.get() {
             spawn_local(async move {
-                let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                    "minWidth": SETTINGS_MIN_WIDTH,
-                    "minHeight": SETTINGS_MIN_HEIGHT,
-                }))
-                .unwrap();
-                let Ok(res) = invoke("grow_window", args).await else {
-                    return;
-                };
-                let Ok(Some(rect)) = serde_wasm_bindgen::from_value::<Option<WindowRect>>(res)
+                let Ok(Some(rect)) = call(&GrowWindow {
+                    min_width: SETTINGS_MIN_WIDTH,
+                    min_height: SETTINGS_MIN_HEIGHT,
+                })
+                .await
                 else {
                     return;
                 };
@@ -89,10 +81,8 @@ pub fn Settings() -> impl IntoView {
                 }
             });
             spawn_local(async move {
-                if let Ok(res) = invoke("get_network_interfaces", JsValue::NULL).await {
-                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<NetworkInterface>>(res) {
-                        set_interfaces.set(list);
-                    }
+                if let Ok(list) = call(&GetNetworkInterfaces {}).await {
+                    set_interfaces.set(list);
                 }
             });
         } else {
@@ -105,12 +95,8 @@ pub fn Settings() -> impl IntoView {
     });
 
     let sync_dict_action = Action::new_local(|_: &()| async move {
-        let reason = |e: JsValue| e.as_string().unwrap_or_else(|| format!("{e:?}"));
         // The backend syncs what the signed metadata names; a refused publication is its error.
-        let result = invoke("sync_dictionary", JsValue::NULL)
-            .await
-            .map(|_| ())
-            .map_err(reason);
+        let result = call(&SyncDictionary {}).await.map(|_| ());
         sync_outcome(result)
     });
     let save_chat_action = Action::new_local(move |_: &()| {
@@ -125,10 +111,11 @@ pub fn Settings() -> impl IntoView {
 
         // 2. Send them to Tauri
         async move {
-            let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "logs": logs_to_export }))
-                .unwrap();
-
-            match invoke("export_chat_log", args).await {
+            match call(&ExportChatLog {
+                logs: logs_to_export,
+            })
+            .await
+            {
                 Ok(_) => "저장 완료".to_string(),
                 Err(_) => "저장 실패".to_string(),
             }
@@ -177,13 +164,9 @@ pub fn Settings() -> impl IntoView {
                                     // Call the Rust backend to open the browser
                                     #[cfg(target_arch = "wasm32")]
                                     spawn_local(async move {
-                                        let args = serde_wasm_bindgen::to_value(&OpenBrowserArgs {
+                                        let _ = call(&resonance_types::ipc::OpenBrowser {
                                             url: "https://github.com/enjay27/resonance-stream".to_string(),
-                                        }).unwrap();
-
-                                        // Adjust this `invoke` call to match whatever binding
-                                        // you use for your other Tauri commands!
-                                        let _ = invoke("open_browser", args).await;
+                                        }).await;
                                     });
                                 }
                                 class="btn btn-ghost btn-xs w-full gap-2 text-base-content/50 hover:text-success transition-all lowercase italic"
@@ -236,7 +219,6 @@ pub fn Settings() -> impl IntoView {
 /// Puts the window back to the rect `grow_window` returned.
 fn restore_window(rect: WindowRect) {
     spawn_local(async move {
-        let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "rect": rect })).unwrap();
-        let _ = invoke("restore_window", args).await;
+        let _ = call(&RestoreWindow { rect }).await;
     });
 }

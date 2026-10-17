@@ -1,9 +1,9 @@
 use crate::store::AppSignals;
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use resonance_types::ipc::{GetDictVersion, GetLocalDictionary, SaveLocalDictionary};
 use std::collections::BTreeMap;
-use wasm_bindgen::JsValue;
 
 #[component]
 pub fn DictionaryModal() -> impl IntoView {
@@ -33,34 +33,30 @@ pub fn DictionaryModal() -> impl IntoView {
     Effect::new(move |_| {
         if signals.ui.show_dictionary.get() {
             spawn_local(async move {
-                if let Ok(v) = invoke("get_dict_version", JsValue::NULL).await {
-                    if let Some(v_str) = v.as_string() {
-                        set_version.set(v_str);
-                    }
+                if let Ok(v_str) = call(&GetDictVersion {}).await {
+                    set_version.set(v_str);
                 }
 
-                if let Ok(json_val) = invoke("get_local_dictionary", JsValue::NULL).await {
-                    if let Some(json_str) = json_val.as_string() {
-                        let parsed: serde_json::Value =
-                            serde_json::from_str(&json_str).unwrap_or(serde_json::json!({}));
+                if let Ok(json_str) = call(&GetLocalDictionary {}).await {
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&json_str).unwrap_or(serde_json::json!({}));
 
-                        let mut new_dict = BTreeMap::new();
+                    let mut new_dict = BTreeMap::new();
 
-                        if let Some(obj) = parsed.as_object() {
-                            for (cat, items) in obj {
-                                let mut cat_map = BTreeMap::new();
-                                if let Some(items_obj) = items.as_object() {
-                                    for (k, val) in items_obj {
-                                        if let Some(val_str) = val.as_str() {
-                                            cat_map.insert(k.clone(), val_str.to_string());
-                                        }
+                    if let Some(obj) = parsed.as_object() {
+                        for (cat, items) in obj {
+                            let mut cat_map = BTreeMap::new();
+                            if let Some(items_obj) = items.as_object() {
+                                for (k, val) in items_obj {
+                                    if let Some(val_str) = val.as_str() {
+                                        cat_map.insert(k.clone(), val_str.to_string());
                                     }
                                 }
-                                new_dict.insert(cat.clone(), cat_map);
                             }
+                            new_dict.insert(cat.clone(), cat_map);
                         }
-                        set_dict.set(new_dict);
                     }
+                    set_dict.set(new_dict);
                 }
             });
         }
@@ -72,13 +68,12 @@ pub fn DictionaryModal() -> impl IntoView {
         let json_payload = serde_json::to_string_pretty(&current_dict).unwrap();
 
         spawn_local(async move {
-            let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                "content": json_payload
-            }))
-            .unwrap();
             // The backend swaps the dictionary in place: the next translation
             // uses it, no restart needed.
-            let _ = invoke("save_local_dictionary", args).await;
+            let _ = call(&SaveLocalDictionary {
+                content: json_payload,
+            })
+            .await;
 
             signals.ui.set_show_dictionary.set(false);
         });

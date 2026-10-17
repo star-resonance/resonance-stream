@@ -5,11 +5,14 @@ use crate::hooks::use_events::setup_event_listeners;
 use crate::setup_plan::{check_failed_message, plan_downloads};
 use crate::status_signals::{ServiceSignals, SetupSignals};
 use crate::store::AppSignals;
-use crate::tauri_bridge::{invoke, listen};
+use crate::tauri_bridge::{call, listen};
 use crate::ui_types::{SystemLogLevel, TauriEvent};
 use crate::utils::add_system_log;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use resonance_types::ipc::{
+    event, CheckAllUpdates, DownloadAiServer, DownloadModel, StartSniffer, SyncDictionary,
+};
 use wasm_bindgen::prelude::*;
 
 /// Marks setup done, saves config, and starts the event listeners and sniffer.
@@ -40,7 +43,7 @@ pub fn finalize_setup(
             );
             setup_event_listeners(signals).await;
             set_is_sniffer_active.set(true);
-            let _ = invoke("start_sniffer_command", JsValue::NULL).await;
+            let _ = call(&StartSniffer {}).await;
         });
     }
 }
@@ -70,9 +73,6 @@ pub fn start_download(
         set_setup_error.set(Some(message.clone()));
         add_system_log(SystemLogLevel::Error, "ModelManager", &message);
     };
-    // What the backend said, as text (`invoke` gives a string for a command's `Err(String)`).
-    let reason = |e: JsValue| e.as_string().unwrap_or_else(|| format!("{e:?}"));
-
     move |ev: web_sys::MouseEvent| {
         // Prevent the default button behavior if necessary
         ev.prevent_default();
@@ -83,25 +83,13 @@ pub fn start_download(
 
         spawn_local(async move {
             // FETCH THE SIGNED METADATA FIRST
-            let update_res = invoke("check_all_updates", JsValue::NULL).await;
-            let check = match update_res {
-                Ok(res) => {
-                    match serde_wasm_bindgen::from_value::<crate::ui_types::UpdateCheckResult>(res)
-                    {
-                        Ok(check) => check,
-                        Err(_) => {
-                            stop(
-                                "Error: Failed to parse update data".to_string(),
-                                "업데이트 정보를 읽지 못했습니다.".to_string(),
-                            );
-                            return;
-                        }
-                    }
-                }
-                Err(e) => {
+            // A reply that does not decode is a failed check too; its error names the command.
+            let check = match call(&CheckAllUpdates {}).await {
+                Ok(check) => check,
+                Err(why) => {
                     stop(
                         "Error: Network check failed".to_string(),
-                        check_failed_message(&reason(e)),
+                        check_failed_message(&why),
                     );
                     return;
                 }
@@ -123,12 +111,11 @@ pub fn start_download(
                     ));
                 }
             }) as Box<dyn FnMut(JsValue)>);
-            let _ = listen("download-progress", &closure).await;
+            let _ = listen(event::DOWNLOAD_PROGRESS, &closure).await;
 
             // 2. Download the AI Model (.gguf): the backend takes its address and hash from the
             // verified metadata.
-            if let Err(e) = invoke("download_model", JsValue::NULL).await {
-                let why = reason(e);
+            if let Err(why) = call(&DownloadModel {}).await {
                 stop(
                     format!("Model Error: {why}"),
                     format!("모델 다운로드에 실패했습니다. ({why})"),
@@ -138,8 +125,7 @@ pub fn start_download(
             }
 
             // 3. Download the AI Server (llama-server.exe via zip)
-            if let Err(e) = invoke("download_ai_server", JsValue::NULL).await {
-                let why = reason(e);
+            if let Err(why) = call(&DownloadAiServer {}).await {
                 stop(
                     format!("Server Error: {why}"),
                     format!("AI 서버 다운로드에 실패했습니다. ({why})"),
@@ -149,8 +135,7 @@ pub fn start_download(
             }
 
             // 4. Sync dictionary
-            if let Err(e) = invoke("sync_dictionary", JsValue::NULL).await {
-                let why = reason(e);
+            if let Err(why) = call(&SyncDictionary {}).await {
                 stop(
                     format!("Dict Error: {why}"),
                     format!("사용자 사전 동기화에 실패했습니다. ({why})"),

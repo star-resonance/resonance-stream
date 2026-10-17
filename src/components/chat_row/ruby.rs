@@ -2,11 +2,11 @@
 //! line with its readings and the emphasis keywords.
 
 use crate::ruby_view::{mark, RubyBatch, RubyCache, RUBY_BATCH_MAX};
-use crate::tauri_bridge::invoke;
 use crate::ui_types::RubySpan;
 use leptos::prelude::*;
 use leptos::reactive::spawn_local;
 use leptos::{view, IntoView};
+use resonance_types::ipc::AnnotateFurigana;
 use std::cell::RefCell;
 use std::time::Duration;
 
@@ -38,12 +38,11 @@ fn flush_ruby() {
     let calls = RUBY_BATCH.with(|batch| batch.borrow_mut().drain(RUBY_BATCH_MAX));
     for call in calls {
         spawn_local(async move {
-            let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "texts": call.lines() }))
-                .unwrap();
-            let Ok(answer) = invoke("annotate_furigana", args).await else {
-                return;
-            };
-            let Ok(lines) = serde_wasm_bindgen::from_value::<Vec<Vec<RubySpan>>>(answer) else {
+            let Ok(lines) = crate::tauri_bridge::call(&AnnotateFurigana {
+                texts: call.lines().to_vec(),
+            })
+            .await
+            else {
                 return;
             };
             for (line, spans, rows) in call.answer(lines) {

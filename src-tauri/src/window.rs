@@ -83,7 +83,7 @@ fn show_popup(app: &AppHandle, kind: PopupKind) -> Result<(), String> {
         let _ = window.restore_state(StateFlags::SIZE | StateFlags::POSITION);
     }
     // A popup kept hidden has an old copy of the settings: let its page refresh.
-    let _ = app.emit_to(kind.label(), "popup-shown", ());
+    let _ = app.emit_to(kind.label(), resonance_types::ipc::event::POPUP_SHOWN, ());
     window.set_focus().map_err(|e| e.to_string())
 }
 

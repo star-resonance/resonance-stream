@@ -1,9 +1,9 @@
 use crate::store::AppSignals;
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use crate::ui_types::ComputeMode;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen::prelude::*;
+use resonance_types::ipc::EnsureFirewallRule;
 
 #[component]
 pub fn SetupWizard(
@@ -78,7 +78,7 @@ pub fn SetupWizard(
 
                                             // 2. Call the backend to trigger the UAC prompt
                                             spawn_local(async move {
-                                                match invoke("ensure_firewall_rule_command", JsValue::NULL).await {
+                                                match call(&EnsureFirewallRule {}).await {
                                                     Ok(_) => {
                                                         // 3a. User clicked YES! Move to the next step.
                                                         signals.setup.set_wizard_step.set(1);

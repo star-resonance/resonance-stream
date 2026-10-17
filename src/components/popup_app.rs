@@ -7,11 +7,12 @@ use crate::favorites_sync;
 use crate::popup_view::escape_closes_popup;
 use crate::readability::{WINDOW_BUTTON, WINDOW_BUTTON_CLOSE};
 use crate::store::AppSignals;
-use crate::tauri_bridge::{invoke, listen};
-use crate::ui_types::{AppConfig, Theme};
+use crate::tauri_bridge::{call, listen};
+use crate::ui_types::Theme;
 use leptos::ev::keydown;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use resonance_types::ipc::{event, CloseWindow, LoadConfig, MinimizeWindow};
 use resonance_types::PopupKind;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsValue;
@@ -30,11 +31,9 @@ fn apply_theme(theme: Theme) {
 /// tab-switch keys. Only the favorites are ever saved from here
 /// (`favorites_sync::save`), never the whole config.
 async fn load_settings(signals: AppSignals) {
-    if let Ok(config) = invoke("load_config", JsValue::NULL).await {
-        if let Ok(config) = serde_wasm_bindgen::from_value::<AppConfig>(config) {
-            apply_theme(config.theme);
-            signals.config.apply(config);
-        }
+    if let Ok(config) = call(&LoadConfig {}).await {
+        apply_theme(config.theme);
+        signals.config.apply(config);
     }
 }
 
@@ -51,11 +50,11 @@ fn PopupTitleBar(title: &'static str) -> impl IntoView {
             </div>
             <div class="flex h-8 ml-2 no-drag">
                 <button class=WINDOW_BUTTON title="최소화"
-                    on:click=move |_| { spawn_local(async { let _ = invoke("minimize_window", JsValue::NULL).await; }); }>
+                    on:click=move |_| { spawn_local(async { let _ = call(&MinimizeWindow {}).await; }); }>
                     {icon(icons::MINUS, "size-3.5")}
                 </button>
                 <button class=WINDOW_BUTTON_CLOSE title="닫기"
-                    on:click=move |_| { spawn_local(async { let _ = invoke("close_window", JsValue::NULL).await; }); }>
+                    on:click=move |_| { spawn_local(async { let _ = call(&CloseWindow {}).await; }); }>
                     {icon(icons::CLOSE, "size-3.5")}
                 </button>
             </div>
@@ -75,7 +74,7 @@ pub fn PopupApp(kind: PopupKind) -> impl IntoView {
         let shown = Closure::wrap(Box::new(move |_: JsValue| {
             spawn_local(load_settings(signals));
         }) as Box<dyn FnMut(JsValue)>);
-        listen("popup-shown", &shown).await;
+        listen(event::POPUP_SHOWN, &shown).await;
         shown.forget();
     });
 
@@ -100,7 +99,7 @@ pub fn PopupApp(kind: PopupKind) -> impl IntoView {
         if escape_closes_popup(&ev.key(), ev.is_composing(), ev.default_prevented()) {
             ev.prevent_default();
             spawn_local(async {
-                let _ = invoke("close_window", JsValue::NULL).await;
+                let _ = call(&CloseWindow {}).await;
             });
         }
     });
