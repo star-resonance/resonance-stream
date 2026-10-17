@@ -4,13 +4,14 @@ use crate::readability::{
     nav_bar_bg, tab_label_class, WINDOW_BUTTON, WINDOW_BUTTON_ACTIVE, WINDOW_BUTTON_CLOSE,
 };
 use crate::store::{AppActions, AppSignals};
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use crate::ui_types::{default_tab_limit, Channel, SystemLogLevel};
 use crate::utils::add_system_log;
 use leptos::ev::{click, keydown};
 use leptos::html::{Button, Div, Input};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use resonance_types::ipc::{event, CloseWindow, OpenPopup, SetAlwaysOnTop};
 use resonance_types::PopupKind;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsValue;
@@ -57,9 +58,8 @@ pub fn NavBar() -> impl IntoView {
     // Both open in a window of their own (`open_popup`).
     let open_popup = |kind: PopupKind| {
         spawn_local(async move {
-            let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "kind": kind })).unwrap();
-            if let Err(e) = invoke("open_popup", args).await {
-                add_system_log(SystemLogLevel::Error, "Popup", &format!("{:?}", e));
+            if let Err(e) = call(&OpenPopup { kind }).await {
+                add_system_log(SystemLogLevel::Error, "Popup", &e);
             }
         });
     };
@@ -69,9 +69,7 @@ pub fn NavBar() -> impl IntoView {
         let new_state = !signals.config.always_on_top.get();
         signals.config.set_always_on_top.set(new_state);
         spawn_local(async move {
-            let args =
-                serde_wasm_bindgen::to_value(&serde_json::json!({"onTop": new_state})).unwrap();
-            let _ = invoke("set_always_on_top", args).await;
+            let _ = call(&SetAlwaysOnTop { on_top: new_state }).await;
         });
         actions.save_config.dispatch(());
     };
@@ -133,7 +131,7 @@ pub fn NavBar() -> impl IntoView {
                 actions.save_config.dispatch(());
             }) as Box<dyn FnMut(JsValue)>);
 
-            let _ = crate::tauri_bridge::listen("global-tab-switch", &closure).await;
+            let _ = crate::tauri_bridge::listen(event::GLOBAL_TAB_SWITCH, &closure).await;
             closure.forget();
         });
     });
@@ -410,7 +408,7 @@ pub fn NavBar() -> impl IntoView {
                         {icon(icons::EXPAND, "size-4")}
                     </NavButton>
                     <button class=WINDOW_BUTTON_CLOSE title="닫기"
-                        on:click=move |_| { spawn_local(async { let _ = invoke("close_window", JsValue::NULL).await; }); }>
+                        on:click=move |_| { spawn_local(async { let _ = call(&CloseWindow {}).await; }); }>
                         {icon(icons::CLOSE, "size-4")}
                     </button>
                 </Show>

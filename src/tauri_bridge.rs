@@ -5,11 +5,10 @@ use wasm_bindgen::JsValue;
 
 #[wasm_bindgen]
 extern "C" {
+    // Private: a command is called through `call` and its `resonance_types::ipc` struct, never by
+    // a name typed at the call site.
     #[wasm_bindgen(catch, js_namespace = ["window", "__TAURI__", "core"], js_name = invoke)]
-    pub async fn invoke(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
-
-    #[wasm_bindgen(catch, js_namespace = ["window", "__TAURI__", "core"], js_name = invoke)]
-    pub async fn invoke_string(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
+    async fn invoke(cmd: &str, args: JsValue) -> Result<JsValue, JsValue>;
 
     #[wasm_bindgen(js_namespace = ["window", "__TAURI__", "event"], js_name = listen)]
     pub async fn listen(event: &str, handler: &Closure<dyn FnMut(JsValue)>) -> JsValue;

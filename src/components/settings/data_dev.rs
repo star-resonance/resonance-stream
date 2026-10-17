@@ -1,10 +1,10 @@
 use crate::dictionary_status::{status_line, SyncOutcome};
 use crate::store::{AppActions, AppSignals};
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use crate::ui_types::{DictionaryStatus, LogLevel, NetworkInterface};
 use leptos::prelude::*;
 use leptos::reactive::spawn_local;
-use wasm_bindgen::JsValue;
+use resonance_types::ipc::{GetDictionaryStatus, OpenAppDataFolder, OpenCapturesFolder};
 
 /// Dictionary sync/edit, chat export, app-data folder, debug options.
 /// The actions and the interface list are owned by `Settings` so their state
@@ -28,10 +28,8 @@ pub fn DataDevSection(
         sync_result.track();
         signals.ui.show_dictionary.track();
         spawn_local(async move {
-            if let Ok(value) = invoke("get_dictionary_status", JsValue::NULL).await {
-                if let Ok(status) = serde_wasm_bindgen::from_value::<DictionaryStatus>(value) {
-                    set_dictionary_status.set(Some(status));
-                }
+            if let Ok(status) = call(&GetDictionaryStatus {}).await {
+                set_dictionary_status.set(Some(status));
             }
         });
     });
@@ -179,7 +177,7 @@ pub fn DataDevSection(
                     <button class="btn btn-xs btn-outline"
                         on:click=move |_| {
                             spawn_local(async {
-                                let _ = invoke("open_app_data_folder", JsValue::NULL).await;
+                                let _ = call(&OpenAppDataFolder {}).await;
                             });
                         }
                     >
@@ -236,7 +234,7 @@ pub fn DataDevSection(
                                 <button class="btn btn-xs btn-outline"
                                     on:click=move |_| {
                                         spawn_local(async {
-                                            let _ = invoke("open_captures_folder", JsValue::NULL).await;
+                                            let _ = call(&OpenCapturesFolder {}).await;
                                         });
                                     }
                                 >

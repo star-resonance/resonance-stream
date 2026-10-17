@@ -1,13 +1,13 @@
 use crate::store::{AppActions, AppSignals};
-use crate::tauri_bridge::invoke;
-use crate::ui_types::{NetworkInterface, SnifferState};
+use crate::tauri_bridge::call;
+use crate::ui_types::SnifferState;
 use leptos::context::use_context;
 use leptos::control_flow::Show;
 use leptos::prelude::{signal, ClassAttribute, Get, IntoAny, OnAttribute, Set};
 use leptos::prelude::{ElementChild, GetUntracked};
 use leptos::task::spawn_local;
 use leptos::*;
-use wasm_bindgen::JsValue;
+use resonance_types::ipc::{EnsureFirewallRule, GetNetworkInterfaces, RestartSniffer};
 use wasm_bindgen_futures::JsFuture;
 
 // Helper to pause the async loop without blocking the UI
@@ -45,36 +45,33 @@ pub fn Troubleshooter() -> impl IntoView {
             set_status.set(ScanStatus::Scanning);
             set_progress.set(0.0);
 
-            if let Ok(res) = invoke("get_network_interfaces", JsValue::NULL).await {
-                if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<NetworkInterface>>(res) {
-                    for (i, iface) in list.iter().enumerate() {
-                        set_current_test.set(format!("{} ({})", iface.name, iface.ip));
-                        set_progress.set((i as f64 / list.len() as f64) * 100.0);
+            if let Ok(list) = call(&GetNetworkInterfaces {}).await {
+                for (i, iface) in list.iter().enumerate() {
+                    set_current_test.set(format!("{} ({})", iface.name, iface.ip));
+                    set_progress.set((i as f64 / list.len() as f64) * 100.0);
 
-                        // 1. Temporarily save this adapter to config
-                        signals.config.set_network_interface.set(iface.ip.clone());
-                        actions.save_config.dispatch(());
+                    // 1. Temporarily save this adapter to config
+                    signals.config.set_network_interface.set(iface.ip.clone());
+                    actions.save_config.dispatch(());
 
-                        // 2. Restart the backend sniffer!
-                        let _ = invoke("restart_sniffer_command", JsValue::NULL).await;
+                    // 2. Restart the backend sniffer!
+                    let _ = call(&RestartSniffer {}).await;
 
-                        // 3. Reset elapsed time
-                        let mut elapsed = 0;
-                        let timeout_ticks = 50; // 5 seconds
+                    // 3. Reset elapsed time
+                    let mut elapsed = 0;
+                    let timeout_ticks = 50; // 5 seconds
 
-                        while elapsed < timeout_ticks {
-                            delay(100).await;
+                    while elapsed < timeout_ticks {
+                        delay(100).await;
 
-                            // WOW! We just check if the state flipped to Active!
-                            // As long as the game is running, background packets will trigger this instantly!
-                            if signals.service.sniffer_state.get_untracked() == SnifferState::Active
-                            {
-                                set_status.set(ScanStatus::Success);
-                                set_progress.set(100.0);
-                                return; // We found the working adapter!
-                            }
-                            elapsed += 1;
+                        // WOW! We just check if the state flipped to Active!
+                        // As long as the game is running, background packets will trigger this instantly!
+                        if signals.service.sniffer_state.get_untracked() == SnifferState::Active {
+                            set_status.set(ScanStatus::Success);
+                            set_progress.set(100.0);
+                            return; // We found the working adapter!
                         }
+                        elapsed += 1;
                     }
                 }
             }
@@ -84,19 +81,16 @@ pub fn Troubleshooter() -> impl IntoView {
             set_progress.set(100.0);
             signals.config.set_network_interface.set("".to_string()); // Reset to auto
             actions.save_config.dispatch(());
-            let _ = invoke("restart_sniffer_command", JsValue::NULL).await; // Restart in auto mode
+            let _ = call(&RestartSniffer {}).await; // Restart in auto mode
         });
     };
 
     let fix_firewall = move |_| {
         spawn_local(async move {
             // 1. Call the backend to trigger the UAC prompt and overwrite the rule
-            if invoke("ensure_firewall_rule_command", JsValue::NULL)
-                .await
-                .is_ok()
-            {
+            if call(&EnsureFirewallRule {}).await.is_ok() {
                 // 2. If the user clicked "Yes" on the Admin prompt, restart the sniffer!
-                let _ = invoke("restart_sniffer_command", JsValue::NULL).await;
+                let _ = call(&RestartSniffer {}).await;
 
                 // 3. Close the troubleshooter so they can see the main UI reconnecting
                 signals.ui.set_show_troubleshooter.set(false);

@@ -3,7 +3,7 @@ use crate::components::icons::{self, icon};
 use crate::readability::{title_bar_bg, WINDOW_BUTTON, WINDOW_BUTTON_CLOSE};
 use crate::status_view::{sniffer_status, translator_status};
 use crate::store::{AppActions, AppSignals};
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use crate::translation_view::{chevron_class, effective, hint, label, pill_class};
 use crate::ui_types::{SnifferState, TranslationView, TranslatorState};
 use leptos::ev::mousedown;
@@ -11,7 +11,7 @@ use leptos::html::Div;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos::IntoView;
-use wasm_bindgen::JsValue;
+use resonance_types::ipc::{CloseWindow, MinimizeWindow};
 use web_sys::Node;
 
 const PILL: &str =
@@ -131,7 +131,7 @@ pub fn TitleBar() -> impl IntoView {
             // --- Window controls ---
             <div class="flex h-8 ml-2 no-drag">
                 <button class=WINDOW_BUTTON title="최소화"
-                    on:click=move |_| { spawn_local(async { let _ = invoke("minimize_window", JsValue::NULL).await; }); }>
+                    on:click=move |_| { spawn_local(async { let _ = call(&MinimizeWindow {}).await; }); }>
                     {icon(icons::MINUS, "size-3.5")}
                 </button>
                 // Compact mode sits next to close: easy to hit.
@@ -148,7 +148,7 @@ pub fn TitleBar() -> impl IntoView {
                     </button>
                 </Show>
                 <button class=WINDOW_BUTTON_CLOSE title="닫기"
-                    on:click=move |_| { spawn_local(async { let _ = invoke("close_window", JsValue::NULL).await; }); }>
+                    on:click=move |_| { spawn_local(async { let _ = call(&CloseWindow {}).await; }); }>
                     {icon(icons::CLOSE, "size-3.5")}
                 </button>
             </div>

@@ -1,9 +1,9 @@
 use crate::store::{AppActions, AppSignals};
-use crate::tauri_bridge::invoke;
-use crate::ui_types::{ComputeMode, FolderStatus, Tier};
+use crate::tauri_bridge::call;
+use crate::ui_types::{ComputeMode, Tier};
 use leptos::prelude::*;
 use leptos::reactive::spawn_local;
-use wasm_bindgen::JsValue;
+use resonance_types::ipc::{CheckAiServerStatus, CheckModelStatus};
 
 /// AI translation on/off, compute mode and VRAM tier.
 #[component]
@@ -34,16 +34,14 @@ pub fn TranslationSection() -> impl IntoView {
                                     let mut has_error = false;
 
                                     // 2. Check Model Status
-                                    if let Ok(st) = invoke("check_model_status", JsValue::NULL).await {
-                                        if let Ok(status) = serde_wasm_bindgen::from_value::<FolderStatus>(st) {
-                                            if !status.exists {
-                                                has_error = true;
-                                                if let Some(w) = web_sys::window() {
-                                                    if w.confirm_with_message("AI 모델 파일이 없습니다. 다운로드 화면으로 이동하시겠습니까?").unwrap_or(false) {
-                                                        signals.setup.set_wizard_step.set(2);
-                                                        signals.ui.set_show_settings.set(false);
-                                                        signals.config.set_init_done.set(false);
-                                                    }
+                                    if let Ok(status) = call(&CheckModelStatus {}).await {
+                                        if !status.exists {
+                                            has_error = true;
+                                            if let Some(w) = web_sys::window() {
+                                                if w.confirm_with_message("AI 모델 파일이 없습니다. 다운로드 화면으로 이동하시겠습니까?").unwrap_or(false) {
+                                                    signals.setup.set_wizard_step.set(2);
+                                                    signals.ui.set_show_settings.set(false);
+                                                    signals.config.set_init_done.set(false);
                                                 }
                                             }
                                         }
@@ -51,16 +49,14 @@ pub fn TranslationSection() -> impl IntoView {
 
                                     // 3. Check Server Status (Only if model check passed, preventing double popups!)
                                     if !has_error {
-                                        if let Ok(st) = invoke("check_ai_server_status", JsValue::NULL).await {
-                                            if let Ok(status) = serde_wasm_bindgen::from_value::<FolderStatus>(st) {
-                                                if !status.exists {
-                                                    has_error = true;
-                                                    if let Some(w) = web_sys::window() {
-                                                        if w.confirm_with_message("AI 실행 파일이 없습니다. 다운로드 화면으로 이동하시겠습니까?").unwrap_or(false) {
-                                                            signals.setup.set_wizard_step.set(2);
-                                                            signals.ui.set_show_settings.set(false);
-                                                            signals.config.set_init_done.set(false);
-                                                        }
+                                        if let Ok(status) = call(&CheckAiServerStatus {}).await {
+                                            if !status.exists {
+                                                has_error = true;
+                                                if let Some(w) = web_sys::window() {
+                                                    if w.confirm_with_message("AI 실행 파일이 없습니다. 다운로드 화면으로 이동하시겠습니까?").unwrap_or(false) {
+                                                        signals.setup.set_wizard_step.set(2);
+                                                        signals.ui.set_show_settings.set(false);
+                                                        signals.config.set_init_done.set(false);
                                                     }
                                                 }
                                             }

@@ -1,7 +1,8 @@
 use crate::store::{AppActions, AppSignals};
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use leptos::prelude::*;
 use leptos::reactive::spawn_local;
+use resonance_types::ipc::UnblockUser;
 
 /// Hide-blocked toggle and the unblock list.
 #[component]
@@ -46,8 +47,7 @@ pub fn BlockedUsersSection() -> impl IntoView {
                                         on:click=move |_| {
                                             // 1. Tell Backend to unblock and save
                                             spawn_local(async move {
-                                                let args = serde_wasm_bindgen::to_value(&serde_json::json!({"uid": uid_clone})).unwrap();
-                                                let _ = invoke("unblock_user_command", args).await;
+                                                let _ = call(&UnblockUser { uid: uid_clone }).await;
                                             });
 
                                             // 2. Instantly remove from frontend UI state

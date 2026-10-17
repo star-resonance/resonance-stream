@@ -7,7 +7,7 @@ use crate::dictionary_edit::draft;
 use crate::favorites::add_from_chat;
 use crate::favorites_sync;
 use crate::store::AppSignals;
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use crate::ui_types::ChatMessage;
 use crate::use_context;
 use crate::utils::copy_to_clipboard;
@@ -16,6 +16,7 @@ use leptos::portal::Portal;
 use leptos::prelude::*;
 use leptos::reactive::spawn_local;
 use leptos::{component, view, IntoView};
+use resonance_types::ipc::BlockUser;
 
 /// Click on a sender's name: copy it, filter the chat to it, or block it.
 #[component]
@@ -63,11 +64,7 @@ pub(super) fn SenderMenu(
                             let blocked_name = sig.with_untracked(|m| m.nickname.clone());
 
                             spawn_local(async move {
-                                let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                                    "uid": target_uid,
-                                    "nickname": target_name
-                                })).unwrap();
-                                let _ = invoke("block_user_command", args).await;
+                                let _ = call(&BlockUser { uid: target_uid, nickname: target_name }).await;
                             });
 
                             signals.config.set_blocked_users.update(|map| { map.insert(target_uid, blocked_name); });

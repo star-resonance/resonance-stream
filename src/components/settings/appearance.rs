@@ -1,8 +1,9 @@
 use crate::store::{AppActions, AppSignals};
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use crate::ui_types::{TabSwitchModifier, Theme};
 use leptos::prelude::*;
 use leptos::reactive::spawn_local;
+use resonance_types::ipc::{SetClickThrough, UpdateGlobalTabShortcut};
 
 /// Click-through, drag-to-scroll, tab-switch shortcut, theme.
 #[component]
@@ -32,7 +33,7 @@ pub fn AppearanceSection() -> impl IntoView {
                             signals.ui.set_show_settings.set(false);
 
                             spawn_local(async move {
-                                let _ = invoke("set_click_through", serde_wasm_bindgen::to_value(&serde_json::json!({ "enabled": enabled })).unwrap()).await;
+                                let _ = call(&SetClickThrough { enabled }).await;
                             });
                         }
                     />
@@ -80,11 +81,10 @@ pub fn AppearanceSection() -> impl IntoView {
                                 actions.save_config.dispatch(());
 
                                 spawn_local(async move {
-                                    let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                                        "modifier": TabSwitchModifier::NoModifier.as_str(),
-                                        "key": ""
-                                    })).unwrap();
-                                    let _ = invoke("update_global_tab_shortcut", args).await;
+                                    let _ = call(&UpdateGlobalTabShortcut {
+                                        modifier: TabSwitchModifier::NoModifier.as_str().to_string(),
+                                        key: String::new(),
+                                    }).await;
                                 });
                                 return;
                             }
@@ -108,11 +108,10 @@ pub fn AppearanceSection() -> impl IntoView {
                                 let rust_key = key_str.clone();
 
                                 spawn_local(async move {
-                                    let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                                        "modifier": rust_mod,
-                                        "key": rust_key
-                                    })).unwrap();
-                                    let _ = invoke("update_global_tab_shortcut", args).await;
+                                    let _ = call(&UpdateGlobalTabShortcut {
+                                        modifier: rust_mod.to_string(),
+                                        key: rust_key,
+                                    }).await;
                                 });
                             }
                         }
@@ -155,11 +154,10 @@ pub fn AppearanceSection() -> impl IntoView {
 
                                 spawn_local(async move {
                                     // Sending empty strings unregisters the current key without adding a new one
-                                    let args = serde_wasm_bindgen::to_value(&serde_json::json!({
-                                        "modifier": TabSwitchModifier::NoModifier.as_str(),
-                                        "key": ""
-                                    })).unwrap();
-                                    let _ = invoke("update_global_tab_shortcut", args).await;
+                                    let _ = call(&UpdateGlobalTabShortcut {
+                                        modifier: TabSwitchModifier::NoModifier.as_str().to_string(),
+                                        key: String::new(),
+                                    }).await;
                                 });
                             }
                         >

@@ -3,10 +3,10 @@
 
 use crate::dictionary_edit::{add_entry, categories, existing, DEFAULT_CATEGORY};
 use crate::store::AppSignals;
-use crate::tauri_bridge::invoke;
+use crate::tauri_bridge::call;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen::JsValue;
+use resonance_types::ipc::{GetLocalDictionary, SaveLocalDictionary};
 
 #[component]
 pub fn AddToDictionaryModal() -> impl IntoView {
@@ -31,8 +31,8 @@ pub fn AddToDictionaryModal() -> impl IntoView {
         set_error.set(None);
         set_saving.set(false);
         spawn_local(async move {
-            if let Ok(json) = invoke("get_local_dictionary", JsValue::NULL).await {
-                set_dict_json.set(json.as_string().unwrap_or_default());
+            if let Ok(json) = call(&GetLocalDictionary {}).await {
+                set_dict_json.set(json);
             }
         });
     });
@@ -58,17 +58,12 @@ pub fn AddToDictionaryModal() -> impl IntoView {
         };
         set_saving.set(true);
         spawn_local(async move {
-            let args = serde_wasm_bindgen::to_value(&serde_json::json!({ "content": text }))
-                .unwrap_or(JsValue::NULL);
             // The backend swaps the dictionary in place: the next translation uses it.
-            match invoke("save_local_dictionary", args).await {
-                Ok(_) => set_draft.set(None),
-                Err(e) => {
+            match call(&SaveLocalDictionary { content: text }).await {
+                Ok(()) => set_draft.set(None),
+                Err(why) => {
                     set_saving.set(false);
-                    set_error.set(Some(format!(
-                        "저장하지 못했습니다: {}",
-                        e.as_string().unwrap_or_default()
-                    )));
+                    set_error.set(Some(format!("저장하지 못했습니다: {}", why)));
                 }
             }
         });
