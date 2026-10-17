@@ -5,7 +5,7 @@ paths:
 
 # Layout (crates)
 
-What each file does; `g skeleton <file>` and `g callers <sym>` (`code-graph` skill) go deeper.
+What each file does; read the file or `rg` a symbol to go deeper.
 
 ```
 crates/core/           resonance-core — pure logic, tested on any OS

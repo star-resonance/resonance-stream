@@ -1,7 +1,7 @@
 # 2026-09-29 — refactor plan
 
 Kade supplied the lakehouse-k8s CLAUDE.md / MEMORY.md / structure notes and asked for
-the useful parts to be carried over, then an all-phases refactor using graft.
+the useful parts to be carried over, then an all-phases refactor.
 
 **Carried over:** plan-first, a gate per part of the repo, one command per gate,
 memory index + `.memory/{active-issues,roadmap,sessions}`, one task one commit
@@ -15,9 +15,6 @@ auto-committed after the gate, push stays manual, never report an unrun gate as 
 and WinDivert/`windows-sys` are Windows-only), so no Rust test ran in a cloud session.
 7 test modules exist, mostly in pure code (`protocol/`, `translator/processor.rs`).
 Hence phase 2: move that code into a crate that builds anywhere.
-
-**Graft MCP:** this session started on `main` without PR #24; the MCP server failed with
-ENOENT (graft installed by the bootstrap hook after MCP spawn). The CLI worked throughout.
 
 **Follow-up decisions (Kade, after CI went green):** `AppConfig` stays split between app
 and ui — architecture, recorded in CLAUDE.md; `pcap`/`windivert` removed;

@@ -232,7 +232,7 @@ Steps 1-7 in order, one PR each. Steps 1 (A1 `get_service_states`) 2 (A2/A9 tran
 Done: W3, P1, W1, W5 (PRs #38-#41) and the field iterator `decoder::Fields` (parser output
 pinned by a golden test). W2 done (see above). TDD is the rule (CLAUDE.md); `just coverage`.
 
-**Graft-guided refactor, phases 0–5: done** —
+**Refactor, phases 0–5: done** —
 [`.memory/roadmap/refactor-2026-09.md`](../roadmap/refactor-2026-09.md).
 Pushed at Kade's request. **CI green on 182d651** (run 36551390327): Linux + Windows,
 incl. the app tests — after fixing one stale test (mock served the wrong llama endpoint).
@@ -253,15 +253,6 @@ Windows run needed — [`unverified-on-windows.md`](../active-issues/unverified-
 **feat/ui-improve ported onto main** (8 commits, Kade as author; 9937ef2 redundant) —
 [`.memory/sessions/2026-09-29-ui-improve-port.md`](../sessions/2026-09-29-ui-improve-port.md).
 Kade's calls: sequential pids, both archives, gist has sha256, auto-sync off by default.
-
-**Graft 0.21.1 (2026-10-01, `claude/graft-mcp-wait`):** pinned in `graft-bootstrap.cjs`. `.mcp.json` runs
-`node .claude/helpers/graft-mcp.cjs` again: in a cloud session graft is installed by the bootstrap hook
-*after* MCP servers spawn, and a bare `graft mcp` failed (ENOENT, 2026-10-01). The helper waits up to 25 s.
-**Experiment result (2026-10-02, `experiment/graft-mcp-bare`):** a fresh cloud session on a bare `graft mcp` failed
-again (`ENOENT`, graft was installed minutes later by the bootstrap) -- the wrapper stays. Also: graft's session-start
-refresh *can* rewrite `.mcp.json` to the bare form in cloud (the earlier "does not rewrite it" was false), so after any
-`graft init`/`upgrade`/refresh check `git diff .mcp.json` and re-point it in its own commit. `graft init --agents claude
---no-global --yes` run by hand is idempotent (no diff).
 
 **Git workflow (2026-09-30):** each task on a `claude/<name>` branch, push when the local gate
 is green, PR opened by Claude, `.github/workflows/auto-merge.yml` merges it when CI passes

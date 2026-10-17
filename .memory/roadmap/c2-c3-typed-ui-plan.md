@@ -29,7 +29,7 @@ several times: channel names (`"WORLD"`, ...: ~130 places), service states (`"Ac
 **C2a — `Channel` in `resonance-types`.** *(done: `claude/c2a-channel-enum`; `ChannelLimits` is keyed by `Channel` now, so limits for names that are no channel are ignored instead of kept; the dead `"SYSTEM"` arm of `chat_row` went; `Tab::Channel` and the tab keys are still strings -- C2c.)* `enum Channel { World, Local, Party, Guild }` with
 `as_str`, `from_code(u64)` (the one code table: 2 Local, 3 Party, 4 Guild, else World -- the
 parser's `channel_name` and the second table W6 named collapse into it), `FromStr`/serde as above.
-`ChatMessage.channel: Channel`. Touches (from `graft callers` + grep): types 1, core
+`ChatMessage.channel: Channel`. Touches (from grep): types 1, core
 `parser.rs` 10, `history.rs` 21 (mostly tests), `pipeline.rs` 1, app `config/app_config.rs` 9,
 ui `chat_view.rs` 66, `nav_bar.rs` 11, `chat_row.rs` 4, `store.rs` 5, and the llama-crate
 mock (`support/game_server.rs`, `capture.rs`) that builds/reads channel strings. Gates: core, ui, app cross-check.

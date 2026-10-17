@@ -1,4 +1,4 @@
-# Refactor — 2026-09 (graft-guided)
+# Refactor — 2026-09
 
 Plan agreed 2026-09-29. One phase, one commit. Push is Kade's.
 
@@ -11,7 +11,7 @@ Plan agreed 2026-09-29. One phase, one commit. Push is Kade's.
 | 4 | split `Settings` (920-line fn) and `App` (950-line fn) into section components | ui gate green; UI unchanged (manual run on Windows) |
 | 5 | hygiene: commit `Cargo.lock`, one version source, `package.json` metadata, template leftovers, stale docs (`stream_traacker.rs` typo fixed in phase 2 during the move) | gates green |
 
-Baseline numbers (2026-09-29, `graft map`): 48 files, 274 symbols, 265 edges.
+Baseline numbers (2026-09-29): 48 files, 274 symbols, 265 edges.
 Largest: `src/app.rs` 971 lines (one fn), `src/components/settings.rs` 933 (one fn),
 `src-tauri/src/protocol/parser.rs` 638, `src-tauri/src/lib.rs` 517.
 Hotspots: `inject_system_message` 19 callers, `read_varint` 14, `skip_field` 9.
