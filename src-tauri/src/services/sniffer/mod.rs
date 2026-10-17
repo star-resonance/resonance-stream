@@ -9,7 +9,7 @@ pub use self::raw_capture::{open_captures_folder, set_raw_capture};
 use crate::{
     inject_system_message, inject_system_message_throttled, store_and_emit, TranslationJob,
 };
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,13 +20,9 @@ use crossbeam_channel::Sender;
 use resonance_core::capture::{ChatPipeline, PipelineAction};
 use resonance_core::text::{contains_japanese, convert_to_romaji};
 use resonance_core::workers::{
-    read_error_backoff, wait_for, watchdog_check, WatchdogVerdict, WATCHDOG_LIMIT_SECS,
-    WATCHDOG_TICK,
+    read_error_backoff, wait_for, watchdog_check, SnifferActivity, WatchdogVerdict,
+    WATCHDOG_LIMIT_SECS, WATCHDOG_TICK,
 };
-
-// --- GLOBAL STATE ---
-static LAST_TRAFFIC_TIME: AtomicU64 = AtomicU64::new(0);
-static IS_SNIFFER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// A started sniffer: dropping it stops the worker threads; `is_alive` says
 /// whether the capture thread still runs. A sniffer that never started (no
@@ -66,11 +62,12 @@ impl Drop for AliveGuard {
     }
 }
 
-// Helper to "Kick" or "Feed" the Watchdog
-fn feed_watchdog() {
-    let start = SystemTime::now();
-    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
-    LAST_TRAFFIC_TIME.store(since_the_epoch.as_secs(), Ordering::Relaxed);
+/// Unix seconds now, the watchdog's clock.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 /// Records the state (for `get_service_states`) and emits it. The lock is
@@ -103,11 +100,12 @@ pub fn start_sniffer_command(app: AppHandle, state: State<'_, AppState>) {
             "Sniffer restart blocked: already active.",
         );
         emit_sniffer_state(&app, SnifferState::Pending, "Listening for game traffic...");
-        IS_SNIFFER_ACTIVE.store(false, Ordering::Relaxed);
+        state.services.sniffer_activity().mark_inactive();
     }
 }
 
-pub fn start_sniffer_worker(app: AppHandle) -> SnifferHandle {
+/// Starts a sniffer. `activity` is owned by `Services` for the whole run: it outlives this sniffer.
+pub fn start_sniffer_worker(app: AppHandle, activity: Arc<SnifferActivity>) -> SnifferHandle {
     // We use a blank channel just for its lifecycle dropping properties
     let (tx, rx) = crossbeam_channel::unbounded::<()>();
     let alive = Arc::new(AtomicBool::new(false));
@@ -141,8 +139,8 @@ pub fn start_sniffer_worker(app: AppHandle) -> SnifferHandle {
 
     let config = crate::config::current_config(&app);
 
-    feed_watchdog();
-    spawn_watchdog(app.clone(), rx.clone(), alive.clone());
+    activity.start_clock(now_secs());
+    spawn_watchdog(app.clone(), rx.clone(), alive.clone(), activity.clone());
 
     // --- MAIN SNIFFER THREAD ---
     let app_handle = app.clone();
@@ -158,7 +156,7 @@ pub fn start_sniffer_worker(app: AppHandle) -> SnifferHandle {
             "Engine Active",
         );
         emit_sniffer_state(&app_handle, SnifferState::Starting, "Engine Active");
-        IS_SNIFFER_ACTIVE.store(false, Ordering::Relaxed);
+        activity.mark_inactive();
 
         // Abstracted Network Setup
         let socket = match initialize_network_socket(&app_handle, &config) {
@@ -254,10 +252,7 @@ pub fn start_sniffer_worker(app: AppHandle) -> SnifferHandle {
                 |uid| state.config.read().blocked_users.contains_key(&uid),
                 || state.next_pid.fetch_add(1, Ordering::SeqCst),
                 || {
-                    feed_watchdog();
-
-                    if !IS_SNIFFER_ACTIVE.load(Ordering::Relaxed) {
-                        IS_SNIFFER_ACTIVE.store(true, Ordering::Relaxed);
+                    if activity.record_packet(now_secs()) {
                         emit_sniffer_state(
                             &app_handle,
                             SnifferState::Active,
@@ -282,6 +277,7 @@ fn spawn_watchdog(
     app: AppHandle,
     rx: crossbeam_channel::Receiver<()>,
     capture_alive: Arc<AtomicBool>,
+    activity: Arc<SnifferActivity>,
 ) {
     thread::spawn(move || {
         loop {
@@ -290,11 +286,8 @@ fn spawn_watchdog(
                 _ => {}
             }
 
-            let last = LAST_TRAFFIC_TIME.load(Ordering::Relaxed);
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            let last = activity.last_traffic();
+            let now = now_secs();
 
             let verdict = watchdog_check(last, now, capture_alive.load(Ordering::SeqCst));
             if verdict == WatchdogVerdict::CaptureEnded {
@@ -330,10 +323,9 @@ fn spawn_watchdog(
                         None => "게임 트래픽 감지 안됨 (클릭하여 어댑터 복구)".to_string(),
                     },
                 );
-                IS_SNIFFER_ACTIVE.store(false, Ordering::Relaxed);
-
-                // Kick the watchdog so we wait another WATCHDOG_LIMIT_SECS before speaking again
-                feed_watchdog();
+                // Not active, and the clock starts over: another WATCHDOG_LIMIT_SECS before
+                // speaking again.
+                activity.stall(now_secs());
             }
         }
     });
