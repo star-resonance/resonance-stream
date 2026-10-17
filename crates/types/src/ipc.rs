@@ -29,10 +29,11 @@ macro_rules! commands {
         $(
             $(#[$doc])*
             #[derive(Debug, Clone, Serialize, Deserialize)]
+            #[serde(rename_all = "camelCase")]
             pub struct $ty { $(pub $field: $fty),* }
 
             impl Command for $ty {
-                const NAME: &'static str = "";
+                const NAME: &'static str = $name;
                 type Reply = $reply;
             }
         )*
@@ -108,19 +109,19 @@ commands! {
 
 /// Every backend -> ui event, by name. The bridge listens to each ([`ALL`]).
 pub mod event {
-    pub const CHAT_MESSAGE_UPDATE: &str = "";
-    pub const SNIFFER_STATE: &str = "";
-    pub const TRANSLATOR_STATE: &str = "";
-    pub const TRANSLATION_EVENT: &str = "";
-    pub const SYSTEM_EVENT: &str = "";
-    pub const PACKET_EVENT: &str = "";
-    pub const FAVORITES_CHANGED: &str = "";
-    pub const FIREWALL_MISSING: &str = "";
-    pub const DOWNLOAD_PROGRESS: &str = "";
-    pub const POPUP_SHOWN: &str = "";
-    pub const GLOBAL_TAB_SWITCH: &str = "";
-    pub const TRAY_TOGGLE_ALWAYS_ON_TOP: &str = "";
-    pub const TRAY_TOGGLE_CLICK_THROUGH: &str = "";
+    pub const CHAT_MESSAGE_UPDATE: &str = "chat-message-update";
+    pub const SNIFFER_STATE: &str = "sniffer-state";
+    pub const TRANSLATOR_STATE: &str = "translator-state";
+    pub const TRANSLATION_EVENT: &str = "translation-event";
+    pub const SYSTEM_EVENT: &str = "system-event";
+    pub const PACKET_EVENT: &str = "packet-event";
+    pub const FAVORITES_CHANGED: &str = "favorites-changed";
+    pub const FIREWALL_MISSING: &str = "firewall-missing";
+    pub const DOWNLOAD_PROGRESS: &str = "download-progress";
+    pub const POPUP_SHOWN: &str = "popup-shown";
+    pub const GLOBAL_TAB_SWITCH: &str = "global-tab-switch";
+    pub const TRAY_TOGGLE_ALWAYS_ON_TOP: &str = "tray-toggle-always-on-top";
+    pub const TRAY_TOGGLE_CLICK_THROUGH: &str = "tray-toggle-click-through";
 
     /// Every event above.
     pub const ALL: [&str; 13] = [
