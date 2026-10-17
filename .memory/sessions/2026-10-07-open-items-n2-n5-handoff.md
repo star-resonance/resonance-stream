@@ -60,7 +60,7 @@ Also tell Kade when a PR changes what a real window shows (N-6 and N-1 do: he ha
   toolbar order may change), then `page.locator('button[aria-label=Settings]').click()`, then click through `.modal-box nav li button` until the section you want shows. Mock a command with
   `page.evaluate(() => { window.__mock.cmd = () => value })` (a function that `throw`s a string makes `invoke` reject with it). Worth fixing in the skill on a docs-only PR.
 - **A container is fresh each session:** redo the setup in the earlier handoff (`rustup target add wasm32-unknown-unknown x86_64-pc-windows-gnu`, `apt-get install gcc-mingw-w64-x86-64`, `npm ci`, playwright,
-  `preview.sh <scratchpad>/ui-preview` which serves on 127.0.0.1:8765). The graft MCP server fails to connect (no `graft` binary): use grep / read.
+  `preview.sh <scratchpad>/ui-preview` which serves on 127.0.0.1:8765).
 - Test counts on `main` after #254: core + llama + types **641**, ui **180** (185 with #255). `MEMORY.md` is near its 6 KB limit: keep *Now* short.
 - A new short dictionary key must be added to `TWO_CHARACTER_KEYS` (or the one-character list) in `crates/core/tests/repo_dictionary.rs` with a reason, or CI fails.
 

@@ -1,6 +1,6 @@
 # 2026-09-29 — phase 2: crates/core and crates/types
 
-**Impact analysis (graft):** `graft callers` / `graft grep` on every moving symbol showed
+**Impact analysis:** a caller search on every moving symbol showed
 the pure code was used from only three places: `sniffer/mod.rs` (`ChatPipeline`,
 `PipelineAction`, `convert_to_romaji`), `translator/mod.rs` (`load_dictionary`,
 `preprocess_text`, `postprocess_text`) and `lib.rs` (`pub use protocol::parser::*`,
