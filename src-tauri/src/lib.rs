@@ -77,6 +77,7 @@ pub fn run() {
                 translation_ledger: Mutex::new(Default::default()),
                 data_factory_tx: Mutex::new(None),
                 service_states: Mutex::new(Default::default()),
+                updates: Default::default(),
                 shortcuts: Mutex::new(shortcut::GlobalShortcuts {
                     tab_modifier: config.tab_switch_modifier,
                     tab_key: config.tab_switch_key.clone(),

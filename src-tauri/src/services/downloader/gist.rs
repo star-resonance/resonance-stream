@@ -1,6 +1,5 @@
 use crate::inject_system_message;
-use crate::protocol::types::SystemLogLevel;
-use parking_lot::Mutex;
+use crate::protocol::types::{AppState, SystemLogLevel};
 use resonance_core::download::{
     is_newer_version, BodyCap, BodyTooLarge, CONNECT_TIMEOUT, REMOTE_CALL_TIMEOUT,
 };
@@ -66,18 +65,10 @@ async fn read_capped(mut res: reqwest::Response, limit: usize) -> Result<Vec<u8>
     Ok(body)
 }
 
-/// The release the last update check announced. The app updater downloads
-/// and verifies exactly this one: its url, its version and its signature.
-static LAST_FEED: Mutex<Option<UpdateFeed>> = Mutex::new(None);
-
 /// The release the last update check announced, if there was one.
-pub fn announced_update() -> Option<UpdateFeed> {
-    LAST_FEED.lock().clone()
+pub fn announced_update(app: &AppHandle) -> Option<UpdateFeed> {
+    app.state::<AppState>().updates.announced.lock().clone()
 }
-
-/// The signed metadata the last check accepted. `sync_dictionary` checks the dictionary against it,
-/// so the UI cannot name another version or hash.
-static LAST_VERIFIED: Mutex<Option<GistMetadata>> = Mutex::new(None);
 
 /// GET `url`, up to `limit` bytes. `Ok(None)`: nothing is published there (404). `what` names the
 /// file in an error.
@@ -136,13 +127,14 @@ fn accept_verified(app: &AppHandle, verified: &GistMetadata) {
         }
         newer
     });
-    *LAST_VERIFIED.lock() = Some(verified.clone());
+    *app.state::<AppState>().updates.verified.lock() = Some(verified.clone());
 }
 
 /// The metadata the last check accepted, or a fresh check when there was none (the test bridge
 /// syncs without one).
 async fn verified_metadata(app: &AppHandle) -> Result<GistMetadata, String> {
-    if let Some(verified) = LAST_VERIFIED.lock().clone() {
+    let last = app.state::<AppState>().updates.verified.lock().clone();
+    if let Some(verified) = last {
         return Ok(verified);
     }
     verified_metadata_fresh(app).await
@@ -226,7 +218,7 @@ pub async fn check_all_updates(app: AppHandle) -> Result<UpdateCheckResult, Stri
             None
         }
     };
-    *LAST_FEED.lock() = feed.clone();
+    *app.state::<AppState>().updates.announced.lock() = feed.clone();
     let app_info = feed
         .as_ref()
         .map(|feed| VersionInfo {
@@ -263,7 +255,7 @@ pub async fn check_all_updates(app: AppHandle) -> Result<UpdateCheckResult, Stri
             verified
         }
         Err(refused) => {
-            *LAST_VERIFIED.lock() = None;
+            *app.state::<AppState>().updates.verified.lock() = None;
             let line = refusal_line(&refused);
             inject_system_message(&app, SystemLogLevel::Error, "Metadata", line.clone());
             return Ok(UpdateCheckResult::refused(
