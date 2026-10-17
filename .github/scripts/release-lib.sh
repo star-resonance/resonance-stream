@@ -162,8 +162,14 @@ release_page_body() {
 }
 
 # The nearest earlier stable release tag (vX.Y.Z only: no -rc, -beta, -test
-# suffix), where <tag>'s commit list starts; empty when there is none. Run in
-# the repository, with its tags fetched.
+# suffix), where the commit list of <commit> starts; empty when there is none.
+# A commit that carries a stable tag itself looks from its parent; an untagged
+# one (the rc merge release.yml is about to tag) looks from itself, so a release
+# on main's side of the merge counts. Run in the repository, with its tags fetched.
 release_previous_stable_tag() {
-  git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "$1^" 2>/dev/null || true
+  local from=$1
+  if git tag --points-at "$1" --list 'v*' | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+    from="$1^"
+  fi
+  git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "$from" 2>/dev/null || true
 }
