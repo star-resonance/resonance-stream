@@ -20,6 +20,11 @@ paths:
   `ConfigSignals` -- `to_config` / `apply` list every field, so forgetting is a compile
   error. Its load-time quirks (a saved value that is
   clamped or replaced) live in `apply`, not in `hydration.rs`.
+- **The backend is called through its argument struct, never by name:**
+  `tauri_bridge::call(&resonance_types::ipc::<Struct> { .. })` returns the command's typed reply.
+  A new command gets its struct in the `commands!` list of `crates/types/src/ipc.rs` in the same
+  change as its `generate_handler!` entry (and the count that test asserts), or the types test
+  `the_backend_registers_exactly_the_commands_listed_here` fails. Events are named through `ipc::event`.
 
 ## Behaviour check for UI changes
 
