@@ -7,7 +7,7 @@ Measured 2026-10-06 on `main` `1478528` (right after PR #203). Evidence, numbers
 
 ## Done-conditions of every stage
 
-1. **Plan first.** Show an impact analysis (the callers of every changed symbol, found with `rg`) and wait for Kade's go (CLAUDE.md, workflow-control).
+1. **Plan first.** Show an impact analysis (the callers of every changed symbol, found with `rg`) and wait for Kade's go (global rules).
 2. **Test first.** Write the failing unit test, see it fail for the right reason, then write the code. A bug fix starts with a reproducing test.
    Pure logic is tested in `crates/core` (or the ui's pure modules). Tauri / Windows glue that cannot be unit-tested is said so in the commit body.
 3. **The gate of every part touched:** core / llama / types `just core-check`; ui `just ui-check`; app `just app-cross-check` (Linux, compile only; with and without `test-env`, and `--release --features test-env`) plus Windows CI `just app-check`. `cargo fmt` always.

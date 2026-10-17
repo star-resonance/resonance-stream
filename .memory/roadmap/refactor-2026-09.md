@@ -4,7 +4,7 @@ Plan agreed 2026-09-29. One phase, one commit. Push is Kade's.
 
 | # | phase | done when |
 |---|---|---|
-| 0 | CLAUDE.md, MEMORY.md, `.memory/`, workflow-control skill | files exist, index < 40 lines |
+| 0 | CLAUDE.md, MEMORY.md, `.memory/`, a plan-first skill (since removed) | files exist, index < 40 lines |
 | 1 | `justfile` gates + GitHub Actions (ui on Linux, app on Windows); `cargo fmt` baseline | `just check` green on Linux; CI file valid |
 | 2 | `crates/core`: protocol decoding, text processing, shared DTOs; ui + app depend on it | core tests run on Linux; one definition of `ChatMessage`/`SystemMessage` |
 | 3 | split `src-tauri/src/lib.rs` into events / commands / window / tray / shortcut / logging; `run` only wires | no behaviour change; app gate (CI) |
