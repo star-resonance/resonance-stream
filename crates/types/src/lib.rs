@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 mod app_config;
+pub mod ipc;
 pub use app_config::AppConfig;
 
 // --- Chat and system log ---
