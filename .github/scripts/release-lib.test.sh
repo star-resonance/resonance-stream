@@ -180,6 +180,30 @@ res=$(nproblem 12 $'- 고친 점을 쉬운 말로 <<작성>>\n')
 eq  "notes: a left-over placeholder fails" "1" "${res%%|*}"
 has "notes: ... named" "$res" "<<"
 
+# --- release_new_version_problem: may Cargo.toml's version become a release? (tags on stdin) ---
+tags=$'v0.5.0\nv0.6.0-rc.updater\nv0.6.1\nv0.6.2\nv0.6.10-rc.main\nmetadata-v3'
+vproblem() { # vproblem <version> <tags> -> "rc|reason"
+  local out rc
+  out=$(release_new_version_problem "$1" <<<"$2" 2>&1); rc=$?
+  printf '%s|%s' "$rc" "$out"
+}
+eq  "new version: a patch above the last release passes" "0|" "$(vproblem 0.6.3 "$tags")"
+eq  "new version: a minor above passes" "0|" "$(vproblem 0.7.0 "$tags")"
+eq  "new version: compared as numbers, not text" "0|" "$(vproblem 0.6.10 "$tags")"
+eq  "new version: candidate tags do not count as releases" "0|" "$(vproblem 0.6.3 $'v0.6.2\nv0.6.3-rc.main')"
+eq  "new version: the first release passes" "0|" "$(vproblem 0.1.0 "")"
+res=$(vproblem 0.6.2 "$tags")
+eq  "new version: already tagged: refused" "1" "${res%%|*}"
+has "new version: ... names the tag" "$res" "v0.6.2"
+res=$(vproblem 0.6.1 "$tags")
+eq  "new version: below the last release: refused" "1" "${res%%|*}"
+has "new version: ... names the last release" "$res" "v0.6.2"
+res=$(vproblem 0.5.9 $'v0.6.2\nv0.5.0')
+eq  "new version: below, with tags out of order: refused" "1" "${res%%|*}"
+res=$(vproblem 0.6 "$tags")
+eq  "new version: not X.Y.Z: refused" "1" "${res%%|*}"
+has "new version: ... shows it" "$res" "0.6"
+
 # --- release_previous_stable_tag: where the commit list starts ---
 repo=$(mktemp -d)
 (
