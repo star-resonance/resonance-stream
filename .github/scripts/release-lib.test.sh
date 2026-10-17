@@ -216,6 +216,17 @@ repo=$(mktemp -d)
 eq "previous stable: skips candidates and betas" "v0.5.0" "$(cd "$repo" && release_previous_stable_tag v0.6.0)"
 eq "previous stable: the one right before" "v0.6.0" "$(cd "$repo" && release_previous_stable_tag v0.6.1)"
 eq "previous stable: none before the first" "" "$(cd "$repo" && release_previous_stable_tag v0.5.0)"
+# The release workflow asks before it tags: the rc commit is a merge of main
+# (which carries the last release) into an older rc.
+(
+  cd "$repo"
+  git commit -q --allow-empty -m e
+  main=$(git symbolic-ref --short HEAD)
+  git checkout -q -b rc v0.5.0 && git commit -q --allow-empty -m old-rc
+  git merge -q --no-ff -m 'main into rc' "$main"
+)
+eq "previous stable: an untagged commit gives its own last release" "v0.6.1" "$(cd "$repo" && release_previous_stable_tag "$(git -C "$repo" rev-parse rc^2)")"
+eq "previous stable: an rc merge sees the release on main's side" "v0.6.1" "$(cd "$repo" && release_previous_stable_tag rc)"
 rm -rf "$repo"
 
 echo
