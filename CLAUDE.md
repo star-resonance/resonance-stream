@@ -8,7 +8,7 @@ One Cargo workspace in five crates, three parts, plus the runbook (treated as do
 **Which part you touch decides which gate applies** -- the most important thing on this page.
 
 Current state: the organization Project "Resonance" (star-resonance), read as `STATUS.md` on the
-`status` branch, index @MEMORY.md
+`status` branch (D-32); no `MEMORY.md`, no handoff files; detail in `.memory/` (@.memory/README.md)
 
 | tree | part | builds on | gate |
 |---|---|---|---|
@@ -63,7 +63,7 @@ style/ public/        CSS source; static assets
 1. **Behaviour check where a gate cannot see it.** UI changes: `.claude/rules/ui.md`.
 2. **Record state on the issue** (a `cmd:` label: `cmd:status-now`, `cmd:verify-needs-windows`, `-macos`, `-android`, `-iphone`, `cmd:verify-not-verified`; a decision for Kade: assign the issue to him; a follow-up gets an issue;
    a Start or Target date: `gh workflow run project-set.yml -f issue=N -f field=Target -f date=YYYY-MM-DD` or `date=clear`).
-   `STATUS.md` is refreshed a minute after each label or date; `MEMORY.md` only for what has none.
+   `STATUS.md` is refreshed a minute after each label or date; detail goes in `.memory/`, in the task's own branch.
 
 ## Version Control
 
