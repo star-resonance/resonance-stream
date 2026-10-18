@@ -1,8 +1,3 @@
-# actionlint 1.7.12 (the latest release) predates actions/create-github-app-token@v3, which takes
-# `client-id` in place of `app-id`; project-snapshot.yml runs green with it. Drop these two once an
-# actionlint release knows v3.
-paths:
-  .github/workflows/project-snapshot.yml:
-    ignore:
-      - 'missing input "app-id" which is required by action "actions/create-github-app-token@v3"'
-      - 'input "client-id" is not defined in action "actions/create-github-app-token@v3"'
+# The findings actionlint ignores, by workflow file. None at the moment: the Project workflows call
+# star-resonance/.github's reusable ones, whose actions/create-github-app-token@v3 inputs (newer
+# than actionlint 1.7.12) actionlint does not read from here.

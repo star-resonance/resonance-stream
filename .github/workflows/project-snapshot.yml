@@ -1,69 +1,27 @@
 # Exports the Resonance organization Project to STATUS.md on the `status` branch
 # (star-resonance). Cloud sessions cannot reach the Project API; they read this file instead:
 #   git fetch origin status && git show origin/status:STATUS.md
-# A session that needs fresh state runs this workflow (workflow_dispatch).
+# The job is star-resonance/.github's reusable project-snapshot.yml; this file only says when it
+# runs: three times a day, on demand (workflow_dispatch), and after each Project sync or Project
+# set, so a session that has just added a cmd: label or set a date reads the change a minute later.
+# A burst of runs leaves one pending (the shared job's concurrency group).
 name: Project snapshot
 
 on:
   schedule:
     - cron: "17 0,6,12 * * *"  # 09:17, 15:17, 21:17 KST
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Project sync", "Project set"]
+    types: [completed]
 
 permissions: {}
 
-concurrency:
-  group: project-snapshot
-  cancel-in-progress: false
-
 jobs:
   snapshot:
-    name: export Project to STATUS.md
-    if: vars.PROJECT_NUMBER != ''  # dormant until the Project is set up
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    if: vars.PROJECT_NUMBER != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     permissions:
       contents: write  # push the generated `status` branch
-    steps:
-      - name: Check out the bridge script
-        uses: actions/checkout@v7
-        with:
-          repository: star-resonance/.github
-          ref: main
-          path: .bridge
-          persist-credentials: false
-
-      - name: Get a Project token from the bridge App
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.BRIDGE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.BRIDGE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-organization-projects: read
-          permission-issues: read
-          permission-pull-requests: read
-
-      - name: Export
-        env:
-          PROJECT_TOKEN: ${{ steps.app-token.outputs.token }}
-          ORG: ${{ github.repository_owner }}
-          PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
-        run: python3 .bridge/scripts/project_bridge.py snapshot --out "$RUNNER_TEMP/STATUS.md"
-
-      - name: Publish to the status branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          out="$RUNNER_TEMP/status-branch"
-          mkdir -p "$out" && cd "$out"
-          git init -q -b status
-          cp "$RUNNER_TEMP/STATUS.md" STATUS.md
-          git add STATUS.md
-          git -c user.name="github-actions[bot]" \
-              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-              commit -q -m "Project snapshot"
-          # One generated commit, replaced each run: the branch is a view, not history.
-          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" status
-          echo "published $(wc -l < STATUS.md) lines to the status branch" >> "$GITHUB_STEP_SUMMARY"
+    uses: star-resonance/.github/.github/workflows/project-snapshot.yml@main
+    secrets:
+      BRIDGE_APP_PRIVATE_KEY: ${{ secrets.BRIDGE_APP_PRIVATE_KEY }}
