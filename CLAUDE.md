@@ -61,13 +61,15 @@ style/ public/        CSS source; static assets
 ## Definition of Done
 
 1. **Behaviour check where a gate cannot see it.** UI changes: `.claude/rules/ui.md`.
-2. **Record state on the issue** (a `cmd:` label: `cmd:status-now`, `cmd:verify-needs-windows`, `-macos`, `-android`, `-iphone`, `cmd:verify-not-verified`; a decision for Kade: assign the issue to him; a follow-up gets an issue); `MEMORY.md` only for what has none.
+2. **Record state on the issue** (a `cmd:` label: `cmd:status-now`, `cmd:verify-needs-windows`, `-macos`, `-android`, `-iphone`, `cmd:verify-not-verified`; a decision for Kade: assign the issue to him; a follow-up gets an issue;
+   a Start or Target date: `gh workflow run project-set.yml -f issue=N -f field=Target -f date=YYYY-MM-DD` or `date=clear`).
+   `STATUS.md` is refreshed a minute after each label or date; `MEMORY.md` only for what has none.
 
 ## Version Control
 
 - `.github/workflows/auto-merge.yml` (not GitHub auto-merge) merges a green PR, deletes its
-  `claude/*` branch and closes the issues it says it closes. It, `branch-cleanup.yml`, `eol-check.yml`
-  and `claude-md-check.yml` call star-resonance/.github's shared workflows (read from its `main`).
+  `claude/*` branch and closes the issues it says it closes. It, `branch-cleanup.yml`, `eol-check.yml`,
+  `claude-md-check.yml` and the `project-*.yml` call star-resonance/.github's shared workflows (read from its `main`).
 - Local sessions follow the same flow: a `claude/<task>` branch and a PR, opened with Kade's
   `gh` login (without it, print the commands for Kade).
 - Only `claude/*` PRs into `main` auto-merge, once every check on the head is green; a PR into `rc`
