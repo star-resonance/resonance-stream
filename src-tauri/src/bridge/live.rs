@@ -249,11 +249,11 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             answer(Ok(()));
         }
         Command::GetChatHistory => {
-            let history = crate::commands::get_chat_history(app.state());
+            let history = crate::commands::chat_history(app);
             answer_data(serde_json::to_value(history).unwrap_or(Value::Null));
         }
         Command::ClearHistory => {
-            crate::commands::clear_chat_history(app.state());
+            crate::commands::clear_history(app);
             answer(Ok(()));
         }
         Command::SyncDictionary => {
@@ -269,8 +269,8 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             ));
         }
         Command::AnnotateFurigana { texts } => {
-            // The UI's own command, an async fn that only computes.
-            let spans = crate::commands::annotate_furigana(texts.clone()).await;
+            // What the UI's own command computes.
+            let spans = crate::commands::furigana(texts);
             answer_data(serde_json::to_value(spans).unwrap_or(Value::Null));
         }
         Command::GetFavorites => {
@@ -305,7 +305,10 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             None => answer(Err("There is no main window".into())),
         },
         Command::StartTranslator => {
-            crate::commands::launch_translator(app.clone(), app.state());
+            // What `launch_translator` does.
+            app.state::<crate::AppState>()
+                .services
+                .start_translator(app);
             answer(Ok(()));
         }
         Command::DownloadModel => {

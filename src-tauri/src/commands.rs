@@ -1,18 +1,23 @@
-//! Tauri commands for chat/system history, the translator toggle and furigana.
+//! Tauri commands for chat/system history, the translator toggle and furigana. A command
+//! the bridge also runs has a plain function beside it, which both call.
 
 use crate::{inject_system_message, AppState, ChatMessage, SystemLogLevel, SystemMessage};
 use resonance_types::RubySpan;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
-pub fn clear_chat_history(state: tauri::State<AppState>) {
+pub fn clear_chat_history(app: AppHandle) {
+    clear_history(&app);
+}
+
+/// Empties the backend's chat log and system log (the clear button).
+pub fn clear_history(app: &AppHandle) {
+    let state = app.state::<AppState>();
     // 1. Clear Game Chat
-    let mut history = state.chat_history.lock();
-    history.clear();
+    state.chat_history.lock().clear();
 
     // 2. Clear System Logs (Optional, but good for a full reset)
-    let mut sys_history = state.system_history.lock();
-    sys_history.clear();
+    state.system_history.lock().clear();
 }
 
 #[tauri::command]
@@ -26,8 +31,13 @@ pub fn ui_system_message(
 }
 
 #[tauri::command]
-pub fn get_chat_history(state: tauri::State<AppState>) -> Vec<ChatMessage> {
-    // Returns ONLY Game Chat
+pub fn get_chat_history(app: AppHandle) -> Vec<ChatMessage> {
+    chat_history(&app)
+}
+
+/// The backend's chat log, in arrival order: game chat only, no system lines.
+pub fn chat_history(app: &AppHandle) -> Vec<ChatMessage> {
+    let state = app.state::<AppState>();
     let history = state.chat_history.lock();
     history.values().cloned().collect()
 }
@@ -53,11 +63,15 @@ pub fn launch_translator(app: AppHandle, state: State<'_, AppState>) {
     state.services.start_translator(&app);
 }
 
-/// Furigana for Japanese lines, one list of spans per line, in order. The
-/// analysis itself is `resonance_core::furigana`; it takes microseconds a line,
-/// so it runs right here on the async runtime.
+/// async so that it runs on the async runtime, not the main thread.
 #[tauri::command]
 pub async fn annotate_furigana(texts: Vec<String>) -> Vec<Vec<RubySpan>> {
+    furigana(&texts)
+}
+
+/// Furigana for Japanese lines, one list of spans per line, in order. The
+/// analysis itself is `resonance_core::furigana`; it takes microseconds a line.
+pub fn furigana(texts: &[String]) -> Vec<Vec<RubySpan>> {
     texts
         .iter()
         .map(|text| resonance_core::furigana::annotate(text))
