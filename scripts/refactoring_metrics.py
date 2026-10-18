@@ -189,7 +189,10 @@ out["workflows"] = {"count": len(wf), "names": wf}
 sh = sorted(p.name for p in (root / ".github/scripts").glob("*.test.sh")) if (root / ".github/scripts").exists() else []
 out["shell_test_scripts"] = len(sh)
 mem = root / "MEMORY.md"
-out["memory_index"] = {"lines": len(mem.read_text(encoding="utf-8").splitlines()), "bytes": mem.stat().st_size}
+# MEMORY.md is gone since D-32; older commits still have it.
+out["memory_index"] = (
+    {"lines": len(mem.read_text(encoding="utf-8").splitlines()), "bytes": mem.stat().st_size} if mem.exists() else None
+)
 docs = sorted(p.name for p in (root / "docs").glob("*.md")) if (root / "docs").exists() else []
 out["docs"] = {"count": len(docs), "names": docs}
 snap = list((root / "crates/core/tests/snapshots").glob("*.snap")) if (root / "crates/core/tests/snapshots").exists() else []

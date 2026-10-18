@@ -62,10 +62,6 @@ jobs:
         run: bash .github/scripts/metadata-lib.test.sh
       - name: test-branch guard helper
         run: bash .github/scripts/branch-guard.test.sh
-      - name: MEMORY.md size (index of 40 lines and 6 KB, 200 characters a line)
-        run: |
-          bash .github/scripts/memory-check.test.sh
-          bash .github/scripts/memory-check.sh
 
   secrets:
     name: secret scan (gitleaks)
