@@ -2,19 +2,24 @@
 # (star-resonance). Cloud sessions cannot reach the Project API; they read this file instead:
 #   git fetch origin status && git show origin/status:STATUS.md
 # The job is star-resonance/.github's reusable project-snapshot.yml; this file only says when it
-# runs: three times a day, and on demand (workflow_dispatch) when a session needs fresh state.
+# runs: three times a day, on demand (workflow_dispatch), and after each Project sync or Project
+# set, so a session that has just added a cmd: label or set a date reads the change a minute later.
+# A burst of runs leaves one pending (the shared job's concurrency group).
 name: Project snapshot
 
 on:
   schedule:
     - cron: "17 0,6,12 * * *"  # 09:17, 15:17, 21:17 KST
   workflow_dispatch:
+  workflow_run:
+    workflows: ["Project sync", "Project set"]
+    types: [completed]
 
 permissions: {}
 
 jobs:
   snapshot:
-    if: vars.PROJECT_NUMBER != ''  # dormant until the Project is set up
+    if: vars.PROJECT_NUMBER != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     permissions:
       contents: write  # push the generated `status` branch
     uses: star-resonance/.github/.github/workflows/project-snapshot.yml@main
