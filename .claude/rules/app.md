@@ -10,6 +10,12 @@ paths:
   name in a module shadows its glob re-export (rustc warns) — the item then silently
   stops being exported; call it by path instead.
 
+- **The test bridge (`bridge/live.rs`) never calls a `#[tauri::command]`.** A command the
+  bridge also runs keeps its body in a plain function beside it that takes `&AppHandle`
+  (`get_chat_history` -> `chat_history`); the command and the bridge both call that. The
+  bridge's commands run on one async task, so an async function is awaited, never `block_on`.
+  The test `the_bridge_calls_no_tauri_command` fails on a bridge arm that calls a command.
+
 - **Events are emitted with `resonance_types::ipc::event::*`, never a string literal.** A new
   event gets its constant there, a place in `event::ALL` (the ui listens to each one) and an entry
   in the test `the_event_names_are_the_ones_on_the_wire`; a new command's struct also goes in
