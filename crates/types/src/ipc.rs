@@ -9,7 +9,7 @@
 
 use crate::{
     AppConfig, ChatMessage, DictionaryStatus, FavoritesState, FolderStatus, NetworkInterface,
-    PopupKind, RubySpan, ServiceStates, SystemMessage, UpdateCheckResult, WindowRect,
+    PopupKind, RubySpan, ServiceStates, SystemMessage, UpdateCheckResult, UpdateTarget, WindowRect,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,7 @@ commands! {
 
     // Updates and the dictionary.
     CheckAllUpdates = "check_all_updates" {} -> UpdateCheckResult;
-    IgnoreUpdate = "ignore_update" { target: String, version: String } -> ();
+    IgnoreUpdate = "ignore_update" { target: UpdateTarget, version: String } -> ();
     DownloadAppUpdate = "download_app_update" { download_url: String } -> ();
     CancelAppUpdate = "cancel_app_update" {} -> ();
     RestartToApplyUpdate = "restart_to_apply_update" {} -> ();
@@ -176,7 +176,7 @@ mod tests {
         );
         assert_eq!(
             wire(&IgnoreUpdate {
-                target: "app".into(),
+                target: UpdateTarget::App,
                 version: "0.7.0".into()
             }),
             json!({ "target": "app", "version": "0.7.0" })

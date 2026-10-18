@@ -10,7 +10,7 @@ use resonance_core::signed_metadata::{
 use resonance_core::test_env::UpdateState;
 use resonance_core::text::Dictionary;
 use resonance_core::update_feed::{parse_feed_allowing, UpdateFeed};
-use resonance_types::DictionaryStatus;
+use resonance_types::{DictionaryStatus, UpdateTarget};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -416,13 +416,14 @@ pub fn install_local_dictionary(app: &AppHandle, content: &str) -> Result<(), St
     Ok(())
 }
 
+/// "Skip this version": the update check stops offering `version` of `target`. Any other target
+/// than `app` or `model` is refused when the call is read, before this runs.
 #[tauri::command]
-pub fn ignore_update(app: AppHandle, target: String, version: String) {
+pub fn ignore_update(app: AppHandle, target: UpdateTarget, version: String) {
     crate::config::modify_metadata(&app, |metadata| {
-        if target == "app" {
-            metadata.ignored_app_version = Some(version);
-        } else if target == "model" {
-            metadata.ignored_model_version = Some(version);
+        match target {
+            UpdateTarget::App => metadata.ignored_app_version = Some(version),
+            UpdateTarget::Model => metadata.ignored_model_version = Some(version),
         }
         true
     });
