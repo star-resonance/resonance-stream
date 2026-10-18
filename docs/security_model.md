@@ -103,6 +103,7 @@ The zip pin protects the download, not the files later on disk. A process of the
 | Connects only to `mqtt://127.0.0.1`, `localhost` or `[::1]` (`core/test_env.rs:222,372`) | confirmed |
 | `--llama-url`, `--metadata-url`, `--feed-url`, `--dictionary-url` accept only `https://` or loopback `http://` (`test_env.rs:226,230`); a downloaded exe must still carry a valid signature even then | confirmed |
 | `--metadata-trust-key` makes a test run trust one throwaway key for the signed metadata **instead of** the built-in keys. Like every flag it is read only in a debug or `test-env` build (`GATE_OPEN`), and `release.yml` never names `test-env` (pinned in `rc-lib.test.sh`) | confirmed reading |
+| `--devtools-port N` opens WebView2's DevTools port in every window so a runbook script can click the real window; it listens on `127.0.0.1` only (seen on the real exe, 2026-10-18), but any local process can then drive the app, which runs as Administrator. Read only in a debug or `test-env` build (`GATE_OPEN`), never passed on after an update restart, and the windows keep wry's default arguments (`core/test_env.rs` `webview_browser_args`) | confirmed (spike on Kade's PC) |
 | Commands are a **fixed allow-list** (`Command` in `core/bridge.rs`); an unknown name is refused with an error | confirmed |
 | An answer over 16 MiB becomes an error ack (`fit_ack`), not a dropped connection | confirmed (PR #203) |
 
