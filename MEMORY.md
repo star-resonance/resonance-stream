@@ -10,7 +10,7 @@ Only what would be *false* once stale lives here; the rest is in `.memory/`.
 Write with a `cmd:` label on the issue (`cmd:status-now`, `cmd:verify-needs-windows`, `cmd:verify-not-verified`); a decision for Kade is an assignee.
 
 - **Where:** stages S0–S6 and signed metadata M1–M3 merged; open items: [`roadmap/refactor.md`](.memory/roadmap/refactor.md), "Open items found after S6".
-- **Next:** S8 (the edges between the parts) is done (S8a-S8e); left in `roadmap/refactor.md`: S7 and hy-mt2 (#270, #271, Kade's inputs).
+- **Next:** S7 (sanitised capture corpus) and S8 are done; left in `roadmap/refactor.md`: hy-mt2 (#271, Kade's inputs).
 - **Trial:** the Project instead of *Now* until about 2026-10-22; then drop this file's *Now* (and maybe `MEMORY.md`) in its own PR.
 
 **Decided** (detail in `docs/decisions.md`): D-28 signed metadata (`metadata-v1`, `-v2` published), D-29 model → hy-mt2 (K8 moot).

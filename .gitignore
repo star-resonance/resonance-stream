@@ -24,3 +24,5 @@ style/output.css
 # raw game captures (debug): shared out of band, never tracked
 captures/
 *.capture.log
+# except the sanitised corpus (S7, #270: examples/sanitise_capture.rs made it)
+!crates/core/tests/fixtures/*.sanitised.capture.log

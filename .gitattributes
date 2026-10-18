@@ -2,3 +2,5 @@
 # cmd misreads labels and goto in a batch file with LF line endings; the
 # repository still stores it with LF, only the checkout gets CRLF.
 *.bat text eol=crlf
+# The sanitised capture corpus: one hex line per packet, generated; no text diff.
+crates/core/tests/fixtures/*.sanitised.capture.log -diff linguist-generated
