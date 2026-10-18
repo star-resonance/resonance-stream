@@ -32,7 +32,7 @@ enum Kind {
 }
 
 /// Every flag, in the order `TestEnv::set_flags` lists them.
-const FLAGS: [(&str, Kind); 18] = [
+const FLAGS: [(&str, Kind); 19] = [
     ("data-dir", Kind::Value),
     ("fresh", Kind::Switch),
     ("assume-setup-done", Kind::Switch),
@@ -50,6 +50,7 @@ const FLAGS: [(&str, Kind); 18] = [
     ("replay-chat", Kind::Value),
     ("bridge-url", Kind::Value),
     ("llama-url", Kind::Value),
+    ("devtools-port", Kind::Value),
     ("print-env", Kind::Switch),
 ];
 
@@ -89,6 +90,9 @@ pub struct TestEnv {
     /// Use the llama-server that answers here (`http://127.0.0.1:PORT`) instead of starting one: a stand-in
     /// that needs no model and no GPU. Local http only, with a port; stored without a trailing slash.
     pub llama_url: Option<String>,
+    /// Give every window's WebView2 this DevTools port (`--remote-debugging-port`, on 127.0.0.1), so a
+    /// runbook script can click the real window. Not passed on after an update restart.
+    pub devtools_port: Option<u16>,
     /// Print the resolved settings as JSON and exit.
     pub print_env: bool,
 }
@@ -115,6 +119,7 @@ impl TestEnv {
             self.replay_chat.is_some(),
             self.bridge_url.is_some(),
             self.llama_url.is_some(),
+            self.devtools_port.is_some(),
             self.print_env,
         ];
         FLAGS
@@ -161,6 +166,10 @@ impl TestEnv {
                 }
                 self.llama_url = Some(base);
             }
+            "devtools-port" => match value.parse::<u16>() {
+                Ok(port) if port != 0 => self.devtools_port = Some(port),
+                _ => return Err(TestEnvError::BadDevtoolsPort { value }),
+            },
             "metadata-trust-key" => {
                 if !is_public_key(&value) {
                     return Err(TestEnvError::BadTrustKey { key: value });
@@ -210,6 +219,8 @@ pub enum TestEnvError {
     BadTrustKey { key: String },
     /// A `--llama-url` that is not `http://` to this machine with a port.
     BadLlamaUrl { url: String },
+    /// A `--devtools-port` that is not a port (1-65535).
+    BadDevtoolsPort { value: String },
 }
 
 impl fmt::Display for TestEnvError {
@@ -239,6 +250,9 @@ impl fmt::Display for TestEnvError {
                 f,
                 "--llama-url {url:?}: only http://127.0.0.1:PORT / localhost / [::1], with a port and no path"
             ),
+            Self::BadDevtoolsPort { value } => {
+                write!(f, "--devtools-port {value:?}: not a port (1-65535)")
+            }
             Self::BadTrustKey { key } => write!(
                 f,
                 "--metadata-trust-key {key:?}: not a base64 minisign public key (the text of a .pub file from `tauri signer`)"
