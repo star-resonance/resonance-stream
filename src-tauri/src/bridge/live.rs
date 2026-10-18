@@ -223,14 +223,14 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
                 // The outcome is the `update-state` events (downloading, then downloaded or error).
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = crate::services::downloader::download_app_update(app, feed.url).await;
+                    let _ = crate::services::downloader::fetch_app_update(&app, feed.url).await;
                 });
                 answer(Ok(()));
             }
         },
         Command::RestartUpdate => {
             // On success this process ends (a new one says `app-started`); only a refusal comes back.
-            if let Err(e) = crate::services::downloader::restart_to_apply_update(app.clone()) {
+            if let Err(e) = crate::services::downloader::install_update_and_restart(app) {
                 answer(Err(e));
             }
         }
@@ -253,14 +253,13 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
         }
         Command::SyncDictionary => {
             // The settings view's sync: an async command that fetches, validates, saves and installs; its error is the ack's.
-            let synced = crate::services::downloader::sync_dictionary(app.clone()).await;
+            let synced = crate::services::downloader::fetch_and_install_dictionary(app).await;
             answer(synced.map(|_| ()));
         }
         Command::SaveLocalDictionary { content } => {
             // The dictionary editor's save: validates, writes custom_dict.json, installs from the next job on.
-            answer(crate::services::downloader::save_local_dictionary(
-                app.clone(),
-                content.clone(),
+            answer(crate::services::downloader::install_local_dictionary(
+                app, content,
             ));
         }
         Command::AnnotateFurigana { texts } => {
@@ -310,7 +309,7 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             // The wizard's download; its end (the return value the UI shows) comes as a `download-result` event.
             let (app, id) = (app.clone(), request.id.clone());
             tauri::async_runtime::spawn(async move {
-                let result = crate::services::downloader::model::download_model(app).await;
+                let result = crate::services::downloader::model::fetch_model(&app).await;
                 publish_event(
                     wire::DOWNLOAD_RESULT_EVENT,
                     serde_json::json!({

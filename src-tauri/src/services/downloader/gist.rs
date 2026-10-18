@@ -302,16 +302,20 @@ fn install_dictionary(app: &AppHandle, dict: Dictionary) {
     }
 }
 
+#[tauri::command]
+pub async fn sync_dictionary(app: AppHandle) -> Result<String, String> {
+    fetch_and_install_dictionary(&app).await
+}
+
 /// Fetches the custom dictionary, checks it against the signed metadata (its SHA-256 is named
 /// there) and installs it. What is recorded as installed is the verified metadata's version, so a
 /// UI (or a caller of the bridge) cannot name another one.
-#[tauri::command]
-pub async fn sync_dictionary(app: AppHandle) -> Result<String, String> {
+pub async fn fetch_and_install_dictionary(app: &AppHandle) -> Result<String, String> {
     // 1. Resolve Local Path
-    let dict_path = dictionary_path(&app);
+    let dict_path = dictionary_path(app);
 
     // 2. What the signed metadata says the dictionary is
-    let verified = verified_metadata(&app).await?;
+    let verified = verified_metadata(app).await?;
 
     // 3. Fetch from Remote
     let body = fetch_published(
@@ -325,7 +329,7 @@ pub async fn sync_dictionary(app: AppHandle) -> Result<String, String> {
     // The named file, and one the app can read: otherwise nothing is saved.
     if let Err(refused) = accept_dictionary(&body, &verified) {
         let line = dictionary_refusal_line(&refused);
-        inject_system_message(&app, SystemLogLevel::Error, "Metadata", line.clone());
+        inject_system_message(app, SystemLogLevel::Error, "Metadata", line.clone());
         return Err(line);
     }
     let json_content =
@@ -337,17 +341,17 @@ pub async fn sync_dictionary(app: AppHandle) -> Result<String, String> {
     fs::create_dir_all(dict_path.parent().unwrap()).map_err(|e| e.to_string())?;
     resonance_core::download::write_atomic(&dict_path, json_content.as_bytes())
         .map_err(|e| e.to_string())?;
-    install_dictionary(&app, dict);
+    install_dictionary(app, dict);
 
     inject_system_message(
-        &app,
+        app,
         SystemLogLevel::Success,
         "ModelManager",
         "Dictionary saved to AppData.",
     );
 
     inject_system_message(
-        &app,
+        app,
         SystemLogLevel::Success,
         "Translator",
         "Dictionary successfully synchronized.",
@@ -357,7 +361,7 @@ pub async fn sync_dictionary(app: AppHandle) -> Result<String, String> {
         verified.dictionary.version
     );
 
-    crate::config::modify_metadata(&app, |metadata| {
+    crate::config::modify_metadata(app, |metadata| {
         metadata.current_dict_version = verified.dictionary.version;
         metadata.current_dict_sha256 = verified.dictionary.sha256.trim().to_ascii_lowercase();
         metadata.current_dict_revision = verified.revision;
@@ -399,10 +403,16 @@ pub fn get_local_dictionary(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub fn save_local_dictionary(app: tauri::AppHandle, content: String) -> Result<(), String> {
-    let dict = Dictionary::from_json_str(&content)?;
-    resonance_core::download::write_atomic(&dictionary_path(&app), content.as_bytes())
+    install_local_dictionary(&app, &content)
+}
+
+/// Saves the dictionary editor's text as `custom_dict.json` and installs it from the translator's next job
+/// on. A text that does not parse is refused and nothing is saved.
+pub fn install_local_dictionary(app: &AppHandle, content: &str) -> Result<(), String> {
+    let dict = Dictionary::from_json_str(content)?;
+    resonance_core::download::write_atomic(&dictionary_path(app), content.as_bytes())
         .map_err(|e| e.to_string())?;
-    install_dictionary(&app, dict);
+    install_dictionary(app, dict);
     Ok(())
 }
 
