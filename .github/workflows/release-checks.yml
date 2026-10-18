@@ -1,7 +1,7 @@
 name: Release checks
 
-# The release checks of a pull request into `rc` (D-30, the global release flow;
-# ported from stella-rain/core). `rc` takes changes only from `main` of this
+# The release checks of a pull request into `rc` (D-30, the global release flow).
+# `rc` takes changes only from `main` of this
 # repository: `the head is main` fails at once for any other head. `version is
 # new` refuses a Cargo.toml version that is already tagged or not above the last
 # stable release, and release notes that `release.yml` would refuse
