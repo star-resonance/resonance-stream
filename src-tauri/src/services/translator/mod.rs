@@ -15,12 +15,9 @@ use crate::inject_system_message;
 use crate::protocol::types::{ChatMessage, SystemLogLevel, TranslatorState};
 
 use self::core::server_url;
-use resonance_core::flow::Sink;
+use resonance_core::flow::{JobResult, Sink};
 use resonance_core::history::{ArchiveTarget, ChatHistory};
-use resonance_core::text::{
-    nicknames_in, preprocess_with_nicknames, translate_masked, TranslationCache,
-    TRANSLATION_CACHE_SIZE,
-};
+use resonance_core::text::{TranslationCache, TRANSLATION_CACHE_SIZE};
 use resonance_core::workers::TranslationLedger;
 use resonance_core::workers::{
     translation_is_stale, ServerSupervisor, SupervisorAction, WorkerGenerations,
@@ -442,70 +439,17 @@ impl Sink for AppSink<'_> {
     }
 }
 
-enum JobResult {
-    Done,
-    /// Nothing was owed (translated already, or not of this run).
-    Skipped,
-    /// No translation; the message stays owed.
-    Failed,
-}
-
+/// One queued line: `resonance_core::flow::run_translation_job` with the app's effects and the
+/// running llama-server.
 fn process_translation_job(
     job: TranslationJob,
     client: &Client,
     app: &AppHandle,
     cache: &mut TranslationCache,
 ) -> JobResult {
-    let chat = job.chat;
-    let state = app.state::<crate::AppState>();
-
-    // Translated already (a catch-up item that was also queued live) or not
-    // a message of this run's ledger: nothing is owed.
-    if !state.translation_ledger.lock().is_owed(chat.pid) {
-        return JobResult::Skipped;
-    }
-
-    // 1. Preprocess. The nickname lock is held only to pick the names this message
-    // contains: the sniffer needs it for every Japanese nickname, and must wait neither
-    // for the rest of the shielding nor for the HTTP round trip below.
-    let dict = state.dictionary.read().clone();
-    let nicknames = nicknames_in(&chat.message, &state.nickname_cache.lock());
-    let shield = preprocess_with_nicknames(&chat.message, &dict, &nicknames);
-
-    // 2. HTTP Request (Blocking), unless this line was translated before;
-    // 3. Postprocess
-    let final_str = match translate_masked(&shield, cache, |masked| {
+    resonance_core::flow::run_translation_job(&mut AppSink::new(app), &job.chat, cache, |masked| {
         translate_text(client, &server_url(app), masked)
-    }) {
-        Ok(text) => text,
-        Err(reason) => {
-            // No translation: the row stays as it is, and the original is
-            // still archived.
-            log::warn!("[Translator] pid {}: {}", chat.pid, reason);
-            archive_untranslated(app, &chat);
-            return JobResult::Failed;
-        }
-    };
-
-    // 4. Dispatch Side Effects: the translated copy goes to both archives (the chat log
-    // already holds the message from its arrival; `load_recent` keeps the newest line).
-    let mut archived = chat.clone();
-    archived.translated = Some(final_str.clone());
-    archive(app, &archived, ArchiveTarget::Both);
-
-    if let Some(existing_chat) = state.chat_history.lock().get_mut(chat.pid) {
-        existing_chat.translated = Some(final_str.clone());
-    }
-    state.translation_ledger.lock().settle(chat.pid);
-
-    let _ = app.emit(
-        resonance_types::ipc::event::TRANSLATION_EVENT,
-        &crate::protocol::types::TranslationResult {
-            pid: chat.pid,
-            translated: final_str,
-        },
-    );
-    JobResult::Done
+    })
 }
 
 /// Records the state (for `get_service_states`) and emits it. The lock is
