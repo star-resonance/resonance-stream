@@ -15,15 +15,18 @@ use crate::inject_system_message;
 use crate::protocol::types::{ChatMessage, SystemLogLevel, TranslatorState};
 
 use self::core::server_url;
-use resonance_core::history::ArchiveTarget;
+use resonance_core::flow::Sink;
+use resonance_core::history::{ArchiveTarget, ChatHistory};
 use resonance_core::text::{
     nicknames_in, preprocess_with_nicknames, translate_masked, TranslationCache,
     TRANSLATION_CACHE_SIZE,
 };
+use resonance_core::workers::TranslationLedger;
 use resonance_core::workers::{
     translation_is_stale, ServerSupervisor, SupervisorAction, WorkerGenerations,
 };
 use resonance_llama::translate_text;
+use std::collections::HashMap;
 
 pub struct TranslationJob {
     pub chat: ChatMessage,
@@ -361,17 +364,82 @@ fn archive(app: &AppHandle, chat: &ChatMessage, target: ArchiveTarget) {
     }
 }
 
-/// A message has just arrived: it goes to the chat log at once, whatever the translator does
-/// or fails to do with it (review W-4). Before the translation job is queued, so a
-/// translated copy always comes after it in the log.
-pub fn archive_arrival(app: &AppHandle, chat: &ChatMessage) {
-    archive(app, chat, ArchiveTarget::ChatLog);
-}
-
 /// No translation will come for `chat`: it goes to the training-pair file as it is. The chat
 /// log has it since it arrived.
 pub fn archive_untranslated(app: &AppHandle, chat: &ChatMessage) {
     archive(app, chat, ArchiveTarget::Dataset);
+}
+
+/// Where `resonance_core::flow` puts its effects in the running app: the `AppState`, the
+/// windows, the archive worker and the translator worker.
+pub struct AppSink<'a> {
+    app: &'a AppHandle,
+}
+
+impl<'a> AppSink<'a> {
+    pub fn new(app: &'a AppHandle) -> Self {
+        Self { app }
+    }
+
+    fn state(&self) -> tauri::State<'a, crate::AppState> {
+        self.app.state::<crate::AppState>()
+    }
+}
+
+impl Sink for AppSink<'_> {
+    fn use_translation(&mut self) -> bool {
+        self.state().config.read().use_translation
+    }
+
+    fn store_and_emit(&mut self, chat: &ChatMessage) {
+        crate::store_and_emit(self.app, chat.clone());
+    }
+
+    fn emit_update(&mut self, chat: &ChatMessage) {
+        let _ = self
+            .app
+            .emit(resonance_types::ipc::event::CHAT_MESSAGE_UPDATE, chat);
+    }
+
+    fn emit_translation(&mut self, pid: u64, translated: &str) {
+        let _ = self.app.emit(
+            resonance_types::ipc::event::TRANSLATION_EVENT,
+            &crate::protocol::types::TranslationResult {
+                pid,
+                translated: translated.to_string(),
+            },
+        );
+    }
+
+    fn archive(&mut self, chat: &ChatMessage, target: ArchiveTarget) {
+        archive(self.app, chat, target);
+    }
+
+    fn queue_translation(&mut self, chat: ChatMessage) -> bool {
+        match self.state().services.translator_sender() {
+            Some(tx) => {
+                let _ = tx.send(TranslationJob::new(chat));
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn dictionary(&mut self) -> Arc<resonance_core::text::Dictionary> {
+        self.state().dictionary.read().clone()
+    }
+
+    fn with_history<R>(&mut self, f: impl FnOnce(&mut ChatHistory) -> R) -> R {
+        f(&mut self.state().chat_history.lock())
+    }
+
+    fn with_ledger<R>(&mut self, f: impl FnOnce(&mut TranslationLedger) -> R) -> R {
+        f(&mut self.state().translation_ledger.lock())
+    }
+
+    fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R {
+        f(&mut self.state().nickname_cache.lock())
+    }
 }
 
 enum JobResult {
