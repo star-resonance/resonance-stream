@@ -985,6 +985,35 @@ mod tests {
     }
 
     #[test]
+    fn devtools_port_is_a_port_from_the_flag_or_the_variable() {
+        let env = ok(&["--devtools-port", "9222"]);
+        assert_eq!(env.devtools_port, Some(9222));
+        assert!(env.set_flags().contains(&"devtools-port"));
+        let env = run(&[], &[("RESONANCE_TEST_DEVTOOLS_PORT", "6003")]).expect("parses");
+        assert_eq!(env.devtools_port, Some(6003));
+        for value in ["0", "70000", "abc", "-1", "9222x"] {
+            assert_eq!(
+                run(&["--devtools-port", value], &[]),
+                Err(TestEnvError::BadDevtoolsPort {
+                    value: value.into()
+                }),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            run(&["--devtools-port"], &[]),
+            Err(TestEnvError::MissingValue("devtools-port".into()))
+        );
+    }
+
+    #[test]
+    fn a_restart_does_not_open_the_devtools_port_again() {
+        // The new process starts while the old one still holds the port.
+        let env = ok(&["--data-dir", "/tmp/run1", "--devtools-port", "9222"]);
+        assert_eq!(env.restart_args(), ["--data-dir=/tmp/run1"]);
+    }
+
+    #[test]
     fn llama_url_refuses_anything_but_local_http_with_a_port() {
         for url in [
             "http://llama.example.com:8080",
