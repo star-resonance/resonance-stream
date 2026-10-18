@@ -8,6 +8,7 @@ pub mod config_migration;
 pub mod crash_log;
 pub mod download;
 pub mod favorites_migration;
+pub mod flow;
 pub mod furigana;
 pub mod history;
 pub mod kanji_on;
