@@ -32,7 +32,7 @@ enum Kind {
 }
 
 /// Every flag, in the order `TestEnv::set_flags` lists them.
-const FLAGS: [(&str, Kind); 18] = [
+const FLAGS: [(&str, Kind); 19] = [
     ("data-dir", Kind::Value),
     ("fresh", Kind::Switch),
     ("assume-setup-done", Kind::Switch),
@@ -50,6 +50,7 @@ const FLAGS: [(&str, Kind); 18] = [
     ("replay-chat", Kind::Value),
     ("bridge-url", Kind::Value),
     ("llama-url", Kind::Value),
+    ("devtools-port", Kind::Value),
     ("print-env", Kind::Switch),
 ];
 
@@ -89,6 +90,9 @@ pub struct TestEnv {
     /// Use the llama-server that answers here (`http://127.0.0.1:PORT`) instead of starting one: a stand-in
     /// that needs no model and no GPU. Local http only, with a port; stored without a trailing slash.
     pub llama_url: Option<String>,
+    /// Give every window's WebView2 this DevTools port (`--remote-debugging-port`, on 127.0.0.1), so a
+    /// runbook script can click the real window. Not passed on after an update restart.
+    pub devtools_port: Option<u16>,
     /// Print the resolved settings as JSON and exit.
     pub print_env: bool,
 }
@@ -115,6 +119,7 @@ impl TestEnv {
             self.replay_chat.is_some(),
             self.bridge_url.is_some(),
             self.llama_url.is_some(),
+            self.devtools_port.is_some(),
             self.print_env,
         ];
         FLAGS
@@ -161,6 +166,10 @@ impl TestEnv {
                 }
                 self.llama_url = Some(base);
             }
+            "devtools-port" => match value.parse::<u16>() {
+                Ok(port) if port != 0 => self.devtools_port = Some(port),
+                _ => return Err(TestEnvError::BadDevtoolsPort { value }),
+            },
             "metadata-trust-key" => {
                 if !is_public_key(&value) {
                     return Err(TestEnvError::BadTrustKey { key: value });
@@ -210,6 +219,8 @@ pub enum TestEnvError {
     BadTrustKey { key: String },
     /// A `--llama-url` that is not `http://` to this machine with a port.
     BadLlamaUrl { url: String },
+    /// A `--devtools-port` that is not a port (1-65535).
+    BadDevtoolsPort { value: String },
 }
 
 impl fmt::Display for TestEnvError {
@@ -239,6 +250,9 @@ impl fmt::Display for TestEnvError {
                 f,
                 "--llama-url {url:?}: only http://127.0.0.1:PORT / localhost / [::1], with a port and no path"
             ),
+            Self::BadDevtoolsPort { value } => {
+                write!(f, "--devtools-port {value:?}: not a port (1-65535)")
+            }
             Self::BadTrustKey { key } => write!(
                 f,
                 "--metadata-trust-key {key:?}: not a base64 minisign public key (the text of a .pub file from `tauri signer`)"
@@ -499,6 +513,22 @@ impl TestEnv {
         } else {
             current
         }
+    }
+}
+
+/// The browser arguments wry 0.57 gives WebView2 when the app passes none (its windows autoplay).
+/// An explicit list replaces them, so a list that adds to them must repeat them.
+const WRY_DEFAULT_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+     --autoplay-policy=no-user-gesture-required";
+
+impl TestEnv {
+    /// The browser arguments every window's WebView2 is created with: `None` (wry's defaults) unless
+    /// `--devtools-port` is set, then those defaults plus the DevTools port. Every window must get the
+    /// same list -- WebView2 refuses a second set of options for the same user data folder.
+    pub fn webview_browser_args(&self) -> Option<String> {
+        self.devtools_port
+            .map(|port| format!("{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port={port}"))
     }
 }
 
@@ -982,6 +1012,51 @@ mod tests {
             ok(&["--llama-url", "http://127.0.0.1:8099"]).restart_args(),
             ["--llama-url=http://127.0.0.1:8099"]
         );
+    }
+
+    #[test]
+    fn devtools_port_is_a_port_from_the_flag_or_the_variable() {
+        let env = ok(&["--devtools-port", "9222"]);
+        assert_eq!(env.devtools_port, Some(9222));
+        assert!(env.set_flags().contains(&"devtools-port"));
+        let env = run(&[], &[("RESONANCE_TEST_DEVTOOLS_PORT", "6003")]).expect("parses");
+        assert_eq!(env.devtools_port, Some(6003));
+        for value in ["0", "70000", "abc", "-1", "9222x"] {
+            assert_eq!(
+                run(&["--devtools-port", value], &[]),
+                Err(TestEnvError::BadDevtoolsPort {
+                    value: value.into()
+                }),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            run(&["--devtools-port"], &[]),
+            Err(TestEnvError::MissingValue("devtools-port".into()))
+        );
+    }
+
+    #[test]
+    fn webview_browser_args_keep_the_defaults_and_add_the_devtools_port() {
+        // Without the flag the app passes nothing and wry uses its own defaults.
+        assert_eq!(ok(&[]).webview_browser_args(), None);
+        // With it every window gets wry's defaults (an explicit list replaces them) plus the port.
+        assert_eq!(
+            ok(&["--devtools-port", "9222"])
+                .webview_browser_args()
+                .as_deref(),
+            Some(
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+                 --autoplay-policy=no-user-gesture-required --remote-debugging-port=9222"
+            )
+        );
+    }
+
+    #[test]
+    fn a_restart_does_not_open_the_devtools_port_again() {
+        // The new process starts while the old one still holds the port.
+        let env = ok(&["--data-dir", "/tmp/run1", "--devtools-port", "9222"]);
+        assert_eq!(env.restart_args(), ["--data-dir=/tmp/run1"]);
     }
 
     #[test]

@@ -175,6 +175,14 @@ pub fn llama_url() -> Option<&'static str> {
         .and_then(|active| active.env.llama_url.as_deref())
 }
 
+/// `--devtools-port`: the browser arguments every window's WebView2 is created with (wry's defaults
+/// plus the DevTools port), or `None` for wry's own defaults. Always `None` in a normal run.
+pub fn webview_browser_args() -> Option<String> {
+    ACTIVE
+        .get()
+        .and_then(|active| active.env.webview_browser_args())
+}
+
 /// `--replay-chat`: the file whose chat lines are fed in as if captured.
 pub fn replay_chat() -> Option<&'static Path> {
     ACTIVE

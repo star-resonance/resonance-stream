@@ -37,22 +37,26 @@ fn create_popup(app: &AppHandle, kind: PopupKind) -> Result<WebviewWindow, Strin
         .get_webview_window("main")
         .ok_or("the main window was not found")?;
     let (width, height) = kind.size();
-    let window = WebviewWindowBuilder::new(app, kind.label(), WebviewUrl::App("index.html".into()))
-        .title(kind.title())
-        .inner_size(width, height)
-        .min_inner_size(300.0, 300.0)
-        .resizable(true)
-        .decorations(false)
-        .shadow(true)
-        .center()
-        // Hidden until `show_popup` has put it back where it was left: shown
-        // at once it would appear at the default place and jump.
-        .visible(false)
-        .always_on_top(main.is_always_on_top().unwrap_or(false))
-        .parent(&main)
-        .map_err(|e| e.to_string())?
-        .build()
-        .map_err(|e| e.to_string())?;
+    let mut builder =
+        WebviewWindowBuilder::new(app, kind.label(), WebviewUrl::App("index.html".into()))
+            .title(kind.title())
+            .inner_size(width, height)
+            .min_inner_size(300.0, 300.0)
+            .resizable(true)
+            .decorations(false)
+            .shadow(true)
+            .center()
+            // Hidden until `show_popup` has put it back where it was left: shown
+            // at once it would appear at the default place and jump.
+            .visible(false)
+            .always_on_top(main.is_always_on_top().unwrap_or(false))
+            .parent(&main)
+            .map_err(|e| e.to_string())?;
+    // `--devtools-port`: the same browser arguments as the main window (WebView2 refuses two sets).
+    if let Some(args) = crate::test_env::webview_browser_args() {
+        builder = builder.additional_browser_args(&args);
+    }
+    let window = builder.build().map_err(|e| e.to_string())?;
     // Closing a popup only hides it: opening it again is instant.
     let hider = window.clone();
     window.on_window_event(move |event| {

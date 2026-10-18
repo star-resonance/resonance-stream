@@ -214,8 +214,15 @@ pub fn run() {
     if !test_env::no_window_state() {
         builder = builder.plugin(window_state_plugin);
     }
+    let mut context = tauri::generate_context!();
+    // `--devtools-port`: the windows in tauri.conf.json get the same browser arguments as the popups.
+    if let Some(args) = test_env::webview_browser_args() {
+        for window in &mut context.config_mut().app.windows {
+            window.additional_browser_args = Some(args.clone());
+        }
+    }
     let app = builder
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while running tauri application");
 
     app.run(|_app_handle, event| {
