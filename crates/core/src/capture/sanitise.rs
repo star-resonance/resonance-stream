@@ -28,8 +28,8 @@ use super::{decode_line, encode_line, is_capturable, replay, ChatPipeline, Pipel
 use crate::protocol::compression::decompress;
 use crate::protocol::decoder::{read_tag, read_varint, Fields, Value};
 use crate::protocol::framing::{
-    has_history_lines, inner_header, FrameAssembler, FrameKind, COMPRESSED, PREFIX_LEN,
-    TYPE_KEEPALIVE, TYPE_OWN_LINE,
+    decode, inner_header, FrameAssembler, FrameKind, COMPRESSED, PREFIX_LEN, TYPE_KEEPALIVE,
+    TYPE_OWN_LINE,
 };
 use crate::protocol::parser::{history_pipeline, parsing_pipeline, Port5003Event};
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
@@ -389,33 +389,29 @@ fn rewrite_frame(
         return Ok(None);
     }
     let body = PREFIX_LEN + inner_header(ty);
+    if !decodes_to_chat(ty, &frame[PREFIX_LEN..]) {
+        // World state, the echoed own line, a live frame with no chat: nothing of it is kept
+        // but its length, its type and the first byte of its body (a root's tag or a zstd
+        // frame's), which is what framing checks.
+        report.frames_blanked += 1;
+        report.bytes_blanked += blank(&mut frame[PREFIX_LEN..body]) + blank(&mut frame[body + 1..]);
+        return Ok(None);
+    }
     report.bytes_blanked += blank(&mut frame[PREFIX_LEN..body]);
     if ty & COMPRESSED == 0 {
-        let root = &mut frame[body..];
-        // As `framing` reads them: a plain `0x0003` is history only when it has history lines;
-        // otherwise (the player's own line, echoed) it is never read, so all of it is scrubbed.
-        let schema = match ty {
-            TYPE_OWN_LINE if root.first() == Some(&0x0A) && has_history_lines(root) => {
-                Schema::HistoryTop
-            }
-            TYPE_OWN_LINE => Schema::Other,
-            _ => Schema::LiveTop,
+        // A plain `0x0003` that decodes is history (`framing` reads it so only then).
+        let schema = if ty == TYPE_OWN_LINE {
+            Schema::HistoryTop
+        } else {
+            Schema::LiveTop
         };
-        rewrite_message(root, schema, "root", people, report)?;
+        rewrite_message(&mut frame[body..], schema, "root", people, report)?;
         return Ok(None);
     }
+    // A compressed frame that decodes is history (`0x8003`); it inflated just now.
     let frame_len = frame.len();
     let packed = &mut frame[body..];
-    if ty != COMPRESSED | TYPE_OWN_LINE {
-        // World state and the like: never read, so nothing of it is kept but the first byte,
-        // which tells the framing a zstd frame follows.
-        report.bytes_blanked += blank(&mut packed[1..]);
-        return Ok(None);
-    }
-    let Some(mut root) = decompress(packed) else {
-        report.bytes_blanked += blank(&mut packed[1..]);
-        return Ok(None);
-    };
+    let mut root = decompress(packed).expect("a frame that decodes to chat inflates");
     rewrite_message(&mut root, Schema::HistoryTop, "history", people, report)?;
     let again = compress_to_vec(&root[..], CompressionLevel::Fastest);
     if again.len() > packed.len() {
@@ -429,6 +425,14 @@ fn rewrite_frame(
     packed[again.len()..].fill(0);
     report.history_padded += 1;
     Ok(Some(root))
+}
+
+/// Whether the app would show a line from this frame (`after_prefix`: what follows `[len][type]`).
+fn decodes_to_chat(ty: u16, after_prefix: &[u8]) -> bool {
+    decode(ty, after_prefix).is_some_and(|frame| match frame.kind {
+        FrameKind::Live => !parsing_pipeline(&frame.root).is_empty(),
+        FrameKind::History => !history_pipeline(&frame.root).is_empty(),
+    })
 }
 
 fn blank(bytes: &mut [u8]) -> usize {

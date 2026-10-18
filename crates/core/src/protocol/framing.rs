@@ -214,7 +214,8 @@ fn find_sync(data: &[u8]) -> Option<usize> {
     })
 }
 
-fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
+/// A frame's body (what follows `[len][type]`) as the parser gets it, if it is chat or history.
+pub(crate) fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
     let payload = body.get(inner_header(ty)..)?;
     let root = if ty & COMPRESSED != 0 {
         decompress(payload)?
@@ -236,7 +237,7 @@ fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
 }
 
 /// Whether a root carries chat lines in field 5 (the history layout).
-pub(crate) fn has_history_lines(root: &[u8]) -> bool {
+fn has_history_lines(root: &[u8]) -> bool {
     let (len, read) = read_varint(&root[1..]);
     let start = 1 + read;
     let end = field_end(start, len, root.len());
