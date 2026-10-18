@@ -1,0 +1,21 @@
+# Deletes merged `claude/*` branches still at their PR's head commit: auto-merge deletes the
+# branches it merges, but the PRs Kade merges by hand (drafts, workflow and agent-rule PRs) keep
+# theirs. star-resonance/.github's reusable workflow decides and deletes, only `claude/` and
+# `gate/` names; `main`, `rc`, `status`, `metadata` and `test/*` branches stay.
+name: Branch cleanup
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  cleanup:
+    uses: star-resonance/.github/.github/workflows/branch-cleanup.yml@main
+    permissions:
+      contents: write       # delete branches
+      pull-requests: read   # list the PRs
