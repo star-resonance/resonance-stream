@@ -619,7 +619,7 @@ Refactoring stages (S4 to S6) **do not change behaviour** (the wire format is th
 - A full tokio port of the worker threads and blocking reqwest: it works and the dedicated threads are well isolated.
 - Micro-optimising the parser and text path (P-5, and P-6 beyond lock scope): microseconds against LLM latency.
 - Regex caching (already `lazy_static`), parallel llama slots (`--parallel 1` is deliberate), `tauri-plugin-updater` (a signed updater already exists).
-- UI click automation (`tauri-driver` / WebDriver): Kade's decision (2026-10-06); `ui-preview` is the UI check.
+- ~~UI click automation (`tauri-driver` / WebDriver): Kade's decision (2026-10-06); `ui-preview` is the UI check.~~ -- reversed 2026-10-18 (`decisions.md` D-31): real-window clicks are scripted over WebView2's DevTools port, not `tauri-driver`.
 
 ---
 
