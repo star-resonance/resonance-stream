@@ -6,6 +6,8 @@
 //! * every backend -> UI event (`EVENT_NAMES`) is heard with `listen_any` and
 //!   published as `rs/app/event/<name>`, so no emit site changed;
 //! * `rs/test/command/<name>` is parsed, run, and answered on `rs/app/ack/<id>`.
+//!   Commands run one at a time, in the order they came, on a task of the async
+//!   runtime: one that takes long never holds up the connection (its keep-alive).
 //!
 //! A bridge that is slow or missing never blocks the app: publishing only queues
 //! (a full queue drops the message, with a warning), and the connection thread
@@ -72,7 +74,15 @@ pub fn start(app: &AppHandle) {
         });
     }
 
-    let app = app.clone();
+    // Commands, in the order they arrive: the connection thread only queues them.
+    let (commands, mut queue) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+    let (app, runner) = (app.clone(), client.clone());
+    tauri::async_runtime::spawn(async move {
+        while let Some((topic, payload)) = queue.recv().await {
+            handle(&app, &runner, &topic, &payload).await;
+        }
+    });
+
     std::thread::spawn(move || {
         log::info!("[Bridge] Using the broker at {host}:{port}");
         for notification in connection.iter() {
@@ -84,7 +94,7 @@ pub fn start(app: &AppHandle) {
                     let _ = client.try_subscribe(wire::COMMAND_FILTER, QoS::AtLeastOnce);
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
-                    handle(&app, &client, &publish.topic, &publish.payload);
+                    let _ = commands.send((publish.topic, publish.payload.to_vec()));
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -133,7 +143,7 @@ fn publish_envelope(topic: String, name: &str, payload: Value) {
 }
 
 /// Runs one command and answers it.
-fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
+async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
     let publish = |topic: String, text: String| {
         if let Err(e) = client.try_publish(topic, QoS::AtLeastOnce, false, text.into_bytes()) {
             log::warn!("[Bridge] Dropped an answer: {e}");
@@ -154,7 +164,7 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
     // the first system messages). A command must not run on a half-started app: wait for `ready`.
     let waited = Instant::now();
     while !crate::test_env::is_ready() && waited.elapsed() < Duration::from_secs(60) {
-        std::thread::sleep(Duration::from_millis(25));
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     log::info!("[Bridge] Command {:?}", request.command);
     let answer = |result: Result<(), String>| {
@@ -248,9 +258,7 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
         }
         Command::SyncDictionary => {
             // The settings view's sync: an async command that fetches, validates, saves and installs; its error is the ack's.
-            let synced = tauri::async_runtime::block_on(
-                crate::services::downloader::sync_dictionary(app.clone()),
-            );
+            let synced = crate::services::downloader::sync_dictionary(app.clone()).await;
             answer(synced.map(|_| ()));
         }
         Command::SaveLocalDictionary { content } => {
@@ -261,9 +269,8 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             ));
         }
         Command::AnnotateFurigana { texts } => {
-            // The UI's own command, an async fn that only computes: run it to the end here (this thread is not the runtime's).
-            let spans =
-                tauri::async_runtime::block_on(crate::commands::annotate_furigana(texts.clone()));
+            // The UI's own command, an async fn that only computes.
+            let spans = crate::commands::annotate_furigana(texts.clone()).await;
             answer_data(serde_json::to_value(spans).unwrap_or(Value::Null));
         }
         Command::GetFavorites => {
@@ -283,17 +290,9 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             answer(Ok(()));
         }
         Command::OpenPopup { kind } => {
-            // `open_popup` is async on purpose (a window made from a synchronous command can deadlock on Windows):
-            // run it on the async runtime and answer when the window is shown.
-            let (app, kind) = (app.clone(), *kind);
-            let (tx, rx) = std::sync::mpsc::channel();
-            tauri::async_runtime::spawn(async move {
-                let _ = tx.send(crate::window::open_popup(app, kind).await);
-            });
-            match rx.recv_timeout(Duration::from_secs(30)) {
-                Ok(result) => answer(result),
-                Err(_) => answer(Err("the popup was not shown within 30 s".into())),
-            }
+            // `open_popup` is async on purpose (a window made from a synchronous command can deadlock on Windows);
+            // this runs on the async runtime too. The ack comes when the window is shown.
+            answer(crate::window::open_popup(app.clone(), *kind).await);
         }
         Command::HidePopup { kind } => answer(crate::window::hide_popup(app, *kind)),
         Command::PlacePopup { kind, rect } => answer(crate::window::place_popup(app, *kind, *rect)),
@@ -329,7 +328,7 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
         Command::Quit => {
             answer(Ok(()));
             // Let the ack leave before the process does.
-            std::thread::sleep(Duration::from_millis(200));
+            tokio::time::sleep(Duration::from_millis(200)).await;
             app.exit(0);
         }
     }

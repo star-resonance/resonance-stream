@@ -37,8 +37,8 @@ serde_json = "1"
 rumqttc = { version = "0.25", default-features = false, optional = true }
 reqwest = { version = "0.12", features = ["stream", "json", "blocking", "rustls-tls"] }
 futures-util = "0.3"
-# Per-chunk download timeouts (already in the tree through reqwest and tauri).
-tokio = { version = "1", default-features = false, features = ["time"] }
+# Per-chunk download timeouts; the bridge's command queue (already in the tree through reqwest and tauri).
+tokio = { version = "1", default-features = false, features = ["time", "sync"] }
 tauri-plugin-fs = "2.4.5" # For handling the download stream
 # Network & Parsing
 is_elevated = "0.1"
