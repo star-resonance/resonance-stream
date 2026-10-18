@@ -634,7 +634,7 @@ Measured on `main` after #283 (the refactoring report's script): 36,969 Rust lin
 | E-2 | 15 process statics hold lifetimes: three answers to "is the sniffer alive" (`SnifferHandle.alive`, `IS_SNIFFER_ACTIVE`, `service_states`), the translator split between `Services` and `WORKER_GENERATION` / `SERVER_PID`, update state in five statics | owners in `AppState` (S8b, done: 10 statics; the other 5 stay on purpose, see the roadmap) | Medium |
 | E-3 | the ui <-> backend contract is strings: about 66 `invoke("...")` sites (41 names), 26 hand-built `json!` argument objects, event names in three places | `crates/types::ipc` (S8c, done) | Medium |
 | E-4 | the bridge is a second, hand-kept command surface: 17 of its 25 commands call Tauri commands, some through `block_on` | one service layer both call (S8d, done: plain functions beside the commands, guarded by a test) | Medium |
-| E-5 | the sniffer dispatch and the translation job live in the Windows-only app; `crates/llama/tests/support/harness.rs` is a hand copy ("keep it in step") | core behind a `Sink` trait (S8e) | Medium |
+| E-5 | the sniffer dispatch and the translation job live in the Windows-only app; `crates/llama/tests/support/harness.rs` is a hand copy ("keep it in step") | core behind a `Sink` trait (S8e, done: `resonance_core::flow`, the harness runs it) | Medium |
 
 Considered and not chosen: `tauri-specta` bindings (a heavier dependency for what E-3's module does by hand), an actor / tokio rewrite of the
 services (E-2 reaches one owner with less churn), several processes or another ui framework (no problem calls for them), splitting the big
