@@ -195,8 +195,8 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             min_height,
         } => match app.get_window("main") {
             // What the settings view does: the ack's data is the rect it replaced (null: nothing changed).
-            Some(window) => answer_data(rect_json(crate::window::grow_window(
-                window,
+            Some(window) => answer_data(rect_json(crate::window::grow(
+                &window,
                 f64::from(*min_width),
                 f64::from(*min_height),
             ))),
@@ -284,16 +284,16 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             answer(Ok(()));
         }
         Command::OpenPopup { kind } => {
-            // `open_popup` is async on purpose (a window made from a synchronous command can deadlock on Windows);
-            // this runs on the async runtime too. The ack comes when the window is shown.
-            answer(crate::window::open_popup(app.clone(), *kind).await);
+            // What `open_popup` does, on the async runtime as it is (a window made from a synchronous command can
+            // deadlock on Windows). The ack comes when the window is shown.
+            answer(crate::window::show_popup(app, *kind));
         }
         Command::HidePopup { kind } => answer(crate::window::hide_popup(app, *kind)),
         Command::PlacePopup { kind, rect } => answer(crate::window::place_popup(app, *kind, *rect)),
         Command::SnapshotPopups => answer_data(crate::window::popups_snapshot(app)),
         Command::PinMain { on } => match app.get_window("main") {
             Some(window) => {
-                crate::window::set_always_on_top(window, *on);
+                crate::window::pin(&window, *on);
                 answer(Ok(()));
             }
             None => answer(Err("There is no main window".into())),
