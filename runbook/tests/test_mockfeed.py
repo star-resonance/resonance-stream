@@ -193,6 +193,14 @@ def test_the_real_signer_signs_for_the_revision_it_is_given(tmp_path):
     assert signer.public_key and signer.public_key != sig
 
 
+@pytest.mark.skipif(__import__("shutil").which("npx") is None, reason="needs npx (and the network the first time)")
+def test_a_second_signer_in_the_same_folder_makes_a_fresh_key(tmp_path):
+    # A run folder outlives its run: the next run of the same pipeline makes its key there again.
+    first = mockfeed.MetadataSigner(tmp_path / "k", "good")
+    again = mockfeed.MetadataSigner(tmp_path / "k", "good")
+    assert again.public_key and again.public_key != first.public_key
+
+
 def test_feed_modes():
     with mockfeed.MockServer(exe_bytes=b"x") as server:
         server.feed_mode = "garbage"

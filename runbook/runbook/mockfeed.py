@@ -54,7 +54,7 @@ def metadata_json(model_url: str = "http://127.0.0.1:1/model.gguf", *, revision:
 class MetadataSigner:
     """A throwaway signing key for the mock's metadata, made and used with `tauri signer` (the tool `metadata.yml` signs with), so
     the app's real verifier is what judges it: it is told to trust this key alone (`--metadata-trust-key`). The key lives in `folder`
-    for one run and signs nothing real.
+    for one run and signs nothing real; a key a previous run left there is overwritten (`--force`).
 
     In a dry run nothing is run: a stand-in scheme is used (`FAKESIG`), which only the stand-in app in `tests/fake_app.py` reads."""
 
@@ -67,7 +67,7 @@ class MetadataSigner:
             self.key_id = hashlib.sha256(name.encode()).hexdigest()[:16].upper()
             self.public_key = base64.b64encode(f"untrusted comment: dry run key\n{self.key_id}\n".encode()).decode()
             return
-        code, out = common.capture(["npx", "--yes", "@tauri-apps/cli@2", "signer", "generate", "--ci", "-w", str(self.key)], timeout=300)
+        code, out = common.capture(["npx", "--yes", "@tauri-apps/cli@2", "signer", "generate", "--ci", "--force", "-w", str(self.key)], timeout=300)
         pub = self.key.with_name(self.key.name + ".pub")
         if code != 0 or not pub.exists():
             raise RuntimeError("could not make a signing key with `tauri signer generate`: " + " ".join(out.split())[-300:])
