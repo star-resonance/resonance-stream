@@ -321,9 +321,54 @@ impl ChatHistory {
     }
 }
 
+const EXPORT_RULE: &str = "--------------------------------------------------";
+
+/// The first two lines of a chat export (the settings view's "save chat"), `now` the local time it was made.
+pub fn export_header(now: &str) -> String {
+    format!("=== BPSR Translator Chat Export ({now}) ===\n{EXPORT_RULE}\n")
+}
+
+/// One message of a chat export, without its line end. `time` is its timestamp as local time.
+pub fn export_line(
+    time: &str,
+    channel: &str,
+    nickname: &str,
+    message: &str,
+    translated: Option<&str>,
+) -> String {
+    let trans_str = match translated {
+        Some(t) => format!(" -> {}", t),
+        None => "".to_string(),
+    };
+    format!("[{time}] [{channel}] {nickname}: {message}{trans_str}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chat_export_keeps_its_header_and_line_format() {
+        assert_eq!(
+            export_header("2026-10-18 14:00:00"),
+            "=== BPSR Translator Chat Export (2026-10-18 14:00:00) ===\n\
+             --------------------------------------------------\n"
+        );
+        assert_eq!(
+            export_line(
+                "2026-10-18 13:59:58",
+                "WORLD",
+                "Kade",
+                "こんにちは",
+                Some("안녕하세요")
+            ),
+            "[2026-10-18 13:59:58] [WORLD] Kade: こんにちは -> 안녕하세요"
+        );
+        assert_eq!(
+            export_line("2026-10-18 13:59:59", "GUILD", "Rin", "ok", None),
+            "[2026-10-18 13:59:59] [GUILD] Rin: ok"
+        );
+    }
 
     fn msg(pid: u64) -> ChatMessage {
         on("GUILD", pid)

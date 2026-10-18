@@ -1,4 +1,5 @@
 use chrono::Local;
+use resonance_core::history;
 use std::fs;
 use std::io::Write;
 use tauri_plugin_opener::OpenerExt;
@@ -57,30 +58,19 @@ pub async fn export_chat_log(
     let mut file = fs::File::create(&file_path).map_err(|e| e.to_string())?;
 
     // 4. Write the header
-    writeln!(
-        file,
-        "=== BPSR Translator Chat Export ({}) ===",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    )
-    .map_err(|e| e.to_string())?;
-    writeln!(file, "--------------------------------------------------")
-        .map_err(|e| e.to_string())?;
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    write!(file, "{}", history::export_header(&now)).map_err(|e| e.to_string())?;
 
     // 5. Format and write each message
     for log in logs {
-        // Convert Unix timestamp to readable date/time
         // The timestamp is a raw value from the wire: one out of range must not end the export.
         let time_str = export_time(log.timestamp);
-
-        // Format translation (if it exists)
-        let trans_str = match &log.translated {
-            Some(t) => format!(" -> {}", t),
-            None => "".to_string(),
-        };
-
-        let line = format!(
-            "[{}] [{}] {}: {}{}",
-            time_str, log.channel, log.nickname, log.message, trans_str
+        let line = history::export_line(
+            &time_str,
+            &log.channel,
+            &log.nickname,
+            &log.message,
+            log.translated.as_deref(),
         );
         writeln!(file, "{}", line).map_err(|e| e.to_string())?;
     }
