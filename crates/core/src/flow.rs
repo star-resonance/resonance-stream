@@ -1,3 +1,160 @@
+//! What happens to a chat line between the capture and the translation: the sniffer's dispatch of
+//! the pipeline's actions ([`dispatch`]) and the translator's job ([`run_translation_job`]). The
+//! app and the test harness (`crates/llama/tests/support/harness.rs`) both run this code; each
+//! gives it a [`Sink`] for the effects (history, events, archive, translator queue).
+
+use crate::capture::PipelineAction;
+use crate::history::{ArchiveTarget, ChatHistory};
+use crate::text::{
+    contains_japanese, convert_to_romaji, nicknames_in, preprocess_with_nicknames,
+    translate_masked, Dictionary, TranslationCache,
+};
+use crate::workers::TranslationLedger;
+use resonance_types::ChatMessage;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Where the flow's effects go. The `with_*` methods hand out shared state for as long as the
+/// closure runs, so an app that keeps it behind a lock holds the lock only that long.
+pub trait Sink {
+    /// Is translation switched on in the settings. Read once per batch of actions.
+    fn use_translation(&mut self) -> bool;
+    /// Stores `chat` in the backend's history and shows it (`packet-event`).
+    fn store_and_emit(&mut self, chat: &ChatMessage);
+    /// Tells the windows a stored row changed (`chat-message-update`).
+    fn emit_update(&mut self, chat: &ChatMessage);
+    /// Tells the windows a row has its translation (`translation-event`).
+    fn emit_translation(&mut self, pid: u64, translated: &str);
+    /// Queues `chat` for the archive files `target` names.
+    fn archive(&mut self, chat: &ChatMessage, target: ArchiveTarget);
+    /// Hands `chat` to the translator worker; `false` when none is running.
+    fn queue_translation(&mut self, chat: ChatMessage) -> bool;
+    /// The dictionary in use.
+    fn dictionary(&mut self) -> Arc<Dictionary>;
+    fn with_history<R>(&mut self, f: impl FnOnce(&mut ChatHistory) -> R) -> R;
+    fn with_ledger<R>(&mut self, f: impl FnOnce(&mut TranslationLedger) -> R) -> R;
+    /// Japanese nickname -> romaji, filled as senders arrive.
+    fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R;
+}
+
+/// The sniffer's side: what becomes of each action the capture pipeline produced.
+pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
+    let use_translation = sink.use_translation();
+
+    for action in actions {
+        match action {
+            PipelineAction::UpdateBlockedMessage(chat) => {
+                let flagged = sink.with_history(|history| {
+                    let row = history.get_mut(chat.pid)?;
+                    if row.is_blocked {
+                        return None;
+                    }
+                    row.is_blocked = true;
+                    Some(row.clone())
+                });
+                if let Some(row) = flagged {
+                    sink.emit_update(&row);
+                }
+            }
+            PipelineAction::EmitNewMessage(mut chat) => {
+                // Apply Romaji Swap
+                if contains_japanese(&chat.nickname) {
+                    let nickname = chat.nickname.clone();
+                    let romaji = sink.with_nicknames(|cache| {
+                        cache
+                            .entry(nickname.clone())
+                            .or_insert_with(|| convert_to_romaji(&nickname))
+                            .clone()
+                    });
+                    chat.nickname_romaji = Some(romaji);
+                }
+
+                // Dispatch Side Effects. (A duplicate never gets here: the pipeline
+                // dropped it, so it is neither translated nor archived.)
+                sink.store_and_emit(&chat);
+
+                // Every Japanese message is owed a translation, even with the
+                // translator off or still starting: its next start catches up.
+                let japanese = contains_japanese(&chat.message);
+                if japanese {
+                    sink.with_ledger(|ledger| ledger.record(chat.pid));
+                }
+
+                // Every message is in the chat log from the moment it arrives; what
+                // the translator does later only adds to the training-pair file and a
+                // newer chat-log line with the translation.
+                sink.archive(&chat, ArchiveTarget::ChatLog);
+                let queued = use_translation && japanese && sink.queue_translation(chat.clone());
+                if !queued {
+                    // No translation will come: the training-pair file gets it as it is.
+                    sink.archive(&chat, ArchiveTarget::Dataset);
+                }
+            }
+        }
+    }
+}
+
+/// How a translation job ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobResult {
+    Done,
+    /// Nothing was owed (translated already, or not of this run).
+    Skipped,
+    /// No translation; the message stays owed.
+    Failed,
+}
+
+/// The translator's side: one queued line. `translate` sends the shielded text to the server
+/// (only for a line the cache does not have).
+pub fn run_translation_job<S: Sink>(
+    sink: &mut S,
+    chat: &ChatMessage,
+    cache: &mut TranslationCache,
+    translate: impl FnOnce(&str) -> Result<String, String>,
+) -> JobResult {
+    // Translated already (a catch-up item that was also queued live) or not
+    // a message of this run's ledger: nothing is owed.
+    if !sink.with_ledger(|ledger| ledger.is_owed(chat.pid)) {
+        return JobResult::Skipped;
+    }
+
+    // 1. Preprocess. The nicknames are only picked under `with_nicknames`: the sniffer needs the
+    // cache for every Japanese nickname, and must wait neither for the rest of the shielding nor
+    // for the HTTP round trip below.
+    let dict = sink.dictionary();
+    let nicknames = sink.with_nicknames(|cache| nicknames_in(&chat.message, cache));
+    let shield = preprocess_with_nicknames(&chat.message, &dict, &nicknames);
+
+    // 2. HTTP request, unless this line was translated before; 3. postprocess.
+    let final_str = match translate_masked(&shield, cache, translate) {
+        Ok(text) => text,
+        Err(reason) => {
+            // No translation: the row stays as it is, and the original is
+            // still archived.
+            log::warn!("[Translator] pid {}: {}", chat.pid, reason);
+            sink.archive(chat, ArchiveTarget::Dataset);
+            return JobResult::Failed;
+        }
+    };
+
+    // 4. Dispatch Side Effects: the translated copy goes to both archives (the chat log
+    // already holds the message from its arrival; `load_recent` keeps the newest line).
+    let mut archived = chat.clone();
+    archived.translated = Some(final_str.clone());
+    sink.archive(&archived, ArchiveTarget::Both);
+
+    sink.with_history(|history| {
+        if let Some(row) = history.get_mut(chat.pid) {
+            row.translated = Some(final_str.clone());
+        }
+    });
+    sink.with_ledger(|ledger| {
+        ledger.settle(chat.pid);
+    });
+    sink.emit_translation(chat.pid, &final_str);
+    JobResult::Done
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
