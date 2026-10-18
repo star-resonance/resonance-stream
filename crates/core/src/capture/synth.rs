@@ -6,6 +6,7 @@
 //! `protocol::framing` (type `0x0002`, a 16-byte inner header).
 
 use resonance_types::{Channel, ChatMessage};
+use ruzstd::encoding::{compress_to_vec, CompressionLevel};
 
 /// What a channel is called on the wire (the inverse of `Channel::known_code`).
 fn channel_code(channel: Channel) -> u64 {
@@ -39,8 +40,8 @@ fn bytes_field(tag: u8, body: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(body);
 }
 
-/// The chat line as one live frame (`[len][0x0002][16-byte header][root]`).
-pub fn live_chat_frame(chat: &ChatMessage) -> Vec<u8> {
+/// One chat line as the wire carries it: `{1: sequence, 2: sender, 3: time, 4: message}`.
+fn chat_block(chat: &ChatMessage) -> Vec<u8> {
     let mut sender = Vec::new();
     varint_field(0x08, chat.uid, &mut sender);
     bytes_field(0x12, chat.nickname.as_bytes(), &mut sender);
@@ -54,22 +55,46 @@ pub fn live_chat_frame(chat: &ChatMessage) -> Vec<u8> {
     bytes_field(0x12, &sender, &mut payload);
     varint_field(0x18, chat.timestamp, &mut payload);
     bytes_field(0x22, &message, &mut payload);
+    payload
+}
 
-    let mut fields = Vec::new();
-    varint_field(0x08, channel_code(chat.channel), &mut fields);
-    bytes_field(0x12, &payload, &mut fields);
-
+/// A root (`0x0A`, its length, then `fields`).
+fn root_of(fields: &[u8]) -> Vec<u8> {
     let mut root = vec![0x0A];
     varint(fields.len() as u64, &mut root);
-    root.extend(fields);
+    root.extend_from_slice(fields);
+    root
+}
 
+/// `[len][ty][header_len bytes of 0xEE][body]`.
+fn frame_of(ty: u16, header_len: usize, body: &[u8]) -> Vec<u8> {
     let mut frame = vec![0u8; 4];
-    frame.extend(0x0002u16.to_be_bytes());
-    frame.extend([0xEE; 16]);
-    frame.extend(root);
+    frame.extend(ty.to_be_bytes());
+    frame.extend(std::iter::repeat_n(0xEE, header_len));
+    frame.extend_from_slice(body);
     let len = frame.len() as u32;
     frame[..4].copy_from_slice(&len.to_be_bytes());
     frame
+}
+
+/// The chat line as one live frame (`[len][0x0002][16-byte header][root]`).
+pub fn live_chat_frame(chat: &ChatMessage) -> Vec<u8> {
+    let mut fields = Vec::new();
+    varint_field(0x08, channel_code(chat.channel), &mut fields);
+    bytes_field(0x12, &chat_block(chat), &mut fields);
+    frame_of(0x0002, 16, &root_of(&fields))
+}
+
+/// A channel's recent lines as one history frame (`[len][0x8003][12-byte header][zstd(root)]`,
+/// root `{3: channel code, 5: chat, 5: chat, ...}`), `newest_first` as the server sends them.
+pub fn history_frame(channel: Channel, newest_first: &[ChatMessage]) -> Vec<u8> {
+    let mut fields = Vec::new();
+    varint_field(0x18, channel_code(channel), &mut fields);
+    for chat in newest_first {
+        bytes_field(0x2A, &chat_block(chat), &mut fields);
+    }
+    let packed = compress_to_vec(&root_of(&fields)[..], CompressionLevel::Fastest);
+    frame_of(0x8003, 12, &packed)
 }
 
 #[cfg(test)]
@@ -159,6 +184,34 @@ mod tests {
         assert_eq!(got[0].message, text);
         assert_eq!(got[0].uid, sent.uid);
         assert_eq!(got[0].sequence_id, 300);
+    }
+
+    #[test]
+    fn a_built_history_frame_comes_out_oldest_first() {
+        let newest = chat(Channel::Guild, "ミナト", 60, "二番目", 8);
+        let older = chat(Channel::Guild, "Kenji", 12, "一番目", 7);
+        let got = through_the_pipeline(&[history_frame(
+            Channel::Guild,
+            &[newest.clone(), older.clone()],
+        )]);
+        let got: Vec<(Channel, &str, u64, &str)> = got
+            .iter()
+            .map(|m| {
+                (
+                    m.channel,
+                    m.nickname.as_str(),
+                    m.sequence_id,
+                    m.message.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Channel::Guild, "Kenji", 7, "一番目"),
+                (Channel::Guild, "ミナト", 8, "二番目"),
+            ]
+        );
     }
 
     #[test]
