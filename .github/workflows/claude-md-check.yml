@@ -1,0 +1,23 @@
+# Keeps CLAUDE.md at most 100 lines and each .claude/rules/*.md at most 80 lines with `paths:`.
+# The check is star-resonance/.github's reusable claude-md-check.yml (read from its main). It
+# runs on every pull request, unfiltered, because auto-merge.yml requires it.
+name: CLAUDE.md check
+
+on:
+  push:
+    branches: [main]
+    paths: ["CLAUDE.md", ".claude/**", ".github/workflows/claude-md-check.yml"]
+  pull_request:
+  # Weekly on main and by hand: auto-merges use GITHUB_TOKEN and start no push run, so main is
+  # re-tested whatever they touched.
+  schedule:
+    - cron: "7 5 * * 0"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    uses: star-resonance/.github/.github/workflows/claude-md-check.yml@main
+    permissions:
+      contents: read
