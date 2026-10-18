@@ -6,6 +6,9 @@ name: Dependency audit
 # and that must not hold up auto-merge. It runs when Cargo.lock changes, every Monday,
 # and on demand; a red run is a to-do (update the crate, or say in `audit.toml` why an
 # advisory does not apply, with the reason), not a failed change.
+# On a pull request a finding is a warning and the check stays green: auto-merge stops on any
+# red check on the PR's head, and an advisory must not hold up a dependency change (D-22).
+# The Monday and on-demand runs still go red. A tool error on a pull request is a warning too.
 on:
   pull_request:
     paths:
@@ -34,5 +37,15 @@ jobs:
         with:
           tool: cargo-audit
       # Warnings (unmaintained, yanked crates) are printed but do not fail the run;
-      # a vulnerability does.
-      - run: cargo audit --file Cargo.lock
+      # a vulnerability does, except on a pull request (see the top of this file).
+      - name: cargo audit
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if cargo audit --file Cargo.lock; then exit 0; fi
+          if [ "$EVENT" = pull_request ]; then
+            echo "::warning::cargo audit failed; on a pull request this is a warning, not a red check (D-22). See the log above."
+            echo "cargo audit failed: a to-do, not a failed change (D-22). See the log." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit 1

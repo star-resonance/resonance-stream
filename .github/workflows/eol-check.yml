@@ -1,0 +1,21 @@
+# Fails on CRLF line endings, or if .gitattributes loses `* text=auto eol=lf`. The check is
+# star-resonance/.github's reusable eol-check.yml (read from its main).
+name: Line endings
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly on main and by hand: auto-merges use GITHUB_TOKEN and start no push run, so main is
+  # re-tested whatever they touched.
+  schedule:
+    - cron: "5 5 * * 0"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  eol:
+    uses: star-resonance/.github/.github/workflows/eol-check.yml@main
+    permissions:
+      contents: read

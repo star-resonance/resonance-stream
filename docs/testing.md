@@ -90,9 +90,11 @@ cd runbook && python -m pytest -q                   # the pipelines against the 
 | Workflow | Trigger | Runs |
 |---|---|---|
 | `ci.yml` | every pull request; push to `main` (non-doc paths) | fmt, core + ui on Linux; the app gate on Windows |
-| `auto-merge.yml` | after `CI` completes | merges a green `claude/*` PR into `main`; leaves a draft or a PR that changes `.github/workflows/` to Kade |
+| `auto-merge.yml` | after any PR check's workflow completes | star-resonance/.github's shared auto-merge: merges a `claude/*` PR into `main` once every check on its head is green and the six every-PR checks succeeded, closes its `Closes #N` issues, then dispatches `ci.yml` on `main`; leaves a draft, or a PR that changes `.github/workflows/`, `CLAUDE.md` or `.claude/rules/`, to Kade |
+| `eol-check.yml`, `claude-md-check.yml` | every pull request; push to `main`; Sundays; on demand | the shared LF line-ending check; the shared `CLAUDE.md` and rules limits |
+| `branch-cleanup.yml` | a PR closes; daily; on demand | the shared cleanup: deletes merged `claude/*` branches still at their PR's head |
 | `actionlint.yml` | pull requests that change `.github/workflows/` or `.github/actionlint.yaml`; on demand | actionlint with shellcheck on every workflow; the findings it ignores are in `.github/actionlint.yaml` |
-| `audit.yml` | Cargo file changes, Mondays, on demand | `cargo audit` |
+| `audit.yml` | Cargo file changes, Mondays, on demand | `cargo audit`; on a pull request a finding is a warning and the check stays green (D-22) |
 | `mutants.yml` | its own file changes, Mondays, on demand (`file` input) | `cargo mutants` on one core file; green when the tool ran, the missed list is in the summary and the `mutants-out` artifact |
 | `bridge-smoke.yml` | `workflow_dispatch`, and `workflow_call` from `release.yml` | the real-app pipelines |
 | `release-candidate.yml` | push to `rc` | CI gates, a plain exe, a GitHub prerelease |

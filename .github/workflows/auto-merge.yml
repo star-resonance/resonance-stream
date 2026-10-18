@@ -1,64 +1,61 @@
+# Merges a green pull request from a `claude/*` branch into main, then deletes the branch.
+# Runs when any check below finishes; star-resonance/.github's reusable workflow merges only when
+# every check on the PR's head commit is green and every check in `require:` has succeeded, so a
+# check whose workflow has not started yet is never skipped. It also closes the issues the PR
+# says it closes (`Closes #N`), which a merge made with GITHUB_TOKEN does not do.
+# Left for a person: a PR into `rc` or any other branch (`rc` is merged by hand: that merge
+# starts release-candidate.yml, which a merge made with GITHUB_TOKEN would not), another branch
+# prefix, a fork, a draft, and a PR that touches .github/workflows/ (this file included) or a
+# `protected:` path, the agent rules.
+# Add each new PR check's workflow name to `workflows:`, and its check names to `require:` if
+# they run on every pull request into main: a path-filtered check never reports on most PRs,
+# and naming one would leave every other PR waiting. `actionlint` and `Dependency audit` are
+# path-filtered, so they are triggers only. A renamed check changes here in the same PR.
+# `workflow_run` is read from main: a change to this file acts only after its own merge.
 name: Auto-merge
 
-# A pull request from a `claude/*` branch **into main** is merged (and its
-# branch deleted) once the CI workflow has passed on its latest commit. Only
-# `claude/*` branches of this repository are ever merged or deleted; anything
-# else -- a failed run, another branch prefix, a fork, a stale run, a pull
-# request into any other branch (`rc` is merged by hand: that merge starts
-# release-candidate.yml, which a merge made with GITHUB_TOKEN would not), a
-# draft, a pull request that changes .github/workflows/ -- is left for a human.
-# `workflow_run` workflows are read from the default branch, so this file only
-# takes effect once it is on main.
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: ["CI", "Test branch guard", "Line endings", "CLAUDE.md check", "actionlint", "Dependency audit"]
     types: [completed]
 
 permissions: {}
 
 jobs:
   merge:
-    name: merge when CI is green
+    uses: star-resonance/.github/.github/workflows/auto-merge.yml@main
+    with:
+      require: |
+        core + ui gates (Linux)
+        app gate (Windows)
+        secret scan (gitleaks)
+        no test/* branch into main
+        eol / LF line endings
+        check / CLAUDE.md and rules within limits
+      protected: |
+        CLAUDE.md
+        .claude/rules/
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write  # close the issues a merged PR says it closes
+      checks: read
+      statuses: read
+
+  # A merge made with GITHUB_TOKEN starts no push run on main, so main's build cache would go
+  # stale. workflow_dispatch is the one event GITHUB_TOKEN may start; the run on main re-saves
+  # the cache.
+  refresh:
+    name: run CI on main after the merge
+    needs: merge
+    if: needs.merge.outputs.merged == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write       # merge the PR, delete its branch
-      pull-requests: write  # merge the PR
-      actions: write        # dispatch CI on main
-    if: >
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'claude/') &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      actions: write  # dispatch CI on main
     steps:
-      - name: Merge the pull request
+      - name: Dispatch CI on main
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          BRANCH: ${{ github.event.workflow_run.head_branch }}
-          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --base main --state open --json number,headRefOid,isDraft --jq '.[0]')
-          if [ -z "$pr" ] || [ "$pr" = "null" ]; then echo "no open PR from $BRANCH into main"; exit 0; fi
-          number=$(jq -r .number <<<"$pr")
-          head=$(jq -r .headRefOid <<<"$pr")
-          # The green run must be for the PR's latest commit, not an older push.
-          if [ "$head" != "$RUN_SHA" ]; then echo "run is for $RUN_SHA, PR head is $head; waiting for its run"; exit 0; fi
-          # A draft is not ready; a person merges it, or the next push after it is marked ready.
-          if [ "$(jq -r .isDraft <<<"$pr")" = "true" ]; then echo "PR #$number is a draft; leaving it"; exit 0; fi
-          # A change to .github/workflows/ (a rename out of it too) is merged by a person: a workflow
-          # holds this repository's tokens, so a merge must never change one unseen.
-          changed=$(gh api --paginate "repos/$REPO/pulls/$number/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          if grep -q '^\.github/workflows/' <<<"$changed"; then echo "PR #$number changes .github/workflows/; leaving it for a person"; exit 0; fi
-          # Merge only the commit that was checked: a push since then gets its own run.
-          gh pr merge "$number" --repo "$REPO" --merge --match-head-commit "$head"
-          # Delete only a claude/* branch, and never anything else.
-          case "$BRANCH" in
-            claude/*) gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" ;;
-            *) echo "not a claude/* branch; leaving $BRANCH" ;;
-          esac
-          # A merge made with GITHUB_TOKEN starts no push run on main, so main's
-          # build cache would go stale. workflow_dispatch is the one event
-          # GITHUB_TOKEN may start; the run on main re-saves the cache.
-          gh workflow run ci.yml --repo "$REPO" --ref main
+        run: gh workflow run ci.yml --repo "$REPO" --ref main
