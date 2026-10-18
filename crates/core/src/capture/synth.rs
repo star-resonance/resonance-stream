@@ -72,6 +72,12 @@ pub fn live_chat_frame(chat: &ChatMessage) -> Vec<u8> {
     frame
 }
 
+/// A channel's recent lines as one history frame (`[len][0x8003][12-byte header][zstd(root)]`,
+/// root `{3: channel code, 5: chat, 5: chat, ...}`), `newest_first` as the server sends them.
+pub fn history_frame(_channel: Channel, _newest_first: &[ChatMessage]) -> Vec<u8> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,6 +165,34 @@ mod tests {
         assert_eq!(got[0].message, text);
         assert_eq!(got[0].uid, sent.uid);
         assert_eq!(got[0].sequence_id, 300);
+    }
+
+    #[test]
+    fn a_built_history_frame_comes_out_oldest_first() {
+        let newest = chat(Channel::Guild, "ミナト", 60, "二番目", 8);
+        let older = chat(Channel::Guild, "Kenji", 12, "一番目", 7);
+        let got = through_the_pipeline(&[history_frame(
+            Channel::Guild,
+            &[newest.clone(), older.clone()],
+        )]);
+        let got: Vec<(Channel, &str, u64, &str)> = got
+            .iter()
+            .map(|m| {
+                (
+                    m.channel,
+                    m.nickname.as_str(),
+                    m.sequence_id,
+                    m.message.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Channel::Guild, "Kenji", 7, "一番目"),
+                (Channel::Guild, "ミナト", 8, "二番目"),
+            ]
+        );
     }
 
     #[test]
