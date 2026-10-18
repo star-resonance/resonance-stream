@@ -1021,6 +1021,22 @@ mod tests {
     }
 
     #[test]
+    fn webview_browser_args_keep_the_defaults_and_add_the_devtools_port() {
+        // Without the flag the app passes nothing and wry uses its own defaults.
+        assert_eq!(ok(&[]).webview_browser_args(), None);
+        // With it every window gets wry's defaults (an explicit list replaces them) plus the port.
+        assert_eq!(
+            ok(&["--devtools-port", "9222"])
+                .webview_browser_args()
+                .as_deref(),
+            Some(
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+                 --autoplay-policy=no-user-gesture-required --remote-debugging-port=9222"
+            )
+        );
+    }
+
+    #[test]
     fn a_restart_does_not_open_the_devtools_port_again() {
         // The new process starts while the old one still holds the port.
         let env = ok(&["--data-dir", "/tmp/run1", "--devtools-port", "9222"]);
