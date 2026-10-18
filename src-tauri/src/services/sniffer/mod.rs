@@ -6,9 +6,7 @@ pub use self::network::*;
 use self::raw_capture::RawCapture;
 pub use self::raw_capture::{open_captures_folder, set_raw_capture};
 
-use crate::{
-    inject_system_message, inject_system_message_throttled, store_and_emit, TranslationJob,
-};
+use crate::{inject_system_message, inject_system_message_throttled};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -18,7 +16,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::protocol::types::{AppState, SnifferState, SystemLogLevel};
 use crossbeam_channel::Sender;
 use resonance_core::capture::{ChatPipeline, PipelineAction};
-use resonance_core::text::{contains_japanese, convert_to_romaji};
 use resonance_core::workers::{
     read_error_backoff, wait_for, watchdog_check, SnifferActivity, WatchdogVerdict,
     WATCHDOG_LIMIT_SECS, WATCHDOG_TICK,
@@ -332,60 +329,9 @@ fn spawn_watchdog(
 }
 
 // --- 4. SIDE EFFECT DISPATCHER ---
+/// What becomes of the pipeline's actions: `resonance_core::flow::dispatch` with the app's effects.
 fn dispatch_pipeline_actions(app: &AppHandle, actions: Vec<PipelineAction>) {
-    let state = app.state::<AppState>();
-    let use_translation = state.config.read().use_translation;
-
-    for action in actions {
-        match action {
-            PipelineAction::UpdateBlockedMessage(chat) => {
-                let mut history = state.chat_history.lock();
-                if let Some(existing_msg) = history.get_mut(chat.pid) {
-                    if !existing_msg.is_blocked {
-                        existing_msg.is_blocked = true;
-                        let _ = app.emit(
-                            resonance_types::ipc::event::CHAT_MESSAGE_UPDATE,
-                            existing_msg.clone(),
-                        );
-                    }
-                }
-            }
-            PipelineAction::EmitNewMessage(mut chat) => {
-                // Apply Romaji Swap
-                if contains_japanese(&chat.nickname) {
-                    let mut nick_cache = state.nickname_cache.lock();
-                    chat.nickname_romaji = Some(
-                        nick_cache
-                            .entry(chat.nickname.clone())
-                            .or_insert_with(|| convert_to_romaji(&chat.nickname))
-                            .clone(),
-                    );
-                }
-
-                // Dispatch Side Effects. (A duplicate never gets here: the pipeline
-                // dropped it, so it is neither translated nor archived.)
-                store_and_emit(app, chat.clone());
-
-                // Every Japanese message is owed a translation, even with the
-                // translator off or still starting: its next start catches up.
-                if contains_japanese(&chat.message) {
-                    state.translation_ledger.lock().record(chat.pid);
-                }
-
-                // Every message is in the chat log from the moment it arrives; what
-                // the translator does later only adds to the training-pair file and a
-                // newer chat-log line with the translation.
-                crate::services::translator::archive_arrival(app, &chat);
-                let translator = state.services.translator_sender();
-                match translator.as_ref() {
-                    Some(tx) if use_translation && contains_japanese(&chat.message) => {
-                        let _ = tx.send(TranslationJob::new(chat));
-                    }
-                    _ => crate::services::translator::archive_untranslated(app, &chat),
-                }
-            }
-        }
-    }
+    resonance_core::flow::dispatch(&mut crate::services::translator::AppSink::new(app), actions);
 }
 
 #[tauri::command(async)]
