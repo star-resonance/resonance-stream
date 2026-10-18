@@ -1,0 +1,39 @@
+# Sets or clears an issue's Start or Target date on the Resonance organization Project
+# (star-resonance). No cmd: label can carry a date and a cloud session cannot reach the Project
+# API, so a session starts this run, a call under this repository:
+#   gh workflow run project-set.yml -f issue=123 -f field=Target -f date=2026-11-01   (or date=clear)
+# The job is star-resonance/.github's reusable project-set.yml, which checks the inputs before any
+# API call and reads the issue from this repository only. A Project snapshot follows it.
+name: Project set
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number in this repository
+        type: string
+        required: true
+      field:
+        description: Which date
+        type: choice
+        options: [Target, Start]
+        required: true
+      date:
+        description: YYYY-MM-DD, or "clear"
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  set:
+    if: vars.PROJECT_NUMBER != ''
+    permissions:
+      issues: read  # read the issue's node id
+    uses: star-resonance/.github/.github/workflows/project-set.yml@main
+    with:
+      issue: ${{ inputs.issue }}
+      field: ${{ inputs.field }}
+      date: ${{ inputs.date }}
+    secrets:
+      BRIDGE_APP_PRIVATE_KEY: ${{ secrets.BRIDGE_APP_PRIVATE_KEY }}
