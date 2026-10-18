@@ -516,6 +516,22 @@ impl TestEnv {
     }
 }
 
+/// The browser arguments wry 0.57 gives WebView2 when the app passes none (its windows autoplay).
+/// An explicit list replaces them, so a list that adds to them must repeat them.
+const WRY_DEFAULT_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+     --autoplay-policy=no-user-gesture-required";
+
+impl TestEnv {
+    /// The browser arguments every window's WebView2 is created with: `None` (wry's defaults) unless
+    /// `--devtools-port` is set, then those defaults plus the DevTools port. Every window must get the
+    /// same list -- WebView2 refuses a second set of options for the same user data folder.
+    pub fn webview_browser_args(&self) -> Option<String> {
+        self.devtools_port
+            .map(|port| format!("{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port={port}"))
+    }
+}
+
 /// The flags a restarted app (after an update) gets, so the new process runs
 /// in the same test environment. `--fresh` would empty the folders again and
 /// `--print-env` would exit at once, so neither is passed on.
