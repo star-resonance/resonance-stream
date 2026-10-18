@@ -64,8 +64,17 @@ impl FrameAssembler {
 
     /// Feeds the next in-order TCP payload; returns every frame it completes.
     pub fn push(&mut self, segment: &[u8]) -> Vec<Frame> {
-        self.buf.extend_from_slice(segment);
         let mut frames = Vec::new();
+        self.cut(segment, |ty, frame| {
+            frames.extend(decode(ty, &frame[PREFIX_LEN..]));
+        });
+        frames
+    }
+
+    /// Appends `segment` and hands every frame it completes, whole (`[len][type][body]`), to
+    /// `take` with its type, in stream order.
+    fn cut(&mut self, segment: &[u8], mut take: impl FnMut(u16, &[u8])) {
+        self.buf.extend_from_slice(segment);
         loop {
             if !self.synced {
                 match find_sync(&self.buf) {
@@ -78,12 +87,12 @@ impl FrameAssembler {
                         // of a header the next segment completes.
                         let keep = self.buf.len().min(PREFIX_LEN - 1);
                         self.buf.drain(..self.buf.len() - keep);
-                        return frames;
+                        return;
                     }
                 }
             }
             if self.buf.len() < PREFIX_LEN {
-                return frames;
+                return;
             }
             let Some(len) = header_len(&self.buf) else {
                 // Not a frame after all: look for the next real one.
@@ -92,10 +101,10 @@ impl FrameAssembler {
                 continue;
             };
             if self.buf.len() < len {
-                return frames;
+                return;
             }
             let ty = u16::from_be_bytes([self.buf[4], self.buf[5]]);
-            frames.extend(decode(ty, &self.buf[PREFIX_LEN..len]));
+            take(ty, &self.buf[..len]);
             self.buf.drain(..len);
         }
     }
