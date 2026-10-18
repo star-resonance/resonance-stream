@@ -26,11 +26,11 @@ use crate::protocol::decoder::{field_end, read_varint, Fields, Value};
 pub const MAX_FRAME_LEN: usize = 1 << 20;
 
 /// `[len][type]`.
-const PREFIX_LEN: usize = 6;
-const COMPRESSED: u16 = 0x8000;
-const TYPE_CHAT: u16 = 0x0002;
-const TYPE_OWN_LINE: u16 = 0x0003;
-const TYPE_KEEPALIVE: u16 = 0x0004;
+pub(crate) const PREFIX_LEN: usize = 6;
+pub(crate) const COMPRESSED: u16 = 0x8000;
+pub(crate) const TYPE_CHAT: u16 = 0x0002;
+pub(crate) const TYPE_OWN_LINE: u16 = 0x0003;
+pub(crate) const TYPE_KEEPALIVE: u16 = 0x0004;
 const ROOT_TAG: u8 = 0x0A;
 const ZSTD_FIRST_BYTE: u8 = 0x28;
 
@@ -51,10 +51,21 @@ pub struct Frame {
     pub root: Vec<u8>,
 }
 
+/// Where a complete frame sits in the stream: its first byte, counted from the first byte the
+/// assembler was given, its length (header included) and its type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameSpan {
+    pub start: u64,
+    pub len: usize,
+    pub ty: u16,
+}
+
 #[derive(Debug, Default)]
 pub struct FrameAssembler {
     buf: Vec<u8>,
     synced: bool,
+    /// Bytes given to the assembler before `buf[0]`.
+    dropped: u64,
 }
 
 impl FrameAssembler {
@@ -65,28 +76,36 @@ impl FrameAssembler {
     /// Feeds the next in-order TCP payload; returns every frame it completes.
     pub fn push(&mut self, segment: &[u8]) -> Vec<Frame> {
         let mut frames = Vec::new();
-        self.cut(segment, |ty, frame| {
-            frames.extend(decode(ty, &frame[PREFIX_LEN..]));
+        self.cut(segment, |span, frame| {
+            frames.extend(decode(span.ty, &frame[PREFIX_LEN..]));
         });
         frames
     }
 
+    /// [`push`](Self::push) as positions: where each frame the segment completes sits, whether
+    /// or not it decodes. The capture sanitiser rewrites those bytes in place.
+    pub fn push_spans(&mut self, segment: &[u8]) -> Vec<FrameSpan> {
+        let mut spans = Vec::new();
+        self.cut(segment, |span, _| spans.push(span));
+        spans
+    }
+
     /// Appends `segment` and hands every frame it completes, whole (`[len][type][body]`), to
-    /// `take` with its type, in stream order.
-    fn cut(&mut self, segment: &[u8], mut take: impl FnMut(u16, &[u8])) {
+    /// `take` with where it sits, in stream order.
+    fn cut(&mut self, segment: &[u8], mut take: impl FnMut(FrameSpan, &[u8])) {
         self.buf.extend_from_slice(segment);
         loop {
             if !self.synced {
                 match find_sync(&self.buf) {
                     Some(start) => {
-                        self.buf.drain(..start);
+                        self.drop_front(start);
                         self.synced = true;
                     }
                     None => {
                         // Nothing to trust: keep only what could be the start
                         // of a header the next segment completes.
                         let keep = self.buf.len().min(PREFIX_LEN - 1);
-                        self.buf.drain(..self.buf.len() - keep);
+                        self.drop_front(self.buf.len() - keep);
                         return;
                     }
                 }
@@ -97,21 +116,32 @@ impl FrameAssembler {
             let Some(len) = header_len(&self.buf) else {
                 // Not a frame after all: look for the next real one.
                 self.synced = false;
-                self.buf.drain(..1);
+                self.drop_front(1);
                 continue;
             };
             if self.buf.len() < len {
                 return;
             }
             let ty = u16::from_be_bytes([self.buf[4], self.buf[5]]);
-            take(ty, &self.buf[..len]);
-            self.buf.drain(..len);
+            let span = FrameSpan {
+                start: self.dropped,
+                len,
+                ty,
+            };
+            take(span, &self.buf[..len]);
+            self.drop_front(len);
         }
+    }
+
+    fn drop_front(&mut self, n: usize) {
+        self.buf.drain(..n);
+        self.dropped += n as u64;
     }
 
     /// Forgets the partial frame: the stream is cut (a segment went missing).
     pub fn reset(&mut self) {
-        self.buf.clear();
+        let n = self.buf.len();
+        self.drop_front(n);
         self.synced = false;
     }
 
@@ -152,7 +182,7 @@ fn header_len(data: &[u8]) -> Option<usize> {
 }
 
 /// Bytes between the type and the root (or zstd frame).
-fn inner_header(ty: u16) -> usize {
+pub(crate) fn inner_header(ty: u16) -> usize {
     match ty & !COMPRESSED {
         TYPE_CHAT => 16,
         _ => 12,
@@ -206,7 +236,7 @@ fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
 }
 
 /// Whether a root carries chat lines in field 5 (the history layout).
-fn has_history_lines(root: &[u8]) -> bool {
+pub(crate) fn has_history_lines(root: &[u8]) -> bool {
     let (len, read) = read_varint(&root[1..]);
     let start = 1 + read;
     let end = field_end(start, len, root.len());
@@ -330,6 +360,28 @@ mod tests {
             [&root(b"one")[..], &root(b"two")[..], &root(b"three")[..]]
         );
         assert_eq!(got[1].kind, FrameKind::History);
+    }
+
+    #[test]
+    fn spans_say_where_each_frame_sits_counting_dropped_bytes() {
+        let junk = [0xFFu8, 0xFF, 0xFF];
+        let (a, k, b) = (live(b"first"), keepalive(), history(b"second"));
+        let whole = [&junk[..], &a, &k, &b, &[0, 0]].concat();
+        let cut = junk.len() + a.len() + 3; // inside the keepalive
+        let mut fa = FrameAssembler::new();
+        let mut spans = fa.push_spans(&whole[..cut]);
+        spans.extend(fa.push_spans(&whole[cut..]));
+        let at = |offset: usize, frame: &[u8]| FrameSpan {
+            start: offset as u64,
+            len: frame.len(),
+            ty: u16::from_be_bytes([frame[4], frame[5]]),
+        };
+        let (sa, sk) = (junk.len(), junk.len() + a.len());
+        assert_eq!(spans, [at(sa, &a), at(sk, &k), at(sk + k.len(), &b)]);
+        // After a reset the count goes on from every byte given so far.
+        fa.reset();
+        let again = fa.push_spans(&a);
+        assert_eq!(again, [at(whole.len(), &a)]);
     }
 
     #[test]
