@@ -270,13 +270,13 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
         }
         Command::GetFavorites => {
             // What `save_favorites` tells the windows (`favorites-changed`); the UI reads the same from the config it loads.
-            let favorites = app.state::<crate::AppState>().config.read().favorites();
+            let favorites = crate::config::favorites_in_use(app);
             answer_data(serde_json::to_value(favorites).unwrap_or(Value::Null));
         }
         Command::SaveFavorites { favorites } => {
             // The popup's own command: the favorites only, the config file written, `favorites-changed` emitted. It returns
             // when the file is written, so the ack means "saved".
-            crate::config::save_favorites(app.clone(), app.state(), favorites.clone());
+            crate::config::set_favorites(app, favorites.clone());
             answer(Ok(()));
         }
         Command::RestartSniffer => {

@@ -149,24 +149,31 @@ pub fn save_config(
     apply_config(&app, &state, config)
 }
 
+/// async: writes the file.
+#[tauri::command(async)]
+pub fn save_favorites(app: AppHandle, favorites: resonance_types::FavoritesState) {
+    set_favorites(&app, favorites);
+}
+
 /// Replaces the favorites only -- every other setting is left as it is, so the
 /// favorites popup can never overwrite the main window's newer settings --
 /// then tells every window (`favorites-changed`). The global shortcuts follow
-/// (`apply_config`). async: writes the file.
-#[tauri::command(async)]
-pub fn save_favorites(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    favorites: resonance_types::FavoritesState,
-) {
-    modify_config(&app, &state, |config| {
+/// (`apply_config`).
+pub fn set_favorites(app: &AppHandle, favorites: resonance_types::FavoritesState) {
+    let state = app.state::<AppState>();
+    modify_config(app, &state, |config| {
         config.favorite_messages = favorites.messages;
         config.favorite_tabs = favorites.tabs;
     });
     let _ = app.emit(
         resonance_types::ipc::event::FAVORITES_CHANGED,
-        state.config.read().favorites(),
+        favorites_in_use(app),
     );
+}
+
+/// The favorites in use (messages and tabs), as `favorites-changed` carries them.
+pub fn favorites_in_use(app: &AppHandle) -> resonance_types::FavoritesState {
+    app.state::<AppState>().config.read().favorites()
 }
 
 /// Read-modify-write of the live config under the save lock, so a change
