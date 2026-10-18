@@ -58,6 +58,50 @@ mod tests {
         );
     }
 
+    /// The commands `lib.rs` hands to `generate_handler!`, read as text.
+    fn registered_commands() -> Vec<String> {
+        let lib = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))
+            .expect("read lib.rs");
+        let start = lib
+            .find("generate_handler![")
+            .expect("generate_handler! in lib.rs");
+        let body = &lib[start + "generate_handler![".len()..];
+        let body = &body[..body.find(']').expect("the end of generate_handler!")];
+        body.lines()
+            .map(|line| line.split("//").next().unwrap_or_default())
+            .flat_map(|line| line.split(','))
+            .map(|path| {
+                path.trim()
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    /// The bridge reaches the app through the plain functions beside the commands, never a
+    /// `#[tauri::command]` itself: a command takes Tauri's `State` and may be async, which the bridge
+    /// would have to fake (`app.state()`, `block_on`). It calls everything by path.
+    #[test]
+    fn the_bridge_calls_no_tauri_command() {
+        let live = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bridge/live.rs"),
+        )
+        .expect("read live.rs");
+        let commands = registered_commands();
+        assert!(commands.len() > 40, "read the command list: {commands:?}");
+        let called: Vec<_> = commands
+            .iter()
+            .filter(|name| live.contains(&format!("::{name}(")))
+            .collect();
+        assert!(
+            called.is_empty(),
+            "the bridge calls these commands: {called:?}"
+        );
+    }
+
     /// Nothing but the bridge itself may name the client, or the stub build breaks.
     #[test]
     fn only_the_live_bridge_uses_rumqttc() {

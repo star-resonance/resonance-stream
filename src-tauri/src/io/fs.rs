@@ -1,10 +1,7 @@
 use chrono::Local;
+use resonance_core::history;
 use std::fs;
-use std::io::Write;
 use tauri_plugin_opener::OpenerExt;
-
-// Adjust this import path if ExportMessage is located elsewhere!
-use crate::protocol::types::ExportMessage;
 
 #[tauri::command]
 pub async fn open_app_data_folder(app: tauri::AppHandle) -> Result<(), String> {
@@ -37,11 +34,10 @@ pub async fn open_app_data_folder(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Writes the backend's chat log, in arrival order, to `chat_export_<time>.txt` in the app's data
+/// folder; the answer is the file's path. async: not on the main thread.
 #[tauri::command]
-pub async fn export_chat_log(
-    app: tauri::AppHandle,
-    logs: Vec<ExportMessage>,
-) -> Result<String, String> {
+pub async fn export_chat_log(app: tauri::AppHandle) -> Result<String, String> {
     // 1. Get the AppData directory
     let app_dir = crate::app_dirs::data(&app).map_err(|e| e.to_string())?;
 
@@ -49,43 +45,18 @@ pub async fn export_chat_log(
         fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
     }
 
-    // 2. Create a unique filename based on the current time
-    let timestamp_now = Local::now().format("%Y%m%d_%H%M%S");
-    let file_path = app_dir.join(format!("chat_export_{}.txt", timestamp_now));
+    // 2. A unique filename from the current time
+    let now = Local::now();
+    let file_path = app_dir.join(format!("chat_export_{}.txt", now.format("%Y%m%d_%H%M%S")));
 
-    // 3. Open the file for writing
-    let mut file = fs::File::create(&file_path).map_err(|e| e.to_string())?;
+    // 3. The text; a timestamp out of range (a raw value from the wire) must not end the export.
+    let text = history::export_text(
+        &now.format("%Y-%m-%d %H:%M:%S").to_string(),
+        &crate::commands::chat_history(&app),
+        export_time,
+    );
+    fs::write(&file_path, text).map_err(|e| e.to_string())?;
 
-    // 4. Write the header
-    writeln!(
-        file,
-        "=== BPSR Translator Chat Export ({}) ===",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    )
-    .map_err(|e| e.to_string())?;
-    writeln!(file, "--------------------------------------------------")
-        .map_err(|e| e.to_string())?;
-
-    // 5. Format and write each message
-    for log in logs {
-        // Convert Unix timestamp to readable date/time
-        // The timestamp is a raw value from the wire: one out of range must not end the export.
-        let time_str = export_time(log.timestamp);
-
-        // Format translation (if it exists)
-        let trans_str = match &log.translated {
-            Some(t) => format!(" -> {}", t),
-            None => "".to_string(),
-        };
-
-        let line = format!(
-            "[{}] [{}] {}: {}{}",
-            time_str, log.channel, log.nickname, log.message, trans_str
-        );
-        writeln!(file, "{}", line).map_err(|e| e.to_string())?;
-    }
-
-    // Return the path so we could theoretically show it to the user
     Ok(file_path.to_string_lossy().to_string())
 }
 

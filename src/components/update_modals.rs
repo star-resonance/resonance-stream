@@ -11,6 +11,7 @@ use resonance_types::ipc::{
     event, CancelAppUpdate, DownloadAppUpdate, DownloadModel, IgnoreUpdate, OpenBrowser,
     RestartToApplyUpdate,
 };
+use resonance_types::UpdateTarget;
 use wasm_bindgen::prelude::*;
 
 /// App update: release notes, skip, download with progress, restart to apply;
@@ -94,7 +95,7 @@ pub fn AppUpdateModal() -> impl IntoView {
                                                     move |_| {
                                                         let v = version.clone();
                                                         spawn_local(async move {
-                                                            let _ = call(&IgnoreUpdate { target: "app".to_string(), version: v }).await;
+                                                            let _ = call(&IgnoreUpdate { target: UpdateTarget::App, version: v }).await;
                                                         });
                                                         set_show_app_update_modal.set(false);
                                                     }
@@ -275,7 +276,7 @@ pub fn ModelUpdateModal() -> impl IntoView {
                                                     move |_| {
                                                         let v = version.clone();
                                                         spawn_local(async move {
-                                                            let _ = call(&IgnoreUpdate { target: "model".to_string(), version: v }).await;
+                                                            let _ = call(&IgnoreUpdate { target: UpdateTarget::Model, version: v }).await;
                                                         });
                                                         set_show_model_update_modal.set(false);
                                                     }

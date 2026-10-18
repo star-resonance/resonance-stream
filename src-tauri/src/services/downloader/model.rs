@@ -52,21 +52,26 @@ pub async fn check_model_status(app: tauri::AppHandle) -> Result<FolderStatus, S
 
 #[tauri::command]
 pub async fn download_model(app: AppHandle) -> Result<(), String> {
+    fetch_model(&app).await
+}
+
+/// Downloads the model the signed metadata names, checks it and puts it in place (the wizard's download).
+pub async fn fetch_model(app: &AppHandle) -> Result<(), String> {
     // The url, version and hash come from the signed metadata, checked now -- never from the caller.
-    let verified = super::gist::verified_metadata_fresh(&app).await?;
+    let verified = super::gist::verified_metadata_fresh(app).await?;
     let resonance_core::signed_metadata::ModelSource {
         url: download_url,
         version,
         sha256: expected_hash,
     } = resonance_core::signed_metadata::model_source(&verified)?;
-    let model_dir = get_model_dir(&app)?;
+    let model_dir = get_model_dir(app)?;
     fs::create_dir_all(&model_dir).map_err(|e| e.to_string())?;
     let dest_path = model_dir.join(MODEL_FILENAME);
 
     // 1. FAST PATH: the installed model may already be this exact file.
     if dest_path.exists() {
         inject_system_message(
-            &app,
+            app,
             SystemLogLevel::Info,
             "Model",
             "Checking existing model integrity before downloading...",
@@ -78,7 +83,7 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         if local_hash.eq_ignore_ascii_case(&expected_hash) {
             inject_system_message(
-                &app,
+                app,
                 SystemLogLevel::Success,
                 "Model",
                 "Existing model is a perfect match! Skipping download.",
@@ -91,14 +96,14 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
                     total_percent: 100,
                 },
             );
-            crate::config::modify_metadata(&app, |metadata| {
+            crate::config::modify_metadata(app, |metadata| {
                 metadata.current_model_version = version;
                 true
             });
             return Ok(());
         }
         inject_system_message(
-            &app,
+            app,
             SystemLogLevel::Warning,
             "Model",
             "Existing model is outdated or corrupted. Starting fresh download.",
@@ -106,7 +111,7 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
     }
 
     inject_system_message(
-        &app,
+        app,
         SystemLogLevel::Info,
         "Model",
         format!("Download Model version {}", version),
@@ -116,7 +121,7 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
     // in place until the new one is complete and matches.
     let staged = model_dir.join(format!("{}.new", MODEL_FILENAME));
     super::fetch::download_file(
-        &app,
+        app,
         &download_url,
         &staged,
         "AI 모델 다운로드 중...",
@@ -129,7 +134,7 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
     let state = app.state::<crate::AppState>();
     let was_running = state.services.stop_translator();
     if was_running {
-        crate::services::translator::server_manager::kill_orphaned_servers(&app);
+        crate::services::translator::server_manager::kill_orphaned_servers(app);
     }
     let (from, to) = (staged.clone(), dest_path.clone());
     let replaced = tauri::async_runtime::spawn_blocking(move || {
@@ -138,7 +143,7 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
     if was_running {
-        state.services.start_translator(&app);
+        state.services.start_translator(app);
     }
     if let Err(e) = replaced {
         let _ = fs::remove_file(&staged);
@@ -169,7 +174,7 @@ pub async fn download_model(app: AppHandle) -> Result<(), String> {
     );
 
     // 3. Commit the new version to metadata so the update checker knows we have it
-    crate::config::modify_metadata(&app, |metadata| {
+    crate::config::modify_metadata(app, |metadata| {
         metadata.current_model_version = version;
         true
     });

@@ -389,30 +389,37 @@ fn dispatch_pipeline_actions(app: &AppHandle, actions: Vec<PipelineAction>) {
 }
 
 #[tauri::command(async)]
-pub fn block_user_command(
-    uid: u64,
-    nickname: String,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) {
+pub fn block_user_command(uid: u64, nickname: String, app: tauri::AppHandle) {
+    block_user(&app, uid, nickname);
+}
+
+/// Puts a sender on the block list (`nickname` is only its label there) and flags their stored rows.
+pub fn block_user(app: &AppHandle, uid: u64, nickname: String) {
+    let state = app.state::<AppState>();
     // 1. The block list is the config's (the capture reads it from there); this puts it in use and on disk.
-    crate::config::modify_config(&app, &state, |config| {
+    crate::config::modify_config(app, &state, |config| {
         config.blocked_users.insert(uid, nickname);
     });
 
     // 2. Retroactively scrub existing messages in the UI
-    scrub_rows(&app, &state, uid, true);
+    scrub_rows(app, &state, uid, true);
 }
 
 #[tauri::command(async)]
-pub fn unblock_user_command(uid: u64, app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+pub fn unblock_user_command(uid: u64, app: tauri::AppHandle) {
+    unblock_user(&app, uid);
+}
+
+/// Takes a sender off the block list and clears the flag on their stored rows.
+pub fn unblock_user(app: &AppHandle, uid: u64) {
+    let state = app.state::<AppState>();
     // 1. Remove from the config: in use and on disk
-    crate::config::modify_config(&app, &state, |config| {
+    crate::config::modify_config(app, &state, |config| {
         config.blocked_users.remove(&uid);
     });
 
     // 2. Retroactively un-scrub existing messages in the UI
-    scrub_rows(&app, &state, uid, false);
+    scrub_rows(app, &state, uid, false);
 }
 
 /// Flags (or clears) every stored row of `uid` and tells the windows. The history lock is held only while the

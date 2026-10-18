@@ -6,6 +6,8 @@
 //! * every backend -> UI event (`EVENT_NAMES`) is heard with `listen_any` and
 //!   published as `rs/app/event/<name>`, so no emit site changed;
 //! * `rs/test/command/<name>` is parsed, run, and answered on `rs/app/ack/<id>`.
+//!   Commands run one at a time, in the order they came, on a task of the async
+//!   runtime: one that takes long never holds up the connection (its keep-alive).
 //!
 //! A bridge that is slow or missing never blocks the app: publishing only queues
 //! (a full queue drops the message, with a warning), and the connection thread
@@ -72,7 +74,15 @@ pub fn start(app: &AppHandle) {
         });
     }
 
-    let app = app.clone();
+    // Commands, in the order they arrive: the connection thread only queues them.
+    let (commands, mut queue) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
+    let (app, runner) = (app.clone(), client.clone());
+    tauri::async_runtime::spawn(async move {
+        while let Some((topic, payload)) = queue.recv().await {
+            handle(&app, &runner, &topic, &payload).await;
+        }
+    });
+
     std::thread::spawn(move || {
         log::info!("[Bridge] Using the broker at {host}:{port}");
         for notification in connection.iter() {
@@ -84,7 +94,7 @@ pub fn start(app: &AppHandle) {
                     let _ = client.try_subscribe(wire::COMMAND_FILTER, QoS::AtLeastOnce);
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
-                    handle(&app, &client, &publish.topic, &publish.payload);
+                    let _ = commands.send((publish.topic, publish.payload.to_vec()));
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -133,7 +143,7 @@ fn publish_envelope(topic: String, name: &str, payload: Value) {
 }
 
 /// Runs one command and answers it.
-fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
+async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
     let publish = |topic: String, text: String| {
         if let Err(e) = client.try_publish(topic, QoS::AtLeastOnce, false, text.into_bytes()) {
             log::warn!("[Bridge] Dropped an answer: {e}");
@@ -154,7 +164,7 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
     // the first system messages). A command must not run on a half-started app: wait for `ready`.
     let waited = Instant::now();
     while !crate::test_env::is_ready() && waited.elapsed() < Duration::from_secs(60) {
-        std::thread::sleep(Duration::from_millis(25));
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
     log::info!("[Bridge] Command {:?}", request.command);
     let answer = |result: Result<(), String>| {
@@ -185,8 +195,8 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
             min_height,
         } => match app.get_window("main") {
             // What the settings view does: the ack's data is the rect it replaced (null: nothing changed).
-            Some(window) => answer_data(rect_json(crate::window::grow_window(
-                window,
+            Some(window) => answer_data(rect_json(crate::window::grow(
+                &window,
                 f64::from(*min_width),
                 f64::from(*min_height),
             ))),
@@ -213,107 +223,93 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
                 // The outcome is the `update-state` events (downloading, then downloaded or error).
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = crate::services::downloader::download_app_update(app, feed.url).await;
+                    let _ = crate::services::downloader::fetch_app_update(&app, feed.url).await;
                 });
                 answer(Ok(()));
             }
         },
         Command::RestartUpdate => {
             // On success this process ends (a new one says `app-started`); only a refusal comes back.
-            if let Err(e) = crate::services::downloader::restart_to_apply_update(app.clone()) {
+            if let Err(e) = crate::services::downloader::install_update_and_restart(app) {
                 answer(Err(e));
             }
         }
         // The chat-row menu's and the clear button's commands, called the way the UI's invoke reaches them.
         Command::BlockUser { uid, nickname } => {
-            crate::services::sniffer::block_user_command(
-                *uid,
-                nickname.clone(),
-                app.clone(),
-                app.state(),
-            );
+            crate::services::sniffer::block_user(app, *uid, nickname.clone());
             answer(Ok(()));
         }
         Command::UnblockUser { uid } => {
-            crate::services::sniffer::unblock_user_command(*uid, app.clone(), app.state());
+            crate::services::sniffer::unblock_user(app, *uid);
             answer(Ok(()));
         }
         Command::GetChatHistory => {
-            let history = crate::commands::get_chat_history(app.state());
+            let history = crate::commands::chat_history(app);
             answer_data(serde_json::to_value(history).unwrap_or(Value::Null));
         }
         Command::ClearHistory => {
-            crate::commands::clear_chat_history(app.state());
+            crate::commands::clear_history(app);
             answer(Ok(()));
         }
         Command::SyncDictionary => {
             // The settings view's sync: an async command that fetches, validates, saves and installs; its error is the ack's.
-            let synced = tauri::async_runtime::block_on(
-                crate::services::downloader::sync_dictionary(app.clone()),
-            );
+            let synced = crate::services::downloader::fetch_and_install_dictionary(app).await;
             answer(synced.map(|_| ()));
         }
         Command::SaveLocalDictionary { content } => {
             // The dictionary editor's save: validates, writes custom_dict.json, installs from the next job on.
-            answer(crate::services::downloader::save_local_dictionary(
-                app.clone(),
-                content.clone(),
+            answer(crate::services::downloader::install_local_dictionary(
+                app, content,
             ));
         }
         Command::AnnotateFurigana { texts } => {
-            // The UI's own command, an async fn that only computes: run it to the end here (this thread is not the runtime's).
-            let spans =
-                tauri::async_runtime::block_on(crate::commands::annotate_furigana(texts.clone()));
+            // What the UI's own command computes.
+            let spans = crate::commands::furigana(texts);
             answer_data(serde_json::to_value(spans).unwrap_or(Value::Null));
         }
         Command::GetFavorites => {
             // What `save_favorites` tells the windows (`favorites-changed`); the UI reads the same from the config it loads.
-            let favorites = app.state::<crate::AppState>().config.read().favorites();
+            let favorites = crate::config::favorites_in_use(app);
             answer_data(serde_json::to_value(favorites).unwrap_or(Value::Null));
         }
         Command::SaveFavorites { favorites } => {
             // The popup's own command: the favorites only, the config file written, `favorites-changed` emitted. It returns
             // when the file is written, so the ack means "saved".
-            crate::config::save_favorites(app.clone(), app.state(), favorites.clone());
+            crate::config::set_favorites(app, favorites.clone());
             answer(Ok(()));
         }
         Command::RestartSniffer => {
             // Runs on a thread of its own (a pause for the OS to release the socket): ack now, the test waits for `sniffer-state`.
-            crate::services::sniffer::restart_sniffer_command(app.clone());
+            crate::services::owner::Services::restart_sniffer_in_background(app);
             answer(Ok(()));
         }
         Command::OpenPopup { kind } => {
-            // `open_popup` is async on purpose (a window made from a synchronous command can deadlock on Windows):
-            // run it on the async runtime and answer when the window is shown.
-            let (app, kind) = (app.clone(), *kind);
-            let (tx, rx) = std::sync::mpsc::channel();
-            tauri::async_runtime::spawn(async move {
-                let _ = tx.send(crate::window::open_popup(app, kind).await);
-            });
-            match rx.recv_timeout(Duration::from_secs(30)) {
-                Ok(result) => answer(result),
-                Err(_) => answer(Err("the popup was not shown within 30 s".into())),
-            }
+            // What `open_popup` does, on the async runtime as it is (a window made from a synchronous command can
+            // deadlock on Windows). The ack comes when the window is shown.
+            answer(crate::window::show_popup(app, *kind));
         }
         Command::HidePopup { kind } => answer(crate::window::hide_popup(app, *kind)),
         Command::PlacePopup { kind, rect } => answer(crate::window::place_popup(app, *kind, *rect)),
         Command::SnapshotPopups => answer_data(crate::window::popups_snapshot(app)),
         Command::PinMain { on } => match app.get_window("main") {
             Some(window) => {
-                crate::window::set_always_on_top(window, *on);
+                crate::window::pin(&window, *on);
                 answer(Ok(()));
             }
             None => answer(Err("There is no main window".into())),
         },
         Command::StartTranslator => {
-            crate::commands::launch_translator(app.clone(), app.state());
+            // What `launch_translator` does.
+            app.state::<crate::AppState>()
+                .services
+                .start_translator(app);
             answer(Ok(()));
         }
         Command::DownloadModel => {
             // The wizard's download; its end (the return value the UI shows) comes as a `download-result` event.
             let (app, id) = (app.clone(), request.id.clone());
             tauri::async_runtime::spawn(async move {
-                let result = crate::services::downloader::model::download_model(app).await;
+                let result = crate::services::downloader::model::fetch_model(&app).await;
                 publish_event(
                     wire::DOWNLOAD_RESULT_EVENT,
                     serde_json::json!({
@@ -329,7 +325,7 @@ fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
         Command::Quit => {
             answer(Ok(()));
             // Let the ack leave before the process does.
-            std::thread::sleep(Duration::from_millis(200));
+            tokio::time::sleep(Duration::from_millis(200)).await;
             app.exit(0);
         }
     }

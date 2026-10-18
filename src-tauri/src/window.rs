@@ -12,6 +12,11 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags, WindowExt};
 
 #[tauri::command]
 pub fn set_always_on_top(window: tauri::Window, on_top: bool) {
+    pin(&window, on_top);
+}
+
+/// Pins the window over the others (or lets it go), and the popups with it.
+pub fn pin(window: &tauri::Window, on_top: bool) {
     // This simple method toggles the window state
     let _ = window.set_always_on_top(on_top);
     // The popups stay with the overlay: pinned over the game when it is.
@@ -61,7 +66,7 @@ fn create_popup(app: &AppHandle, kind: PopupKind) -> Result<WebviewWindow, Strin
 
 /// Shows a popup (creating it if it was not made yet), at its saved size and
 /// place, in front. A popup that is already open is only brought forward.
-fn show_popup(app: &AppHandle, kind: PopupKind) -> Result<(), String> {
+pub fn show_popup(app: &AppHandle, kind: PopupKind) -> Result<(), String> {
     let window = match app.get_webview_window(kind.label()) {
         Some(window) => window,
         None => create_popup(app, kind)?,
@@ -200,13 +205,21 @@ pub fn set_click_through(window: tauri::Window, enabled: bool) {
     let _ = window.set_ignore_cursor_events(enabled);
 }
 
+#[tauri::command]
+pub fn grow_window(
+    window: tauri::Window,
+    min_width: f64,
+    min_height: f64,
+) -> Option<resonance_types::WindowRect> {
+    grow(&window, min_width, min_height)
+}
+
 /// Grows the window to at least `min_width` x `min_height` logical pixels,
 /// staying on its monitor's work area (the settings view wants more room than
 /// the overlay usually has). Returns the rect it replaced, for
 /// `restore_window`; `None` when nothing changed.
-#[tauri::command]
-pub fn grow_window(
-    window: tauri::Window,
+pub fn grow(
+    window: &tauri::Window,
     min_width: f64,
     min_height: f64,
 ) -> Option<resonance_types::WindowRect> {
@@ -237,7 +250,7 @@ pub fn grow_window(
         (min_height * scale).round() as u32,
         work_area,
     )?;
-    apply_rect(&window, grown);
+    apply_rect(window, grown);
     GROWN_FROM.lock().remember(current);
     Some(current)
 }

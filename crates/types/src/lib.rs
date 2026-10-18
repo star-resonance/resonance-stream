@@ -604,6 +604,14 @@ pub struct GistMetadata {
     pub dictionary: RemoteDictionary,
 }
 
+/// What an update dialog offers, and what "skip this version" (`ignore_update`) remembers a version for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateTarget {
+    App,
+    Model,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateCheckResult {
     pub app_update_available: bool,
@@ -1444,6 +1452,21 @@ mod tests {
         let back: PopupKind = serde_json::from_str("\"favorites\"").unwrap();
         assert_eq!(back, PopupKind::Favorites);
         assert!(serde_json::from_str::<PopupKind>("\"other\"").is_err());
+    }
+
+    #[test]
+    fn an_update_target_crosses_as_app_or_model_and_nothing_else() {
+        assert_eq!(
+            serde_json::to_string(&UpdateTarget::App).unwrap(),
+            "\"app\""
+        );
+        assert_eq!(
+            serde_json::to_string(&UpdateTarget::Model).unwrap(),
+            "\"model\""
+        );
+        let back: UpdateTarget = serde_json::from_str("\"model\"").unwrap();
+        assert_eq!(back, UpdateTarget::Model);
+        assert!(serde_json::from_str::<UpdateTarget>("\"dictionary\"").is_err());
     }
 
     #[test]

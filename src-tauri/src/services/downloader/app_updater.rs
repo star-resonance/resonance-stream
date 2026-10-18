@@ -21,6 +21,12 @@ fn verify_file(exe: &Path, feed: &UpdateFeed) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn download_app_update(app: AppHandle, download_url: String) -> Result<(), String> {
+    fetch_app_update(&app, download_url).await
+}
+
+/// Downloads the release the last update check announced (`download_url` must be its address) and checks its
+/// signature; the outcome is reported as `update-state`.
+pub async fn fetch_app_update(app: &AppHandle, download_url: String) -> Result<(), String> {
     info!("Downloading application update...");
     // Only one download runs, so a retry started right after a cancel cannot share
     // `update_temp.exe.part` with the one winding down. A new one starts not cancelled.
@@ -32,7 +38,7 @@ pub async fn download_app_update(app: AppHandle, download_url: String) -> Result
         .ok_or("An update download is already running")?;
 
     crate::test_env::report_update(UpdateState::Downloading);
-    let result = download_announced(&app, download_url).await;
+    let result = download_announced(app, download_url).await;
     crate::test_env::report_update(match &result {
         Ok(()) => UpdateState::Downloaded,
         Err(e) => UpdateState::Error(e.clone()),
@@ -106,6 +112,11 @@ pub async fn cancel_app_update(app: AppHandle) {
 
 #[tauri::command]
 pub fn restart_to_apply_update(app: AppHandle) -> Result<(), String> {
+    install_update_and_restart(&app)
+}
+
+/// Installs the downloaded update, checked again, and restarts into it. On success this process ends.
+pub fn install_update_and_restart(app: &AppHandle) -> Result<(), String> {
     info!("Applying application update and restarting...");
 
     let current_exe = env::current_exe().map_err(|e| e.to_string())?;

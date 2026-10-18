@@ -321,9 +321,94 @@ impl ChatHistory {
     }
 }
 
+const EXPORT_RULE: &str = "--------------------------------------------------";
+
+/// The first two lines of a chat export (the settings view's "save chat"), `now` the local time it was made.
+pub fn export_header(now: &str) -> String {
+    format!("=== BPSR Translator Chat Export ({now}) ===\n{EXPORT_RULE}\n")
+}
+
+/// One message of a chat export, without its line end. `time` is its timestamp as local time.
+pub fn export_line(
+    time: &str,
+    channel: &str,
+    nickname: &str,
+    message: &str,
+    translated: Option<&str>,
+) -> String {
+    let trans_str = match translated {
+        Some(t) => format!(" -> {}", t),
+        None => "".to_string(),
+    };
+    format!("[{time}] [{channel}] {nickname}: {message}{trans_str}")
+}
+
+/// A chat export's whole text: the header, then one line per message in the order given. `time`
+/// renders a timestamp as local time.
+pub fn export_text(now: &str, messages: &[ChatMessage], time: impl Fn(u64) -> String) -> String {
+    let mut text = export_header(now);
+    for m in messages {
+        text.push_str(&export_line(
+            &time(m.timestamp),
+            m.channel.as_str(),
+            &m.nickname,
+            &m.message,
+            m.translated.as_deref(),
+        ));
+        text.push('\n');
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chat_export_keeps_its_header_and_line_format() {
+        assert_eq!(
+            export_header("2026-10-18 14:00:00"),
+            "=== BPSR Translator Chat Export (2026-10-18 14:00:00) ===\n\
+             --------------------------------------------------\n"
+        );
+        assert_eq!(
+            export_line(
+                "2026-10-18 13:59:58",
+                "WORLD",
+                "Kade",
+                "こんにちは",
+                Some("안녕하세요")
+            ),
+            "[2026-10-18 13:59:58] [WORLD] Kade: こんにちは -> 안녕하세요"
+        );
+        assert_eq!(
+            export_line("2026-10-18 13:59:59", "GUILD", "Rin", "ok", None),
+            "[2026-10-18 13:59:59] [GUILD] Rin: ok"
+        );
+    }
+
+    #[test]
+    fn a_chat_export_lists_each_message_by_its_channel_name_in_the_order_given() {
+        let mut first = on("WORLD", 1);
+        first.nickname = "Kade".into();
+        first.timestamp = 10;
+        first.translated = Some("m1 번역".into());
+        let mut second = on("BEGINNER", 2);
+        second.nickname = "Rin".into();
+        second.timestamp = 20;
+        let text = export_text("NOW", &[first, second], |t| format!("t{t}"));
+        assert_eq!(
+            text,
+            format!(
+                "{}[t10] [WORLD] Kade: m1 -> m1 번역\n[t20] [BEGINNER] Rin: m2\n",
+                export_header("NOW")
+            )
+        );
+        assert_eq!(
+            export_text("NOW", &[], |_| String::new()),
+            export_header("NOW")
+        );
+    }
 
     fn msg(pid: u64) -> ChatMessage {
         on("GUILD", pid)

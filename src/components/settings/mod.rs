@@ -99,26 +99,11 @@ pub fn Settings() -> impl IntoView {
         let result = call(&SyncDictionary {}).await.map(|_| ());
         sync_outcome(result)
     });
-    let save_chat_action = Action::new_local(move |_: &()| {
-        // 1. Extract the raw chat messages from the signal map
-        let logs_to_export: Vec<_> = signals
-            .chat
-            .chat
-            .with_untracked(|store| store.all())
-            .into_iter()
-            .map(|sig| sig.get_untracked()) // Unpack the RwSignal<ChatMessage>
-            .collect();
-
-        // 2. Send them to Tauri
-        async move {
-            match call(&ExportChatLog {
-                logs: logs_to_export,
-            })
-            .await
-            {
-                Ok(_) => "저장 완료".to_string(),
-                Err(_) => "저장 실패".to_string(),
-            }
+    // The backend writes its own chat log (what this window was given, kept by the same tab limits).
+    let save_chat_action = Action::new_local(|_: &()| async move {
+        match call(&ExportChatLog {}).await {
+            Ok(_) => "저장 완료".to_string(),
+            Err(_) => "저장 실패".to_string(),
         }
     });
 
