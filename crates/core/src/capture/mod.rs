@@ -3,6 +3,7 @@
 mod message_processor;
 mod pipeline;
 mod recorder;
+pub mod sanitise;
 mod stream_tracker;
 pub mod synth;
 
