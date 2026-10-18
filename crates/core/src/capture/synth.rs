@@ -39,8 +39,8 @@ fn bytes_field(tag: u8, body: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(body);
 }
 
-/// The chat line as one live frame (`[len][0x0002][16-byte header][root]`).
-pub fn live_chat_frame(chat: &ChatMessage) -> Vec<u8> {
+/// One chat line as the wire carries it: `{1: sequence, 2: sender, 3: time, 4: message}`.
+fn chat_block(chat: &ChatMessage) -> Vec<u8> {
     let mut sender = Vec::new();
     varint_field(0x08, chat.uid, &mut sender);
     bytes_field(0x12, chat.nickname.as_bytes(), &mut sender);
@@ -54,22 +54,34 @@ pub fn live_chat_frame(chat: &ChatMessage) -> Vec<u8> {
     bytes_field(0x12, &sender, &mut payload);
     varint_field(0x18, chat.timestamp, &mut payload);
     bytes_field(0x22, &message, &mut payload);
+    payload
+}
 
-    let mut fields = Vec::new();
-    varint_field(0x08, channel_code(chat.channel), &mut fields);
-    bytes_field(0x12, &payload, &mut fields);
-
+/// A root (`0x0A`, its length, then `fields`).
+fn root_of(fields: &[u8]) -> Vec<u8> {
     let mut root = vec![0x0A];
     varint(fields.len() as u64, &mut root);
-    root.extend(fields);
+    root.extend_from_slice(fields);
+    root
+}
 
+/// `[len][ty][header_len bytes of 0xEE][body]`.
+fn frame_of(ty: u16, header_len: usize, body: &[u8]) -> Vec<u8> {
     let mut frame = vec![0u8; 4];
-    frame.extend(0x0002u16.to_be_bytes());
-    frame.extend([0xEE; 16]);
-    frame.extend(root);
+    frame.extend(ty.to_be_bytes());
+    frame.extend(std::iter::repeat_n(0xEE, header_len));
+    frame.extend_from_slice(body);
     let len = frame.len() as u32;
     frame[..4].copy_from_slice(&len.to_be_bytes());
     frame
+}
+
+/// The chat line as one live frame (`[len][0x0002][16-byte header][root]`).
+pub fn live_chat_frame(chat: &ChatMessage) -> Vec<u8> {
+    let mut fields = Vec::new();
+    varint_field(0x08, channel_code(chat.channel), &mut fields);
+    bytes_field(0x12, &chat_block(chat), &mut fields);
+    frame_of(0x0002, 16, &root_of(&fields))
 }
 
 /// A channel's recent lines as one history frame (`[len][0x8003][12-byte header][zstd(root)]`,
