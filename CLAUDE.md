@@ -65,12 +65,14 @@ style/ public/        CSS source; static assets
 
 ## Version Control
 
-- `.github/workflows/auto-merge.yml` (not GitHub auto-merge) merges a green PR and deletes its
-  `claude/*` branch.
+- `.github/workflows/auto-merge.yml` (not GitHub auto-merge) merges a green PR, deletes its
+  `claude/*` branch and closes the issues it says it closes. It, `branch-cleanup.yml`, `eol-check.yml`
+  and `claude-md-check.yml` call star-resonance/.github's shared workflows (read from its `main`).
 - Local sessions follow the same flow: a `claude/<task>` branch and a PR, opened with Kade's
   `gh` login (without it, print the commands for Kade).
-- Only `claude/*` PRs into `main` auto-merge; a PR into `rc` (or anywhere else), a draft, or a PR
-  that changes `.github/workflows/` waits for a person.
+- Only `claude/*` PRs into `main` auto-merge, once every check on the head is green; a PR into `rc`
+  (or anywhere else), a draft, or a PR that changes `.github/workflows/`, `CLAUDE.md` or
+  `.claude/rules/` waits for a person: open those as drafts.
   `workflow_run` workflows are read from `main`: an `auto-merge.yml` change acts after its own merge.
   Workflow merges use `GITHUB_TOKEN` (no `push` run on `main`); the PR's own run is the gate.
 - Dependabot (`.github/dependabot.yml`) opens `dependabot/*` PRs weekly; they never auto-merge:
