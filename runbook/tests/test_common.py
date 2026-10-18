@@ -146,7 +146,7 @@ def test_runs_dir_can_be_moved_by_the_environment():
         cwd=Path(__file__).resolve().parent.parent, env={**os.environ, "RUNBOOK_RUNS_DIR": "/somewhere/else"},
         capture_output=True, text=True,
     ).stdout.strip()
-    assert out == "/somewhere/else"
+    assert Path(out) == Path("/somewhere/else")
 
 
 # --- an empty or unclear answer asks again instead of skipping (Enter pressed by accident) -----------------
