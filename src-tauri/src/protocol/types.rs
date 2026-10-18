@@ -3,7 +3,6 @@ use crossbeam_channel::Sender;
 use parking_lot::{Mutex, RwLock};
 use resonance_core::history::ChatHistory;
 use resonance_core::text::Dictionary;
-use serde::Deserialize;
 
 pub use resonance_types::{
     ChatMessage, LogLevel, NetworkInterface, ServiceStates, SnifferState, SnifferStatePayload,
@@ -44,13 +43,4 @@ pub struct AppState {
     pub updates: crate::services::downloader::Updates,
     /// What the global shortcuts are bound to (see `shortcut.rs`).
     pub shortcuts: Mutex<crate::shortcut::GlobalShortcuts>,
-}
-
-#[derive(Deserialize)]
-pub struct ExportMessage {
-    pub channel: String,
-    pub nickname: String,
-    pub message: String,
-    pub translated: Option<String>,
-    pub timestamp: u64,
 }

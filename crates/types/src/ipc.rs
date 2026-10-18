@@ -71,9 +71,8 @@ commands! {
     AnnotateFurigana = "annotate_furigana" { texts: Vec<String> } -> Vec<Vec<RubySpan>>;
     /// A line for the system log from the ui. `level` is a `SystemLogLevel` as it serializes.
     UiSystemMessage = "ui_system_message" { level: String, source: String, message: String } -> ();
-    /// The backend reads the fields of `ExportMessage` from each message; the path of the file
-    /// written is the answer.
-    ExportChatLog = "export_chat_log" { logs: Vec<ChatMessage> } -> String;
+    /// Writes the backend's chat log to a text file; the path of the file written is the answer.
+    ExportChatLog = "export_chat_log" {} -> String;
 
     // Updates and the dictionary.
     CheckAllUpdates = "check_all_updates" {} -> UpdateCheckResult;
@@ -236,7 +235,8 @@ mod tests {
             }),
             json!({ "url": "https://x" })
         );
-        assert_eq!(wire(&ExportChatLog { logs: vec![] }), json!({ "logs": [] }));
+        // The backend exports its own chat log: the ui sends nothing.
+        assert_eq!(wire(&ExportChatLog {}), json!({}));
         let keys = |v: Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
         assert_eq!(
             keys(wire(&OpenPopup {

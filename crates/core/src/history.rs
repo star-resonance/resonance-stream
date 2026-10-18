@@ -343,6 +343,23 @@ pub fn export_line(
     format!("[{time}] [{channel}] {nickname}: {message}{trans_str}")
 }
 
+/// A chat export's whole text: the header, then one line per message in the order given. `time`
+/// renders a timestamp as local time.
+pub fn export_text(now: &str, messages: &[ChatMessage], time: impl Fn(u64) -> String) -> String {
+    let mut text = export_header(now);
+    for m in messages {
+        text.push_str(&export_line(
+            &time(m.timestamp),
+            m.channel.as_str(),
+            &m.nickname,
+            &m.message,
+            m.translated.as_deref(),
+        ));
+        text.push('\n');
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,6 +384,29 @@ mod tests {
         assert_eq!(
             export_line("2026-10-18 13:59:59", "GUILD", "Rin", "ok", None),
             "[2026-10-18 13:59:59] [GUILD] Rin: ok"
+        );
+    }
+
+    #[test]
+    fn a_chat_export_lists_each_message_by_its_channel_name_in_the_order_given() {
+        let mut first = on("WORLD", 1);
+        first.nickname = "Kade".into();
+        first.timestamp = 10;
+        first.translated = Some("m1 번역".into());
+        let mut second = on("BEGINNER", 2);
+        second.nickname = "Rin".into();
+        second.timestamp = 20;
+        let text = export_text("NOW", &[first, second], |t| format!("t{t}"));
+        assert_eq!(
+            text,
+            format!(
+                "{}[t10] [WORLD] Kade: m1 -> m1 번역\n[t20] [BEGINNER] Rin: m2\n",
+                export_header("NOW")
+            )
+        );
+        assert_eq!(
+            export_text("NOW", &[], |_| String::new()),
+            export_header("NOW")
         );
     }
 
