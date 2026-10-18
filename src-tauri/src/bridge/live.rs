@@ -236,16 +236,11 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
         }
         // The chat-row menu's and the clear button's commands, called the way the UI's invoke reaches them.
         Command::BlockUser { uid, nickname } => {
-            crate::services::sniffer::block_user_command(
-                *uid,
-                nickname.clone(),
-                app.clone(),
-                app.state(),
-            );
+            crate::services::sniffer::block_user(app, *uid, nickname.clone());
             answer(Ok(()));
         }
         Command::UnblockUser { uid } => {
-            crate::services::sniffer::unblock_user_command(*uid, app.clone(), app.state());
+            crate::services::sniffer::unblock_user(app, *uid);
             answer(Ok(()));
         }
         Command::GetChatHistory => {
@@ -286,7 +281,7 @@ async fn handle(app: &AppHandle, client: &Client, topic: &str, payload: &[u8]) {
         }
         Command::RestartSniffer => {
             // Runs on a thread of its own (a pause for the OS to release the socket): ack now, the test waits for `sniffer-state`.
-            crate::services::sniffer::restart_sniffer_command(app.clone());
+            crate::services::owner::Services::restart_sniffer_in_background(app);
             answer(Ok(()));
         }
         Command::OpenPopup { kind } => {
