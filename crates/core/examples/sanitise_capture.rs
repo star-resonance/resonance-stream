@@ -53,6 +53,7 @@ fn main() -> ExitCode {
         .map(|(ty, n)| format!("0x{ty:04x}: {n}"))
         .collect();
     println!("frames: {}", frames.join(", "));
+    println!("frames with no chat, blanked: {}", r.frames_blanked);
     println!(
         "history frames compressed again and padded: {}",
         r.history_padded
