@@ -51,6 +51,9 @@ pub struct Report {
     pub addresses: usize,
     /// Whole frames seen, by type.
     pub frames: BTreeMap<u16, usize>,
+    /// Frames that decode to no chat line, blanked but for what framing needs (their length,
+    /// type and first body byte).
+    pub frames_blanked: usize,
     /// History frames compressed again and padded back to their length.
     pub history_padded: usize,
     /// Strings off the known chat paths that were filled (they might name someone).
@@ -1078,20 +1081,27 @@ mod tests {
         let own = live_chat_frame(&me(4, "了解です、すぐ行きます"));
         let echo = frame(0x0003, 12, &own[22..]);
         let kenji_live = live_chat_frame(&kenji(5, "今日もよろしくお願いします"));
-        // A live frame that is not chat: a record `{1: uid}` in field 5 and, deeper, a packed
-        // list of uids (both seen in a real capture).
+        // A live frame with a chat line and, beside it, what a real capture also had there: a
+        // record `{1: uid, 3: someone else's id}` in field 5 and, deeper, a packed list of uids.
         let alice_uid = varint(37_276_266);
-        let record = [&[0x08][..], &alice_uid].concat();
+        let record = [&[0x08][..], &alice_uid, &[0x18], &varint(88_000_000)].concat();
         let packed = [&[0x0A, alice_uid.len() as u8][..], &alice_uid].concat();
         let deeper = [&[0x22, packed.len() as u8][..], &packed].concat();
         let inner = [&[0x10, 0x01, 0x42, deeper.len() as u8][..], &deeper].concat();
+        let line = live_chat_frame(&kenji(6, "またね、みんな"));
+        let fields = &line[24..]; // `{1: channel, 2: chat}` of a short line's root
         let body = [
             &[0x0A, inner.len() as u8][..],
             &inner,
+            fields,
             &[0x2A, record.len() as u8],
             &record,
         ]
         .concat();
+        let mixed = frame(0x0002, 16, &[&[0x0A, body.len() as u8][..], &body].concat());
+        // A live frame with no chat at all: blanked but for what framing needs.
+        let bystander = [&[0x08][..], &varint(88_000_001), &[0x12, 4], b"Zed!"].concat();
+        let body = [&[0x2A, bystander.len() as u8][..], &bystander].concat();
         let not_chat = frame(0x0002, 16, &[&[0x0A, body.len() as u8][..], &body].concat());
         let stream_a = [
             live_alice.clone(),
@@ -1100,6 +1110,7 @@ mod tests {
             history,
             echo,
             own,
+            mixed,
             not_chat,
             kenji_live.clone(),
         ]
@@ -1199,8 +1210,8 @@ mod tests {
     #[test]
     fn the_sanitised_capture_decodes_to_the_same_lines_under_new_names() {
         let original = decoded(&capture());
-        // Alice twice live/history, Kenji twice, me, Carol twice; Dave's packet is dropped.
-        assert_eq!(original.len(), 7);
+        // Alice twice live/history, Kenji three times, me, Carol twice; Dave's packet is dropped.
+        assert_eq!(original.len(), 8);
         let out = sanitise(&capture()).unwrap();
         let got = decoded(&out.text);
         assert_eq!(got.len(), original.len());
@@ -1228,7 +1239,9 @@ mod tests {
         assert_eq!(names.len(), 4);
         let distinct: std::collections::BTreeSet<_> = names.values().collect();
         assert_eq!(distinct.len(), 4, "two people got the same pseudonym");
-        assert_eq!(out.report.chats, 7);
+        assert_eq!(out.report.chats, 8);
+        // World state, the echoed own line and the live frame with no chat.
+        assert_eq!(out.report.frames_blanked, 3);
         assert_eq!(out.report.nicknames, 4);
         assert_eq!(out.report.uids, 4);
         assert_eq!(out.report.history_padded, 1);
@@ -1400,12 +1413,12 @@ mod tests {
 
     #[test]
     fn numbers_it_cannot_place_are_listed_for_review() {
-        // The echoed own line is never read, so its sequence and time are walked as unknown
-        // numbers; only the time is large enough to list.
+        // Someone else's id beside a chat line is listed; the one in a frame with no chat is
+        // blanked with the frame, and the echoed own line's numbers with it.
         let out = sanitise(&capture()).unwrap();
         assert_eq!(
             out.report.numbers_left,
-            ["root.10.18.24: 1 numbers, 1759420004 to 1759420004"]
+            ["root.10.42.24: 1 numbers, 88000000 to 88000000"]
         );
     }
 
