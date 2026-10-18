@@ -1,6 +1,6 @@
 name: Release
 
-# A stable release (D-30, the global release flow; ported from stella-rain/core):
+# A stable release (D-30, the global release flow):
 # the version bump and release notes go to main in a PR, a PR from main into
 # `rc` is merged (release-checks.yml checks it; the merge builds a candidate exe
 # for a Windows test), then Kade starts this workflow by hand on `rc`
