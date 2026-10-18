@@ -6,6 +6,7 @@
 //! `protocol::framing` (type `0x0002`, a 16-byte inner header).
 
 use resonance_types::{Channel, ChatMessage};
+use ruzstd::encoding::{compress_to_vec, CompressionLevel};
 
 /// What a channel is called on the wire (the inverse of `Channel::known_code`).
 fn channel_code(channel: Channel) -> u64 {
@@ -86,8 +87,14 @@ pub fn live_chat_frame(chat: &ChatMessage) -> Vec<u8> {
 
 /// A channel's recent lines as one history frame (`[len][0x8003][12-byte header][zstd(root)]`,
 /// root `{3: channel code, 5: chat, 5: chat, ...}`), `newest_first` as the server sends them.
-pub fn history_frame(_channel: Channel, _newest_first: &[ChatMessage]) -> Vec<u8> {
-    Vec::new()
+pub fn history_frame(channel: Channel, newest_first: &[ChatMessage]) -> Vec<u8> {
+    let mut fields = Vec::new();
+    varint_field(0x18, channel_code(channel), &mut fields);
+    for chat in newest_first {
+        bytes_field(0x2A, &chat_block(chat), &mut fields);
+    }
+    let packed = compress_to_vec(&root_of(&fields)[..], CompressionLevel::Fastest);
+    frame_of(0x8003, 12, &packed)
 }
 
 #[cfg(test)]
