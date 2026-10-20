@@ -1,7 +1,7 @@
 //! Checks an update exe the way the app will before it installs it: signed by
 //! one of the keys built into the app, for the given version.
 //!
-//! `release.yml` runs it on the freshly signed exe, so a release the app would
+//! `candidate.yml` and `promote.yml` run it on the signed exe, so a release the app would
 //! refuse (wrong private key in the secret, wrong version) is never published.
 //!
 //!     cargo run --release -p resonance-core --example verify_update -- \

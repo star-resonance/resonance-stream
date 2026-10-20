@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Helpers for .github/workflows/release.yml. Tested by release-lib.test.sh.
+# Helpers for .github/workflows/candidate.yml and promote.yml. Tested by release-lib.test.sh.
 # Sourced by bash.
 
 # The version of a stable release tag (v<major>.<minor>.<patch>); anything else
@@ -164,8 +164,7 @@ release_page_body() {
 # The nearest earlier stable release tag (vX.Y.Z only: no -rc, -beta, -test
 # suffix), where the commit list of <commit> starts; empty when there is none.
 # A commit that carries a stable tag itself looks from its parent; an untagged
-# one (the rc merge release.yml is about to tag) looks from itself, so a release
-# on main's side of the merge counts. Run in the repository, with its tags fetched.
+# one (the commit Candidate or Promote is about to tag) looks from itself. Run in the repository, with its tags fetched.
 release_previous_stable_tag() {
   local from=$1
   if git tag --points-at "$1" --list 'v*' | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then

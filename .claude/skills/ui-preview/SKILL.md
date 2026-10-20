@@ -82,7 +82,7 @@ inline module script that starts the wasm).
 Found this way (2026-10-07): the first proposed policy had `connect-src ipc: http://ipc.localhost` and no
 `'self'`; the page's start-up `fetch` of its wasm file is a `connect-src` request, so the window stayed
 blank. The policy is pinned in `crates/core/tests/webview_policy.rs`. What this cannot show: WebView2 on
-Windows and Tauri's IPC (`ipc:`, `http://ipc.localhost`) -- the release-candidate exe does.
+Windows and Tauri's IPC (`ipc:`, `http://ipc.localhost`) -- the test-env exe of a candidate does.
 
 ## Limits
 

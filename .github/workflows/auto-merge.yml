@@ -3,8 +3,7 @@
 # every check on the PR's head commit is green and every check in `require:` has succeeded, so a
 # check whose workflow has not started yet is never skipped. It also closes the issues the PR
 # says it closes (`Closes #N`), which a merge made with GITHUB_TOKEN does not do.
-# Left for a person: a PR into `rc` or any other branch (`rc` is merged by hand: that merge
-# starts release-candidate.yml, which a merge made with GITHUB_TOKEN would not), another branch
+# Left for a person: a PR into any branch but main, another branch
 # prefix, a fork, a draft, and a PR that touches .github/workflows/ (this file included) or a
 # `protected:` path, the agent rules.
 # Add each new PR check's workflow name to `workflows:`, and its check names to `require:` if

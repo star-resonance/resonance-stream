@@ -222,7 +222,7 @@ def test_an_unknown_scenario_is_an_error(monkeypatch, tmp_path):
         updater.simulate_app("exploded", tmp_path / OLD, "v0.6.1")
 
 
-# --- the key file (A5): contents go in TAURI_SIGNING_PRIVATE_KEY, as release.yml does ------------------
+# --- the key file (A5): contents go in TAURI_SIGNING_PRIVATE_KEY, as candidate.yml does ------------------
 def test_read_key_file_returns_the_contents(tmp_path):
     key = tmp_path / "backup.key"
     key.write_text("untrusted comment: rsign encrypted secret key\nRWRT...\n", encoding="utf-8")

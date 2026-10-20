@@ -12,7 +12,7 @@ name: Metadata
 #
 # Only a pushed tag runs this workflow -- a merge into main never does. Claude's pull requests merge
 # by themselves once CI is green, so a signer that ran on every merge would put an unreviewed model URL
-# in front of every user; the tag is the human step, as for a stable release (release.yml).
+# in front of every user; the tag is the human step, as for a release (Candidate and Promote).
 #
 # What it does: checks the tag, builds the published metadata.json (the source with `revision` N and the
 # SHA-256 of custom_dict.json added), signs it with the update key, checks the result the way the app
@@ -21,7 +21,7 @@ name: Metadata
 # raw.githubusercontent.com/<owner>/<repo>/metadata/<file>; GitHub's cache can hold an old copy for a few
 # minutes after a publication.
 #
-# Secrets (the same two as release.yml, Settings > Secrets and variables > Actions):
+# Secrets (the same two as candidate.yml, Settings > Secrets and variables > Actions):
 #   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 # To run it again for a tag after a failure: Actions > Metadata > Re-run. A tag whose revision is
 # already on the `metadata` branch is refused.
@@ -112,7 +112,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            echo "::error::The repository secret TAURI_SIGNING_PRIVATE_KEY is not set (see release.yml)."
+            echo "::error::The repository secret TAURI_SIGNING_PRIVATE_KEY is not set (see candidate.yml)."
             exit 1
           fi
           npx --yes @tauri-apps/cli@2 signer sign --app-version "$REVISION" out/metadata.json

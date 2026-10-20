@@ -202,7 +202,7 @@ def simulate_app(scenario: str, exe: str | Path, new_tag: str) -> None:
 
 def read_key_file(path: str) -> str:
     """The contents of a Tauri signing key file, for TAURI_SIGNING_PRIVATE_KEY -- the variable
-    release.yml signs with. (The CLI's *_PATH variant gave "Unable to find the private key"
+    candidate.yml signs with. (The CLI's *_PATH variant gave "Unable to find the private key"
     on a real run, so the notebook does not depend on it.)"""
     if not path.strip():
         raise ValueError("no key path given -- paste the full path of the backup key file")
