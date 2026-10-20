@@ -229,5 +229,24 @@ eq "previous stable: an untagged commit gives its own last release" "v0.6.1" "$(
 eq "previous stable: an rc merge sees the release on main's side" "v0.6.1" "$(cd "$repo" && release_previous_stable_tag rc)"
 rm -rf "$repo"
 
+eq "no unverified under pipefail" "ok" "$(bash -c 'set -eo pipefail; source ./release-lib.sh; printf "x\n" | rc_unverified; echo ok')"
+
+# --- rc_unverified: "NOT VERIFIED" lines of commit messages, once each ---
+log=$'Subject\n\nbody\nNOT VERIFIED: app gate -- no Windows\n\nother\n\nSecond\nNOT VERIFIED: cargo tauri dev on Windows\nNOT VERIFIED: app gate -- no Windows'
+eq "lines, deduplicated" $'- app gate -- no Windows\n- cargo tauri dev on Windows' "$(rc_unverified <<<"$log")"
+eq "none"                ""  "$(rc_unverified <<<$'Subject\n\nall good')"
+wrapped=$'Subject\n\nNOT VERIFIED: cargo tauri dev on Windows (transparency, drag regions,\n  compact hover bar in the real window) -- Kade runs it.\n\nCo-Authored-By: X <x@y>'
+eq "wrapped note joined" "- cargo tauri dev on Windows (transparency, drag regions, compact hover bar in the real window) -- Kade runs it." "$(rc_unverified <<<"$wrapped")"
+trailer=$'NOT VERIFIED: app gate\nCo-Authored-By: X <x@y>\nClaude-Session: https://z'
+eq "trailer ends a note" "- app gate" "$(rc_unverified <<<"$trailer")"
+two=$'NOT VERIFIED: one\nNOT VERIFIED: two\nwraps'
+eq "next note ends a note" $'- one\n- two wraps' "$(rc_unverified <<<"$two")"
+
+# --- rc_changes: the list of what this merge brings into rc, never an empty section ---
+# shellcheck disable=SC2016 # backticks are markdown, not substitutions
+eq "commits listed"   $'- a (`1`)\n- b (`2`)' "$(printf -- '- a (`1`)\n- b (`2`)\n' | rc_changes)"
+eq "nothing -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '' | rc_changes)"
+eq "blank lines only -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '\n\n' | rc_changes)"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi

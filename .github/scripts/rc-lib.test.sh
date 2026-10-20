@@ -34,29 +34,12 @@ eq "nothing to prune"   ""            "$(head -3 <<<"$list" | rc_prune 5)"
 eq "stable releases never pruned" "" "$(printf 'v0.5.0\t2026-01-01T00:00:00Z\n' | rc_prune 0)"
 # The workflow runs with errexit + pipefail: no candidates at all is not an error.
 eq "no candidates under pipefail" "ok" "$(bash -c 'set -eo pipefail; source ./rc-lib.sh; printf "" | rc_prune 5; echo ok')"
-eq "no unverified under pipefail" "ok" "$(bash -c 'set -eo pipefail; source ./rc-lib.sh; printf "x\n" | rc_unverified; echo ok')"
-
-# --- rc_unverified: "NOT VERIFIED" lines of commit messages, once each ---
-log=$'Subject\n\nbody\nNOT VERIFIED: app gate -- no Windows\n\nother\n\nSecond\nNOT VERIFIED: cargo tauri dev on Windows\nNOT VERIFIED: app gate -- no Windows'
-eq "lines, deduplicated" $'- app gate -- no Windows\n- cargo tauri dev on Windows' "$(rc_unverified <<<"$log")"
-eq "none"                ""  "$(rc_unverified <<<$'Subject\n\nall good')"
-wrapped=$'Subject\n\nNOT VERIFIED: cargo tauri dev on Windows (transparency, drag regions,\n  compact hover bar in the real window) -- Kade runs it.\n\nCo-Authored-By: X <x@y>'
-eq "wrapped note joined" "- cargo tauri dev on Windows (transparency, drag regions, compact hover bar in the real window) -- Kade runs it." "$(rc_unverified <<<"$wrapped")"
-trailer=$'NOT VERIFIED: app gate\nCo-Authored-By: X <x@y>\nClaude-Session: https://z'
-eq "trailer ends a note" "- app gate" "$(rc_unverified <<<"$trailer")"
-two=$'NOT VERIFIED: one\nNOT VERIFIED: two\nwraps'
-eq "next note ends a note" $'- one\n- two wraps' "$(rc_unverified <<<"$two")"
 
 # --- rc_version: [workspace.package] version, not a dependency's ---
 toml=$'[package]\nversion = "9.9.9"\n\n[workspace.package]\nversion = "0.6.0"\n\n[workspace.dependencies]\nserde = { version = "1" }'
 eq "workspace version" "0.6.0" "$(rc_version <<<"$toml")"
 eq "the repo's own"    "$(sed -n 's/^version = "\(.*\)"/\1/p' ../../Cargo.toml | head -1)" "$(rc_version < ../../Cargo.toml)"
 
-# --- rc_changes: the list of what this merge brings into rc, never an empty section ---
-# shellcheck disable=SC2016 # backticks are markdown, not substitutions
-eq "commits listed"   $'- a (`1`)\n- b (`2`)' "$(printf -- '- a (`1`)\n- b (`2`)\n' | rc_changes)"
-eq "nothing -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '' | rc_changes)"
-eq "blank lines only -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '\n\n' | rc_changes)"
 
 # --- rc_rank: which merge the dispatch dropdown picked (1 = the latest) ---
 eq "rank from a choice"       "1" "$(rc_rank '1 — 가장 최근 머지')"

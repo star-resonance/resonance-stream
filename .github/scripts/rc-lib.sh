@@ -30,38 +30,9 @@ rc_prune() {
   { grep -E $'^v[^\t]*-rc\\.[^\t]*\t' || true; } | sort -t $'\t' -k2,2r | tail -n +"$((keep + 1))" | cut -f1
 }
 
-# "NOT VERIFIED: ..." notes of commit messages as a list, each once. A note
-# wrapped over several lines (commit bodies wrap at ~72 columns) is joined; it
-# ends at a blank line, the next note or a trailer ("Co-Authored-By: ...").
-rc_unverified() {
-  awk '
-    function flush() { if (note != "" && !seen[note]++) print "- " note; note = ""; on = 0 }
-    /^[[:space:]]*NOT VERIFIED:?/ {
-      flush(); line = $0
-      sub(/^[[:space:]]*NOT VERIFIED:?[[:space:]]*/, "", line)
-      note = line; on = 1; next
-    }
-    on && (/^[[:space:]]*$/ || /^[A-Za-z-]+: /) { flush(); next }
-    on { line = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line); note = note " " line }
-    END { flush() }
-  '
-}
-
 # The app version: [workspace.package] version of the root Cargo.toml (stdin).
 rc_version() {
   sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' | head -1
-}
-
-# What a merge brings into rc (stdin: one "- subject (`sha`)" line per commit);
-# a merge that brings nothing new says so instead of leaving the section empty.
-rc_changes() {
-  local lines
-  lines=$(grep -v '^[[:space:]]*$' || true)
-  if [ -n "$lines" ]; then
-    printf '%s\n' "$lines"
-  else
-    printf '%s\n' '- (없음 -- 이전 후보와 같은 내용)'
-  fi
 }
 
 # How many merges the dispatch dropdown can reach back (its options are 1..5).
