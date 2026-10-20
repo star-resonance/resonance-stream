@@ -1,0 +1,213 @@
+# Promote (release-flow skill; kade-agent/agent-config docs/release-flow-plan.md, sections 3 to 5a).
+# Kade runs it on the branch rc/v<version>-rc.N that Candidate made (the GitHub app lists branches,
+# not tags), after trying that prerelease. The tag is the record and the branch only a handle: it
+# refuses unless the branch head is the rc tag's commit, the tag is the highest rc of a version that
+# is not released yet and is above the latest release, Cargo.toml at that commit has that version and
+# its prerelease exists (scripts/release.py rc-branch, check-promote).
+# Nothing is built or signed again, and this workflow holds no signing key: it downloads the
+# prerelease's files, checks them against SHA256SUMS and the app's public keys, tags the same commit
+# v<version>, makes the release with the same exe and .sig, and writes only the stable feed entry
+# (latest.json: the same signature, the final release's exe URL; the app checks the file's signature,
+# not the URL). It then reads the live feed back the way the app does and deletes the rc/ branches
+# of that version and every older one; a failed run before the release deletes nothing and can run
+# again. Only the publish job can write, and it runs none of the repository's code.
+name: Promote
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check the candidate to promote
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      final: ${{ steps.check.outputs.final }}
+      version: ${{ steps.check.outputs.version }}
+      commit: ${{ steps.check.outputs.commit }}
+      rc: ${{ steps.check.outputs.rc }}
+      released: ${{ steps.check.outputs.released }}
+    steps:
+      - name: Only an rc/<rc tag> branch is promoted
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/rc/v*-rc.*) ;;
+            *) echo "::error::Promote runs on a branch rc/vX.Y.Z-rc.N only; this run is on $GITHUB_REF"; exit 1 ;;
+          esac
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The candidate is the newest of a new version, with its prerelease
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          rc=$(python3 scripts/release.py rc-branch "$GITHUB_REF_NAME")
+          final=$(python3 scripts/release.py check-promote "$rc")
+          commit=$(git rev-parse "refs/tags/$rc^{commit}")
+          if [ "$commit" != "$GITHUB_SHA" ]; then
+            echo "::error::$GITHUB_REF_NAME is at $GITHUB_SHA, not at its tag $rc ($commit)"
+            exit 1
+          fi
+          if [ "$(gh release view "$rc" --repo "$REPO" --json isPrerelease --jq .isPrerelease)" != true ]; then
+            echo "::error::$rc has no prerelease"
+            exit 1
+          fi
+          released=$(python3 scripts/release.py released "$final")
+          echo "Promoting $rc to $final at $commit." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "final=$final"
+            echo "version=${final#v}"
+            echo "commit=$commit"
+            echo "rc=$rc"
+            echo "released=$released"
+          } >> "$GITHUB_OUTPUT"
+
+  files:
+    name: verify the files and write the stable feed entry
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+          cache-bin: false
+      - name: Download the prerelease's files and check them
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FINAL: ${{ needs.check.outputs.final }}
+          VERSION: ${{ needs.check.outputs.version }}
+          RC: ${{ needs.check.outputs.rc }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/release-lib.sh
+          exe=$(release_asset "$FINAL")
+          mkdir files
+          gh release download "$RC" --repo "$REPO" --dir files \
+            --pattern "$exe" --pattern "$exe.sig" --pattern SHA256SUMS
+          (cd files && sha256sum -c SHA256SUMS)
+          # SHA256SUMS names exactly the exe and its signature, no more and no less.
+          if [ "$(awk '{print $2}' files/SHA256SUMS | sort | tr '\n' ' ')" != "$exe $exe.sig " ]; then
+            echo "::error::SHA256SUMS of $RC does not list exactly $exe and $exe.sig"
+            exit 1
+          fi
+          # Public keys only: the signature is for these bytes and for this version.
+          cargo run -p resonance-core --example verify_update -- "files/$exe" "files/$exe.sig" "$VERSION"
+      - name: Write the stable latest.json and the release page
+        env:
+          REPO: ${{ github.repository }}
+          FINAL: ${{ needs.check.outputs.final }}
+          VERSION: ${{ needs.check.outputs.version }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/release-lib.sh
+          exe=$(release_asset "$FINAL")
+          notes_src="release-notes/$FINAL.md"
+          if ! problem=$(release_notes_problem 12 < "$notes_src"); then
+            echo "::error::$notes_src: $problem"
+            exit 1
+          fi
+          release_notes_user_part < "$notes_src" > user-notes.md
+          release_manifest "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$(release_download_url "$REPO" "$FINAL")" "$(cat "files/$exe.sig")" < user-notes.md > files/latest.json
+          cat files/latest.json
+          # The commit list starts at the previous stable release (rc tags and test tags are not one).
+          prev=$(release_previous_stable_tag "$COMMIT")
+          if [ -n "$prev" ]; then
+            git log --no-merges --format='- %s' "$prev..$COMMIT" > commits.md
+          else
+            git log --no-merges --format='- %s' -n 30 "$COMMIT" > commits.md
+          fi
+          release_page_body commits.md < "$notes_src" > files/body.md
+      - uses: actions/upload-artifact@v7
+        with:
+          name: promote-files
+          path: files
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: tag and GitHub release
+    needs: [check, files]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # the tag, the release and deleting the rc branches
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: promote-files
+          path: files
+      - name: Tag the candidate's commit, make the release, delete the rc branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FINAL: ${{ needs.check.outputs.final }}
+          COMMIT: ${{ needs.check.outputs.commit }}
+          RC: ${{ needs.check.outputs.rc }}
+          RELEASED: ${{ needs.check.outputs.released }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$REPO/git/ref/heads/$GITHUB_REF_NAME" --jq .object.sha)
+          if [ "$head" != "$COMMIT" ]; then
+            echo "::error::$GITHUB_REF_NAME moved from $COMMIT to $head"
+            exit 1
+          fi
+          exe="Resonance-Stream-$FINAL.exe"
+          object=$(jq -n --arg tag "$FINAL" --arg sha "$COMMIT" \
+                     '{tag: $tag, message: $tag, object: $sha, type: "commit"}' \
+                   | gh api "repos/$REPO/git/tags" --input - --jq .sha)
+          gh api "repos/$REPO/git/refs" -f ref="refs/tags/$FINAL" -f sha="$object" > /dev/null
+          cd files
+          gh release create "$FINAL" "$exe" "$exe.sig" SHA256SUMS latest.json \
+            --repo "$REPO" --verify-tag --latest --title "$FINAL" --notes-file body.md
+          for b in $RELEASED; do
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$b" > /dev/null || echo "::warning::could not delete $b"
+          done
+          {
+            echo "Released $FINAL at $COMMIT, promoted from $RC."
+            echo "Deleted the rc branches $RELEASED."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  feed:
+    name: the live update feed works
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # A broken feed is silent for users (the app just finds no update), so read it back as the app does.
+      - name: Check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FINAL: ${{ needs.check.outputs.final }}
+        run: bash .github/scripts/check-release-feed.sh "$REPO" "$FINAL"

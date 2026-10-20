@@ -53,7 +53,7 @@ echo "::error title=앱 업데이트 피드 이상::$problem"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     printf '### 앱 업데이트 피드 이상\n\n%s\n\n' "$problem"
-    printf '%s\n' "앱은 \`releases/latest/download/latest.json\`을 읽습니다. 정식 릴리스는 \`release.yml\`(태그 vX.Y.Z)로만 만드세요. 손으로 만든 릴리스는 지우거나 prerelease로 바꾸고, 필요하면 최신 정식 릴리스의 \`latest.json\`을 다시 올리세요."
+    printf '%s\n' "앱은 \`releases/latest/download/latest.json\`을 읽습니다. 정식 릴리스는 \`promote.yml\`(태그 vX.Y.Z)로만 만드세요. 손으로 만든 릴리스는 지우거나 prerelease로 바꾸고, 필요하면 최신 정식 릴리스의 \`latest.json\`을 다시 올리세요."
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 exit 1

@@ -83,7 +83,7 @@ cd runbook && python -m pytest -q                   # the pipelines against the 
 - **The stand-in app** (`runbook/tests/fake_app.py`) is a Python model of the app that speaks the same bridge; every pipeline is developed against it, and **every row has a bug switch** (`FAKE_APP_*_BUG`) that must turn exactly that row red. A green dry run proves the pipeline, never the app.
 - **The stand-in llama server** (`runbook/runbook/llama_stub.py`) answers like llama-server (`/completion`, `/health`) with no GPU; `--llama-url` points the real app at it.
 - **The hosted runner** (`windows-latest`) is elevated, interactive, has the WebView2 runtime and a 1024x720 work area. It is not Kade's PC: GPU, the game, tray, DPI scaling and anti-cheat remain his.
-- **`bridge-smoke.yml`** builds the exe and runs: bridge unit tests, `replay-chat`, `window-restore`, `capture-spike`, `chat-rules`, `persistence`, `download-integrity`, `translator-stub`, `popups`. Only a stable release (`release.yml`) calls it, as a hard gate on the tagged commit; neither a pull request nor a push to `rc` runs it.
+- **`bridge-smoke.yml`** builds the exe and runs: bridge unit tests, `replay-chat`, `window-restore`, `capture-spike`, `chat-rules`, `persistence`, `download-integrity`, `translator-stub`, `popups`. Only Candidate (`candidate.yml`) calls it, as a hard gate before the rc tag; neither a pull request nor a push runs it.
 
 ## 4. When CI runs what
 
@@ -96,9 +96,10 @@ cd runbook && python -m pytest -q                   # the pipelines against the 
 | `actionlint.yml` | pull requests that change `.github/workflows/` or `.github/actionlint.yaml`; on demand | actionlint with shellcheck on every workflow; the findings it ignores are in `.github/actionlint.yaml` |
 | `audit.yml` | Cargo file changes, Mondays, on demand | `cargo audit`; on a pull request a finding is a warning and the check stays green (D-22) |
 | `mutants.yml` | its own file changes, Mondays, on demand (`file` input) | `cargo mutants` on one core file; green when the tool ran, the missed list is in the summary and the `mutants-out` artifact |
-| `bridge-smoke.yml` | `workflow_dispatch`, and `workflow_call` from `release.yml` | the real-app pipelines |
-| `release-candidate.yml` | push to `rc` | CI gates, a plain exe, a GitHub prerelease |
-| `release.yml` | a pushed `vX.Y.Z` tag | gates, smoke (a hard gate), signed exe, `latest.json` |
+| `bridge-smoke.yml` | `workflow_dispatch`, and `workflow_call` from `candidate.yml` | the real-app pipelines |
+| `candidate-guard.yml` | a push to `candidate/**` or `rc/**` | deletes a bad or re-pushed candidate branch and any pushed `rc/` branch |
+| `candidate.yml` | Kade, on a `candidate/<sha>` branch | checks, one signed exe, smoke (a hard gate), the `-rc.N` tag and prerelease, `rc/<rc tag>` |
+| `promote.yml` | Kade, on `rc/<rc tag>` | the same files as `v<version>` and the stable `latest.json`, nothing rebuilt |
 | `release-feed-check.yml` | release events, daily | the live update feed is readable |
 | `test-branch-guard.yml` | pull requests into `main` | a `test/*` branch must never merge |
 

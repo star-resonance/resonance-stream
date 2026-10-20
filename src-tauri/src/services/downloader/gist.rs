@@ -21,7 +21,7 @@ use tauri::{AppHandle, Manager};
 /// not a fallback: a fallback would defeat the signature.
 const METADATA_URL: &str =
     "https://raw.githubusercontent.com/enjay27/resonance-stream/metadata/metadata.json";
-/// The update feed of the newest stable release (`release.yml` publishes it);
+/// The update feed of the newest stable release (`promote.yml` publishes it);
 /// the app learns about its own updates here, not from the gist.
 const FEED_URL: &str =
     "https://github.com/enjay27/resonance-stream/releases/latest/download/latest.json";

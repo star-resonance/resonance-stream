@@ -1,5 +1,5 @@
 //! The app's update feed: `latest.json`, published with every stable release
-//! (`release.yml`; shape built by `.github/scripts/release-lib.sh`).
+//! (`promote.yml`; shape built by `.github/scripts/release-lib.sh`).
 //!
 //! The feed itself is not trusted -- it is a file on a release page. What makes
 //! an update safe is the signature it carries, checked by

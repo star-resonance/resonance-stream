@@ -1,0 +1,342 @@
+# Candidate (release-flow skill; kade-agent/agent-config docs/release-flow-plan.md, sections 3 to 5a).
+# An agent pushes candidate/<12-character sha> at a commit on main, adding no commit; Kade runs this
+# workflow on that branch. It
+#   - refuses unless the branch names HEAD, HEAD is on main, no other candidate branch is left over,
+#     the branch has not moved, every check run on HEAD passed (scripts/release.py), Cargo.toml's
+#     version is new and release-notes/v<version>.md passes release_notes_problem,
+#   - builds the shipping exe once, with no test flags, signs it with --app-version <version> (the
+#     only job that holds the signing secrets) and verifies the signature the way the app will;
+#     builds a test-env exe for the real-app smoke test (bridge-smoke.yml) only: it stays a
+#     workflow artifact and is in no release,
+#   - tags the main commit itself v<version>-rc.N, makes a prerelease with the exe, its .sig,
+#     SHA256SUMS, latest.json (the candidate-channel feed entry: the same signature, the prerelease's
+#     exe URL; try it with --feed-url on a test-env build of your own), makes the branch
+#     rc/<rc tag> for Promote (promote.yml) to run from, and deletes the version's lower rc/ branches.
+# The binary carries the final version and never knows it is a candidate. Promote reuses these files.
+# Whatever happens, the last job deletes the candidate/<sha> branch; a failed candidate is fixed on
+# main and starts again with a new branch. Only the tag and cleanup jobs can write, and they run none
+# of the repository's code.
+name: Candidate
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check the candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read  # the check runs on HEAD
+    outputs:
+      final: ${{ steps.version.outputs.final }}
+      version: ${{ steps.version.outputs.version }}
+      rc: ${{ steps.version.outputs.rc }}
+      superseded: ${{ steps.version.outputs.superseded }}
+    steps:
+      - name: Only a candidate branch is a candidate
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/candidate/*) ;;
+            *) echo "::error::a candidate is made from a candidate/* branch only; this run is on $GITHUB_REF"; exit 1 ;;
+          esac
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The branch names a commit on main, has not moved, and its checks passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release.py check-candidate "$GITHUB_REF_NAME"
+          head=$(gh api "repos/$REPO/git/ref/heads/$GITHUB_REF_NAME" --jq .object.sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::error::$GITHUB_REF_NAME moved from $GITHUB_SHA to $head"
+            exit 1
+          fi
+          gh api "repos/$REPO/commits/$GITHUB_SHA/check-runs?per_page=100" \
+            | python3 scripts/release.py checks-passed "$GITHUB_RUN_ID"
+      - name: The version is new and has release notes
+        id: version
+        run: |
+          set -euo pipefail
+          source .github/scripts/release-lib.sh
+          final=$(python3 scripts/release.py next)
+          version=${final#v}
+          notes="release-notes/$final.md"
+          if [ ! -f "$notes" ]; then
+            echo "::error::$notes (한국어 릴리스 노트)가 없습니다. release-notes/TEMPLATE.md를 복사해 main에 먼저 올리세요."
+            exit 1
+          fi
+          if ! problem=$(release_notes_problem 12 < "$notes"); then
+            echo "::error::$notes: $problem"
+            exit 1
+          fi
+          rc=$(python3 scripts/release.py rc "$final")
+          superseded=$(python3 scripts/release.py superseded "$rc")
+          echo "This candidate is $rc of $final, at $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "final=$final"
+            echo "version=$version"
+            echo "rc=$rc"
+            echo "superseded=$superseded"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build and sign the exe (Windows)
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      # Tailwind + daisyUI for Trunk's pre_build hook (Trunk.toml).
+      - run: npm ci
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      # beforeBuildCommand runs `trunk build`; --no-bundle: the plain exe only. No test flags:
+      # these are the bytes users get. Release builds embed src-tauri/app.manifest (Administrator).
+      - name: Build
+        run: npx --yes @tauri-apps/cli@2 build --no-bundle
+      # The signature is over the exact bytes, so nothing may touch the file after this.
+      # --app-version puts the version into the signed comment: the app refuses an exe signed
+      # for another version.
+      - name: Sign
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::The repository secret TAURI_SIGNING_PRIVATE_KEY is not set."
+            exit 1
+          fi
+          npx --yes @tauri-apps/cli@2 signer sign --app-version "$VERSION" target/release/resonance-stream.exe
+          ls -l target/release/resonance-stream.exe target/release/resonance-stream.exe.sig
+      # The app's own check on the file about to be published: catches a private key that is not
+      # the one whose public half is in the app, and a wrong version.
+      - name: Verify the signature the way the app will
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo run --release -p resonance-core --example verify_update -- \
+            target/release/resonance-stream.exe target/release/resonance-stream.exe.sig "$VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: signed-exe
+          path: |
+            target/release/resonance-stream.exe
+            target/release/resonance-stream.exe.sig
+          if-no-files-found: error
+          retention-days: 3
+
+  testexe:
+    name: build the test-env exe (Windows)
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+      # --features test-env: the build understands the test flags (--data-dir, --feed-url, ... see
+      # .memory/roadmap/test-run-parameters.md). Not signed, never promoted.
+      - name: Build
+        run: npx --yes @tauri-apps/cli@2 build --no-bundle --features test-env
+      - uses: actions/upload-artifact@v7
+        with:
+          name: test-exe
+          path: target/release/resonance-stream.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  # The real app, started on a hosted Windows runner and driven over the test bridge (eight pipelines).
+  # A red row stops the tag. The shipped exe has no bridge, so it drives the test-env exe built above.
+  smoke:
+    name: real-app smoke test
+    needs: [check, testexe]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/bridge-smoke.yml
+    with:
+      exe-artifact: test-exe
+
+  files:
+    name: make the release files
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: signed-exe
+          path: signed
+      - name: SHA256SUMS, the candidate feed entry and the tester notes
+        env:
+          REPO: ${{ github.repository }}
+          FINAL: ${{ needs.check.outputs.final }}
+          VERSION: ${{ needs.check.outputs.version }}
+          RC: ${{ needs.check.outputs.rc }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/release-lib.sh
+          exe=$(release_asset "$FINAL")
+          mkdir files
+          mv signed/resonance-stream.exe "files/$exe"
+          mv signed/resonance-stream.exe.sig "files/$exe.sig"
+          (cd files && sha256sum "$exe" "$exe.sig" > SHA256SUMS)
+          sum=$(sha256sum "files/$exe" | cut -d' ' -f1)
+
+          # The candidate-channel feed entry: the final version and the signature, the prerelease's exe.
+          release_notes_user_part < "release-notes/$FINAL.md" > user-notes.md
+          release_manifest "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "https://github.com/$REPO/releases/download/$RC/$exe" "$(cat "files/$exe.sig")" < user-notes.md > files/latest.json
+          cat files/latest.json
+
+          prev=$(release_previous_stable_tag "$GITHUB_SHA")
+          if [ -n "$prev" ]; then range="$prev..$GITHUB_SHA"; else range="$GITHUB_SHA"; fi
+          # Backticks in the printf formats are markdown, not substitutions.
+          # shellcheck disable=SC2016
+          {
+            printf '> **테스트용 후보 빌드입니다.** 정식 릴리스가 아니며, 앱의 업데이트 알림에도 나타나지 않습니다. `%s` 는 정식 릴리스가 될 파일 그대로입니다 (다시 빌드하지 않습니다).\n\n' "$exe"
+            printf '### 실행 방법\n'
+            printf '1. `%s` 를 내려받습니다. 설치는 필요 없습니다.\n' "$exe"
+            printf '2. 실행하면 관리자 권한을 요청합니다 (패킷 캡처에 필요) → **예**.\n'
+            printf '3. 설치된 앱과 같은 설정·번역 모델·채팅 기록 폴더를 함께 씁니다. 두 앱을 동시에 켜지 마세요.\n'
+            printf '4. `latest.json` 은 이 후보의 업데이트 피드입니다. 시험용 빌드(`--feed-url`)에 지정해 업데이트 경로를 시험합니다.\n\n'
+            printf '### 빌드 정보\n'
+            printf -- '- 커밋: `%s`\n' "$GITHUB_SHA"
+            printf -- '- 실행: %s\n' "$RUN_URL"
+            printf -- '- SHA-256: `%s`\n\n' "$sum"
+            printf '## 이번 후보에 들어온 변경\n'
+            git log --no-merges --format='- %s (`%h`)' "$range" | rc_changes
+            printf '\n'
+            unverified=$(git log --no-merges --format=%B "$range" | rc_unverified)
+            if [ -n "$unverified" ]; then
+              printf '## Windows에서 확인할 것\n'
+              printf 'CI와 Linux 세션에서 확인하지 못한 항목입니다 (커밋의 NOT VERIFIED).\n\n'
+              printf '%s\n' "$unverified"
+            fi
+          } > files/notes.md
+          cat files/notes.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-files
+          path: files
+          if-no-files-found: error
+          retention-days: 3
+
+  tag:
+    name: rc tag and prerelease
+    needs: [check, files, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # the rc tag, the prerelease and the rc branches
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-files
+          path: files
+      - name: Tag the main commit, make the prerelease and the rc/ branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FINAL: ${{ needs.check.outputs.final }}
+          RC: ${{ needs.check.outputs.rc }}
+          SUPERSEDED: ${{ needs.check.outputs.superseded }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$REPO/git/ref/heads/$GITHUB_REF_NAME" --jq .object.sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::error::$GITHUB_REF_NAME moved from $GITHUB_SHA to $head"
+            exit 1
+          fi
+          exe="Resonance-Stream-$FINAL.exe"
+          object=$(jq -n --arg tag "$RC" --arg sha "$GITHUB_SHA" \
+                     '{tag: $tag, message: $tag, object: $sha, type: "commit"}' \
+                   | gh api "repos/$REPO/git/tags" --input - --jq .sha)
+          gh api "repos/$REPO/git/refs" -f ref="refs/tags/$RC" -f sha="$object" > /dev/null
+          cd files
+          gh release create "$RC" "$exe" "$exe.sig" SHA256SUMS latest.json \
+            --repo "$REPO" --verify-tag --prerelease --latest=false --title "$RC (테스트용)" --notes-file notes.md
+          gh api "repos/$REPO/git/refs" -f ref="refs/heads/rc/$RC" -f sha="$GITHUB_SHA" > /dev/null
+          for b in $SUPERSEDED; do
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$b" > /dev/null || echo "::warning::could not delete $b"
+          done
+          {
+            echo "Candidate $RC at $GITHUB_SHA (on main)."
+            if [ -n "$SUPERSEDED" ]; then echo "Deleted the superseded $SUPERSEDED."; fi
+            echo "Try the prerelease, then Actions > Promote > Run workflow > branch rc/$RC."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup:
+    name: delete the candidate branch
+    needs: [check, build, testexe, smoke, files, tag]
+    if: always() && startsWith(github.ref, 'refs/heads/candidate/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write  # deleting the branch
+    steps:
+      - name: Delete the branch, whatever the result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh api -X DELETE "repos/$REPO/git/refs/heads/$GITHUB_REF_NAME" > /dev/null; then
+            echo "Deleted $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$(gh api "repos/$REPO/git/matching-refs/heads/$GITHUB_REF_NAME" \
+                      --jq 'map(select(.ref == "refs/heads/" + env.GITHUB_REF_NAME)) | length')" = 0 ]; then
+            echo "$GITHUB_REF_NAME was already deleted." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::could not delete $GITHUB_REF_NAME; Kade deletes it"
+            exit 1
+          fi

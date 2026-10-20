@@ -1,19 +1,19 @@
 name: Bridge smoke test
 
-# Builds the candidate exe (the same command as release-candidate.yml, test flags on)
-# on a Windows runner and drives it over the test bridge, with nobody at the keyboard:
+# Takes the test-env exe candidate.yml built (or builds one: the same command, test flags on)
+# and runs it on a Windows runner and drives it over the test bridge, with nobody at the keyboard:
 # `replay-chat` (the whole pipeline from replayed lines to `packet-event`) and
 # `window-restore` (K18, real window geometry) and `capture-spike` (the sniffer against traffic this machine sends). It answers one question first: does the
 # hosted runner give the app an elevated, interactive session with a WebView2 window?
 # The "session" step prints what it finds, and the logs of both runs are uploaded.
 #
-# It is slow (~20 min), so it runs only where a red row has to stop something: `release.yml` calls it (`workflow_call`, no input:
-# it builds a test-env exe of the tagged commit; the shipped exe has no bridge, so it cannot be driven) when a release tag is pushed.
-# No pull request, no push to a branch and no release candidate starts it (`rc-lib.test.sh` pins that). `workflow_dispatch` is a
+# It is slow (~20 min), so it runs only where a red row has to stop something: `candidate.yml` calls it (`workflow_call` with the
+# `exe-artifact` it built; the shipped exe has no bridge, so it cannot be driven) and the rc tag waits for it.
+# No pull request and no push to a branch starts it (`release-lib.test.sh` pins that). `workflow_dispatch` is a
 # manual run on a branch, for looking into a red row. Every step is a gate: a failing row fails the job (nothing here is
 # continue-on-error; the eight pipelines passed on the hosted runner, 2026-10-06). The eight pipeline steps are independent
 # (each has its own data folder), so one red step no longer hides the rest: they run unless the run is cancelled
-# (`if: ${{ !cancelled() }}`) and the job still ends red, which blocks `release.yml` (decision D-3). Setup and build steps
+# (`if: ${{ !cancelled() }}`) and the job still ends red, which blocks the candidate (decision D-3). Setup and build steps
 # are not guarded: without an exe there is nothing to run.
 on:
   workflow_dispatch:
@@ -49,7 +49,7 @@ jobs:
         if: inputs.exe-artifact == ''
         with:
           targets: wasm32-unknown-unknown
-      # Release builds share the candidate's cache, but only rc saves it.
+      # Only a run that builds here uses this cache; nothing saves it any more.
       - uses: Swatinem/rust-cache@v2
         if: inputs.exe-artifact == ''
         with:

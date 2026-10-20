@@ -7,10 +7,10 @@ name: Release feed
 #
 # What breaks it: a release made by hand (no latest.json, or a different exe), a
 # candidate that is not a prerelease, deleting the newest stable release. Stable
-# releases are made by release.yml only (.claude/rules/release.md).
+# releases are made by promote.yml only (.claude/rules/release.md).
 #
 # Runs when a person publishes, edits or deletes a release (releases made by a
-# workflow with GITHUB_TOKEN start no workflows; release.yml checks its own),
+# workflow with GITHUB_TOKEN start no workflows; promote.yml checks its own),
 # every day, and on demand. A `release` run uses this file as it is at the
 # tagged commit, so a hand-made release on an old tag may only be caught by the
 # daily run.

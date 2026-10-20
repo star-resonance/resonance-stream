@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Helpers for .github/workflows/release.yml. Tested by release-lib.test.sh.
+# Helpers for .github/workflows/candidate.yml and promote.yml. Tested by release-lib.test.sh.
 # Sourced by bash.
 
 # The version of a stable release tag (v<major>.<minor>.<patch>); anything else
@@ -164,12 +164,40 @@ release_page_body() {
 # The nearest earlier stable release tag (vX.Y.Z only: no -rc, -beta, -test
 # suffix), where the commit list of <commit> starts; empty when there is none.
 # A commit that carries a stable tag itself looks from its parent; an untagged
-# one (the rc merge release.yml is about to tag) looks from itself, so a release
-# on main's side of the merge counts. Run in the repository, with its tags fetched.
+# one (the commit Candidate or Promote is about to tag) looks from itself. Run in the repository, with its tags fetched.
 release_previous_stable_tag() {
   local from=$1
   if git tag --points-at "$1" --list 'v*' | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
     from="$1^"
   fi
   git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "$from" 2>/dev/null || true
+}
+
+# "NOT VERIFIED: ..." notes of commit messages as a list, each once. A note
+# wrapped over several lines (commit bodies wrap at ~72 columns) is joined; it
+# ends at a blank line, the next note or a trailer ("Co-Authored-By: ...").
+rc_unverified() {
+  awk '
+    function flush() { if (note != "" && !seen[note]++) print "- " note; note = ""; on = 0 }
+    /^[[:space:]]*NOT VERIFIED:?/ {
+      flush(); line = $0
+      sub(/^[[:space:]]*NOT VERIFIED:?[[:space:]]*/, "", line)
+      note = line; on = 1; next
+    }
+    on && (/^[[:space:]]*$/ || /^[A-Za-z-]+: /) { flush(); next }
+    on { line = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line); note = note " " line }
+    END { flush() }
+  '
+}
+
+# What a merge brings into rc (stdin: one "- subject (`sha`)" line per commit);
+# a merge that brings nothing new says so instead of leaving the section empty.
+rc_changes() {
+  local lines
+  lines=$(grep -v '^[[:space:]]*$' || true)
+  if [ -n "$lines" ]; then
+    printf '%s\n' "$lines"
+  else
+    printf '%s\n' '- (없음 -- 이전 후보와 같은 내용)'
+  fi
 }

@@ -15,8 +15,6 @@ on:
   # auto-merge.yml dispatches this on main after each merge (merges made with
   # GITHUB_TOKEN start no push run), so main's build cache stays current.
   workflow_dispatch:
-  # release-candidate.yml runs these gates before it builds a candidate exe.
-  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,9 +52,9 @@ jobs:
       - run: just fmt-check
       - run: just core-check
       - run: just ui-check
-      - name: release-candidate helpers
-        run: bash .github/scripts/rc-lib.test.sh
-      - name: stable-release helpers
+      - name: release helpers
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: release workflow helpers
         run: bash .github/scripts/release-lib.test.sh
       - name: signed-metadata helpers
         run: bash .github/scripts/metadata-lib.test.sh

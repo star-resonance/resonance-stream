@@ -229,5 +229,56 @@ eq "previous stable: an untagged commit gives its own last release" "v0.6.1" "$(
 eq "previous stable: an rc merge sees the release on main's side" "v0.6.1" "$(cd "$repo" && release_previous_stable_tag rc)"
 rm -rf "$repo"
 
+eq "no unverified under pipefail" "ok" "$(bash -c 'set -eo pipefail; source ./release-lib.sh; printf "x\n" | rc_unverified; echo ok')"
+
+# --- rc_unverified: "NOT VERIFIED" lines of commit messages, once each ---
+log=$'Subject\n\nbody\nNOT VERIFIED: app gate -- no Windows\n\nother\n\nSecond\nNOT VERIFIED: cargo tauri dev on Windows\nNOT VERIFIED: app gate -- no Windows'
+eq "lines, deduplicated" $'- app gate -- no Windows\n- cargo tauri dev on Windows' "$(rc_unverified <<<"$log")"
+eq "none"                ""  "$(rc_unverified <<<$'Subject\n\nall good')"
+wrapped=$'Subject\n\nNOT VERIFIED: cargo tauri dev on Windows (transparency, drag regions,\n  compact hover bar in the real window) -- Kade runs it.\n\nCo-Authored-By: X <x@y>'
+eq "wrapped note joined" "- cargo tauri dev on Windows (transparency, drag regions, compact hover bar in the real window) -- Kade runs it." "$(rc_unverified <<<"$wrapped")"
+trailer=$'NOT VERIFIED: app gate\nCo-Authored-By: X <x@y>\nClaude-Session: https://z'
+eq "trailer ends a note" "- app gate" "$(rc_unverified <<<"$trailer")"
+two=$'NOT VERIFIED: one\nNOT VERIFIED: two\nwraps'
+eq "next note ends a note" $'- one\n- two wraps' "$(rc_unverified <<<"$two")"
+
+# --- rc_changes: the list of what this merge brings into rc, never an empty section ---
+# shellcheck disable=SC2016 # backticks are markdown, not substitutions
+eq "commits listed"   $'- a (`1`)\n- b (`2`)' "$(printf -- '- a (`1`)\n- b (`2`)\n' | rc_changes)"
+eq "nothing -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '' | rc_changes)"
+eq "blank lines only -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '\n\n' | rc_changes)"
+
+# --- the candidate flow's workflows (release-flow skill): what must stay true of them ---
+workflows=../workflows
+for f in release.yml release-checks.yml release-candidate.yml; do
+  eq "old workflow $f is gone" "no" "$([ -e "$workflows/$f" ] && echo yes || echo no)"
+done
+eq "rc-lib.sh is gone" "no" "$([ -e ./rc-lib.sh ] && echo yes || echo no)"
+# Test flags (src-tauri `test-env` feature): the signed shipping exe is built without them; one separate build has them.
+eq "candidate builds the shipping exe once, without test-env" "1" "$(grep -c 'tauri-apps/cli@2 build --no-bundle$' "$workflows/candidate.yml")"
+eq "candidate builds one test-env exe" "1" "$(grep -c 'tauri-apps/cli@2 build .*--features test-env' "$workflows/candidate.yml")"
+eq "promote never builds or mentions test-env" "0" "$(grep -c 'test-env\|tauri-apps/cli' "$workflows/promote.yml")"
+eq "only candidate signs the exe" "1" "$(grep -l 'signer sign .*resonance-stream\.exe' "$workflows"/*.yml | wc -l | tr -d ' ')"
+eq "promote holds no signing secret" "0" "$(grep -c 'secrets\.' "$workflows/promote.yml")"
+eq "candidate signs with the final version" "1" "$(grep -c 'signer sign --app-version "\$VERSION"' "$workflows/candidate.yml")"
+eq "promote never promotes the test-env exe" "0" "$(grep -c -- '-test' "$workflows/promote.yml")"
+# The real-app smoke test is slow: no pull request and no push starts it; Candidate calls it once and the tag waits for it.
+eq "smoke test has no pull_request trigger" "0" "$(grep -c '^  pull_request' "$workflows/bridge-smoke.yml")"
+eq "smoke test has no push trigger" "0" "$(grep -c '^  push' "$workflows/bridge-smoke.yml")"
+eq "candidate calls the smoke test once" "1" "$(grep -c 'uses: \./\.github/workflows/bridge-smoke\.yml' "$workflows/candidate.yml")"
+eq "the rc tag waits for the smoke test" "1" "$(grep -c 'needs: \[check, files, smoke\]' "$workflows/candidate.yml")"
+# Decision D-3: the pipeline steps keep running after one fails (each has its own data folder), but the job still fails, so a release is blocked.
+smoke_steps() { # smoke_steps: "<name> <guarded|bare>" for every "over the bridge" step of bridge-smoke.yml
+  awk '/^      - name: /{ if (n) print n, (g ? "guarded" : "bare"); n=""; g=0 }
+       /^      - name: .*over the bridge/{ n=$0; sub(/^      - name: /, "", n); gsub(/ /, "_", n) }
+       n && /^        if: \$\{\{ !cancelled\(\) \}\}$/{ g=1 }
+       END{ if (n) print n, (g ? "guarded" : "bare") }' "$workflows/bridge-smoke.yml"
+}
+eq "smoke test has eight pipeline steps" "8" "$(smoke_steps | wc -l | tr -d ' ')"
+eq "every pipeline step runs even after another failed" "0" "$(smoke_steps | grep -c ' bare$')"
+eq "smoke test never swallows a failure" "0" "$(grep -c '^ *continue-on-error' "$workflows/bridge-smoke.yml")"
+eq "the prerelease has no test-env exe asset" "0" "$(grep -c -- '-test\.exe' "$workflows/candidate.yml")"
+eq "only the smoke test downloads the test-env exe" "0" "$(grep -c 'path: testexe' "$workflows/candidate.yml")"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
