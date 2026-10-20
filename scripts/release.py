@@ -44,6 +44,7 @@ CANDIDATE_JOBS = {
     "build and sign the exe (Windows)",
     "build the test-env exe (Windows)",
     "real-app smoke test",
+    "make the release files",
     "rc tag and prerelease",
     "delete the candidate branch",
     "candidate branch unchanged",
