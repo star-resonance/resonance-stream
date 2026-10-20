@@ -6,11 +6,11 @@
 #     version is new and release-notes/v<version>.md passes release_notes_problem,
 #   - builds the shipping exe once, with no test flags, signs it with --app-version <version> (the
 #     only job that holds the signing secrets) and verifies the signature the way the app will;
-#     builds a test-env exe for the real-app smoke test (bridge-smoke.yml) and for Kade's
-#     debugging on his PC, which is attached to the prerelease and never promoted,
+#     builds a test-env exe for the real-app smoke test (bridge-smoke.yml) only: it stays a
+#     workflow artifact and is in no release,
 #   - tags the main commit itself v<version>-rc.N, makes a prerelease with the exe, its .sig,
 #     SHA256SUMS, latest.json (the candidate-channel feed entry: the same signature, the prerelease's
-#     exe URL; try it with --feed-url on a test-env build) and the test-env exe, makes the branch
+#     exe URL; try it with --feed-url on a test-env build of your own), makes the branch
 #     rc/<rc tag> for Promote (promote.yml) to run from, and deletes the version's lower rc/ branches.
 # The binary carries the final version and never knows it is a candidate. Promote reuses these files.
 # Whatever happens, the last job deletes the candidate/<sha> branch; a failed candidate is fixed on
@@ -203,7 +203,7 @@ jobs:
 
   files:
     name: make the release files
-    needs: [check, build, testexe]
+    needs: [check, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -217,10 +217,6 @@ jobs:
         with:
           name: signed-exe
           path: signed
-      - uses: actions/download-artifact@v8
-        with:
-          name: test-exe
-          path: testexe
       - name: SHA256SUMS, the candidate feed entry and the tester notes
         env:
           REPO: ${{ github.repository }}
@@ -235,7 +231,6 @@ jobs:
           mkdir files
           mv signed/resonance-stream.exe "files/$exe"
           mv signed/resonance-stream.exe.sig "files/$exe.sig"
-          mv testexe/resonance-stream.exe "files/${exe%.exe}-test.exe"
           (cd files && sha256sum "$exe" "$exe.sig" > SHA256SUMS)
           sum=$(sha256sum "files/$exe" | cut -d' ' -f1)
 
@@ -255,8 +250,7 @@ jobs:
             printf '1. `%s` 를 내려받습니다. 설치는 필요 없습니다.\n' "$exe"
             printf '2. 실행하면 관리자 권한을 요청합니다 (패킷 캡처에 필요) → **예**.\n'
             printf '3. 설치된 앱과 같은 설정·번역 모델·채팅 기록 폴더를 함께 씁니다. 두 앱을 동시에 켜지 마세요.\n'
-            printf '4. `%s` 는 시험용 옵션(`--data-dir`, `--feed-url` 등)을 쓸 수 있는 디버깅용 빌드입니다. 서명이 없고 정식 릴리스에는 들어가지 않습니다.\n' "${exe%.exe}-test.exe"
-            printf '5. `latest.json` 은 이 후보의 업데이트 피드입니다. 시험용 빌드에 `--feed-url` 로 지정해 업데이트 경로를 시험합니다.\n\n'
+            printf '4. `latest.json` 은 이 후보의 업데이트 피드입니다. 시험용 빌드(`--feed-url`)에 지정해 업데이트 경로를 시험합니다.\n\n'
             printf '### 빌드 정보\n'
             printf -- '- 커밋: `%s`\n' "$GITHUB_SHA"
             printf -- '- 실행: %s\n' "$RUN_URL"
@@ -311,7 +305,7 @@ jobs:
                    | gh api "repos/$REPO/git/tags" --input - --jq .sha)
           gh api "repos/$REPO/git/refs" -f ref="refs/tags/$RC" -f sha="$object" > /dev/null
           cd files
-          gh release create "$RC" "$exe" "$exe.sig" SHA256SUMS latest.json "${exe%.exe}-test.exe" \
+          gh release create "$RC" "$exe" "$exe.sig" SHA256SUMS latest.json \
             --repo "$REPO" --verify-tag --prerelease --latest=false --title "$RC (테스트용)" --notes-file notes.md
           gh api "repos/$REPO/git/refs" -f ref="refs/heads/rc/$RC" -f sha="$GITHUB_SHA" > /dev/null
           for b in $SUPERSEDED; do

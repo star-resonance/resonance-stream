@@ -18,7 +18,7 @@ are `scripts/release.py` (tests: `python3 -m unittest discover -s scripts -p 'te
 
 **The signed exe is built and signed once, in Candidate, which alone holds the signing secrets**
 (`TAURI_SIGNING_PRIVATE_KEY`, `..._PASSWORD`). It carries the final version and no test flags; the
-`-test.exe` on the prerelease (`test-env`, unsigned, for Kade's debugging) is never promoted. Promote
+`test-env` exe exists only as a workflow artifact for the smoke test and is in no release. Promote
 downloads the files, checks `SHA256SUMS` and the signature against the app's public keys, reuses the
 exe and its `.sig`, and writes only the stable `latest.json`: the app installs an update only if a key
 in `TRUSTED_UPDATE_KEYS` (`crates/core/src/update_signature.rs`) signed those bytes for that version, and
