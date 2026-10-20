@@ -41,7 +41,7 @@ the app owns the file and the real defaults, the ui re-exports the same type).
 ```
 .claude/              rules/ (path-scoped), skills/: ui-preview
 .memory/              working memory; see .memory/README.md
-.github/ justfile     CI (gates per OS; release, rc, metadata workflows); the gates as commands
+.github/ justfile     CI (gates per OS; candidate, promote, metadata workflows); the gates as commands
 crates/               core, llama, types — pure logic, tested on any OS
 src/                  ui crate (resonance-stream-ui)
 src-tauri/            app crate (resonance-stream, lib resonance_stream_lib)
@@ -72,15 +72,15 @@ style/ public/        CSS source; static assets
   `claude-md-check.yml` and the `project-*.yml` call star-resonance/.github's shared workflows (read from its `main`).
 - Local sessions follow the same flow: a `claude/<task>` branch and a PR, opened with Kade's
   `gh` login (without it, print the commands for Kade).
-- Only `claude/*` PRs into `main` auto-merge, once every check on the head is green; a PR into `rc`
-  (or anywhere else), a draft, or a PR that changes `.github/workflows/`, `CLAUDE.md` or
+- Only `claude/*` PRs into `main` auto-merge, once every check on the head is green; a PR into any other
+  branch, a draft, or a PR that changes `.github/workflows/`, `CLAUDE.md` or
   `.claude/rules/` waits for a person: open those as drafts.
   `workflow_run` workflows are read from `main`: an `auto-merge.yml` change acts after its own merge.
   Workflow merges use `GITHUB_TOKEN` (no `push` run on `main`); the PR's own run is the gate.
 - Dependabot (`.github/dependabot.yml`) opens `dependabot/*` PRs weekly; they never auto-merge:
   Kade merges them.
-- **Releases** follow the global `release-flow` skill (main -> rc -> a Release run Kade starts on
-  `rc`, D-30); this repository's release files: `.claude/rules/release.md`. A `test/<job>` branch
+- **Releases** follow the global `release-flow` skill (D-33); the version is `Cargo.toml`
+  `[workspace.package]`, the notes `release-notes/v<version>.md`; the rest: `.claude/rules/release.md`. A `test/<job>` branch
   is a throw-away experiment for Kade's Windows PC: never merged into `main` (`test-branch-guard.yml`).
 - **Never commit:** build output (`target/`, `dist/`, `style/output.css`, `*.exe`);
   `node_modules/`, IDE folders; an unformatted tree.
