@@ -248,5 +248,36 @@ eq "commits listed"   $'- a (`1`)\n- b (`2`)' "$(printf -- '- a (`1`)\n- b (`2`)
 eq "nothing -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '' | rc_changes)"
 eq "blank lines only -> (없음)" "- (없음 -- 이전 후보와 같은 내용)" "$(printf '\n\n' | rc_changes)"
 
+# --- the candidate flow's workflows (release-flow skill): what must stay true of them ---
+workflows=../workflows
+for f in release.yml release-checks.yml release-candidate.yml; do
+  eq "old workflow $f is gone" "no" "$([ -e "$workflows/$f" ] && echo yes || echo no)"
+done
+eq "rc-lib.sh is gone" "no" "$([ -e ./rc-lib.sh ] && echo yes || echo no)"
+# Test flags (src-tauri `test-env` feature): the signed shipping exe is built without them; one separate build has them.
+eq "candidate builds the shipping exe once, without test-env" "1" "$(grep -c 'tauri-apps/cli@2 build --no-bundle$' "$workflows/candidate.yml")"
+eq "candidate builds one test-env exe" "1" "$(grep -c 'tauri-apps/cli@2 build .*--features test-env' "$workflows/candidate.yml")"
+eq "promote never builds or mentions test-env" "0" "$(grep -c 'test-env\|tauri-apps/cli' "$workflows/promote.yml")"
+eq "only candidate signs the exe" "1" "$(grep -l 'signer sign --app-version' "$workflows"/*.yml | wc -l | tr -d ' ')"
+eq "promote holds no signing secret" "0" "$(grep -c 'secrets\.' "$workflows/promote.yml")"
+eq "candidate signs with the final version" "1" "$(grep -c 'signer sign --app-version "\$VERSION"' "$workflows/candidate.yml")"
+eq "promote never promotes the test-env exe" "0" "$(grep -c -- '-test' "$workflows/promote.yml")"
+# The real-app smoke test is slow: no pull request and no push starts it; Candidate calls it once and the tag waits for it.
+eq "smoke test has no pull_request trigger" "0" "$(grep -c '^  pull_request' "$workflows/bridge-smoke.yml")"
+eq "smoke test has no push trigger" "0" "$(grep -c '^  push' "$workflows/bridge-smoke.yml")"
+eq "candidate calls the smoke test once" "1" "$(grep -c 'uses: \./\.github/workflows/bridge-smoke\.yml' "$workflows/candidate.yml")"
+eq "the rc tag waits for the smoke test" "1" "$(grep -c 'needs: \[check, files, smoke\]' "$workflows/candidate.yml")"
+# Decision D-3: the pipeline steps keep running after one fails (each has its own data folder), but the job still fails, so a release is blocked.
+smoke_steps() { # smoke_steps: "<name> <guarded|bare>" for every "over the bridge" step of bridge-smoke.yml
+  awk '/^      - name: /{ if (n) print n, (g ? "guarded" : "bare"); n=""; g=0 }
+       /^      - name: .*over the bridge/{ n=$0; sub(/^      - name: /, "", n); gsub(/ /, "_", n) }
+       n && /^        if: \$\{\{ !cancelled\(\) \}\}$/{ g=1 }
+       END{ if (n) print n, (g ? "guarded" : "bare") }' "$workflows/bridge-smoke.yml"
+}
+eq "smoke test has eight pipeline steps" "8" "$(smoke_steps | wc -l | tr -d ' ')"
+eq "every pipeline step runs even after another failed" "0" "$(smoke_steps | grep -c ' bare$')"
+eq "smoke test never swallows a failure" "0" "$(grep -c '^ *continue-on-error' "$workflows/bridge-smoke.yml")"
+eq "candidate notes name the test flags" "1" "$(grep -c "printf '4\. .*--data-dir" "$workflows/candidate.yml")"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
