@@ -277,7 +277,8 @@ smoke_steps() { # smoke_steps: "<name> <guarded|bare>" for every "over the bridg
 eq "smoke test has eight pipeline steps" "8" "$(smoke_steps | wc -l | tr -d ' ')"
 eq "every pipeline step runs even after another failed" "0" "$(smoke_steps | grep -c ' bare$')"
 eq "smoke test never swallows a failure" "0" "$(grep -c '^ *continue-on-error' "$workflows/bridge-smoke.yml")"
-eq "candidate notes name the test flags" "1" "$(grep -c "printf '4\. .*--data-dir" "$workflows/candidate.yml")"
+eq "the prerelease has no test-env exe asset" "0" "$(grep -c -- '-test\.exe' "$workflows/candidate.yml")"
+eq "only the smoke test downloads the test-env exe" "0" "$(grep -c 'path: testexe' "$workflows/candidate.yml")"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
