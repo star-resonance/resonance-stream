@@ -1,4 +1,4 @@
-// Run: node --test scripts/
+// Run: node --test scripts/release.test.cjs
 "use strict";
 
 const test = require("node:test");
