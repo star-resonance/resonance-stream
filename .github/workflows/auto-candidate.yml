@@ -1,11 +1,14 @@
 # Auto-candidate (release-flow skill; kade-agent/agent-config docs/release-flow-plan.md, section 4a).
 # Once a workflow that checks main has finished, this pushes candidate/<12-character sha> at that
-# commit when every check run on it has finished and passed and its version is unreleased
+# commit when the workflows that check main have passed on it and its version is unreleased
 # (scripts/release.py should-candidate), so no agent has to push the branch by hand. Kade still
 # starts Candidate and Promote.
 #   - The trigger is every workflow that runs on main and posts check runs Candidate reads
 #     (ci.yml, claude-md-check.yml, eol-check.yml); the last one to finish finds the others done
-#     and decides. Checks still running: nothing is pushed, a later completion decides.
+#     and decides. It reads those workflows' runs on the commit (release.py ci-done), not the
+#     check runs: Auto-merge and the like are workflow_run workflows of the same ones, still
+#     running when the last decides. Still running: nothing is pushed, a later completion decides.
+#     Candidate itself reads every check run (checks-passed), later, when they have finished.
 #     metadata.yml runs on metadata-v* tags only, so it is not in the list.
 #   - Auto-merge dispatches CI on main after each merge (a merge with GITHUB_TOKEN starts no push
 #     run), so a push and a workflow_dispatch run both count; head_branch main limits the rest.
@@ -41,7 +44,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      checks: read  # the check runs on the commit
+      actions: read  # the workflow runs on the commit
     outputs:
       push: ${{ steps.decide.outputs.push }}
     steps:
@@ -50,7 +53,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: The version is new with release notes, and every check on the commit passed
+      - name: The version is new with release notes, and the trigger workflows passed
         id: decide
         env:
           GH_TOKEN: ${{ github.token }}
@@ -71,14 +74,14 @@ jobs:
           if ! problem=$(release_notes_problem 12 < "$notes"); then
             no "No candidate at $SHA: $notes: $problem"
           fi
-          gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" > "$RUNNER_TEMP/runs.json"
-          if ! why=$(python3 scripts/release.py checks-passed "$GITHUB_RUN_ID" < "$RUNNER_TEMP/runs.json" 2>&1); then
-            if grep -qE ': (failure|timed_out|cancelled|action_required|stale|startup_failure)(;|$)' <<< "$why"; then
-              no "main is red at $SHA: no candidate. ${why#release: }"
-            fi
-            no "Checks are still running at $SHA; a later workflow's completion decides. ${why#release: }"
-          fi
-          echo "Every check on $SHA passed and its version is unreleased with release notes: push the candidate branch." >> "$GITHUB_STEP_SUMMARY"
+          gh api "repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" > "$RUNNER_TEMP/runs.json"
+          state=$(python3 scripts/release.py ci-done "CI" "CLAUDE.md check" "Line endings" < "$RUNNER_TEMP/runs.json")
+          case "$state" in
+            ready) ;;
+            red) no "main is red at $SHA: no candidate." ;;
+            *) no "Checks are still running at $SHA; a later workflow's completion decides." ;;
+          esac
+          echo "Every trigger workflow finished well on $SHA and its version is unreleased with release notes: push the candidate branch." >> "$GITHUB_STEP_SUMMARY"
           echo "push=true" >> "$GITHUB_OUTPUT"
 
   push:
