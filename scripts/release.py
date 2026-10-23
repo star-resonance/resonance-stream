@@ -15,6 +15,9 @@ and AGENTS.md stamp.
   should-candidate  true when `next` would accept HEAD (its version has no final tag, is above the
                     latest one, HEAD is no candidate yet) and release-notes/v<version>.md exists;
                     otherwise false, the reason on stderr (auto-candidate.yml)
+  ci-done NAME...   reads the Actions runs of a commit (the API's JSON) on stdin; only push and
+                    workflow_dispatch runs of the named workflows count: ready (one ran, all
+                    finished well), waiting (one is not finished, or none ran) or red
   checks-passed ID  reads a commit's check runs (the API's JSON) on stdin; refuses unless one
                     ran, all finished and none failed, leaving out run ID's own jobs and the
                     candidate workflows' jobs from any run
@@ -54,6 +57,9 @@ CANDIDATE_JOBS = {
     "decide on a candidate",
     "push the candidate branch",
 }
+# The events a workflow runs on a main commit with: a push, or the dispatch auto-merge makes after a
+# merge made with GITHUB_TOKEN (which starts no push run).
+CI_EVENTS = {"push", "workflow_dispatch"}
 FAILED = {"failure", "timed_out", "cancelled", "action_required", "stale", "startup_failure"}
 
 
@@ -141,6 +147,13 @@ def check_candidate(branch, head, on_main, others):
         raise ReleaseError(f"{head} is not on origin/main")
     if others:
         raise ReleaseError(f"{', '.join(others)} is left over; Kade deletes it first")
+
+
+def ci_done(runs, names):
+    mine = [c for c in runs if c.get("name") in names and c.get("event") in CI_EVENTS]
+    if not mine or any(c.get("status") != "completed" for c in mine):
+        return "waiting"
+    return "red" if any(c.get("conclusion") in FAILED for c in mine) else "ready"
 
 
 def checks_passed(runs, run_id):
@@ -236,6 +249,8 @@ def main(argv):
             check_candidate_here(arg)
         elif cmd == "should-candidate":
             print("true" if should_candidate_here() else "false")
+        elif cmd == "ci-done":
+            print(ci_done(json.load(sys.stdin).get("workflow_runs") or [], rest))
         elif cmd == "checks-passed":
             checks_passed(json.load(sys.stdin).get("check_runs") or [], arg)
         elif cmd == "check-promote":
