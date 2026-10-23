@@ -115,6 +115,32 @@ class Pure(unittest.TestCase):
         self.assertFalse(r.should_candidate("0.6.3", ["v0.6.2"], False), "no release notes")
         self.assertTrue(r.should_candidate("0.6.3", ["v0.6.2", "v0.6.3-rc.1"], True), "an rc is not a release")
 
+    # auto-merge.yml is a workflow_run of the same workflows: its runs are still going when the last
+    # trigger's decide runs, so only the named workflows' push/dispatch runs count.
+    def test_ci_done_reads_only_the_named_workflows_push_and_dispatch_runs(self):
+        def run(name, status, conclusion=None, event="push"):
+            return {"name": name, "event": event, "status": status, "conclusion": conclusion}
+
+        names = ["CI", "CLAUDE.md check", "Line endings"]
+        ok = [run("CI", "completed", "success"), run("Line endings", "completed", "success"),
+              run("CLAUDE.md check", "completed", "skipped", "workflow_dispatch")]
+        self.assertEqual(r.ci_done(ok, names), "ready")
+        self.assertEqual(r.ci_done([run("CI", "completed", "neutral")], names), "ready")
+        self.assertEqual(r.ci_done(ok + [run("CI", "in_progress")], names), "waiting")
+        self.assertEqual(r.ci_done(ok + [run("CI", "queued", None, "workflow_dispatch")], names), "waiting")
+        self.assertEqual(
+            r.ci_done(ok + [run("Auto-merge", "in_progress", None, "workflow_run"),
+                            run("Main red", "completed", "failure", "workflow_run"),
+                            run("CI", "in_progress", None, "pull_request"),
+                            run("Auto-candidate", "in_progress", None, "workflow_run")], names),
+            "ready",
+        )
+        self.assertEqual(r.ci_done(ok + [run("CI", "completed", "failure")], names), "red")
+        for c in ["cancelled", "timed_out", "action_required"]:
+            self.assertEqual(r.ci_done([run("CI", "completed", c)], names), "red", c)
+        self.assertEqual(r.ci_done([], names), "waiting")
+        self.assertEqual(r.ci_done([run("Auto-merge", "completed", "success", "workflow_run")], names), "waiting")
+
     def test_the_job_names_left_out_are_the_candidate_workflows_own_jobs(self):
         text = "\n".join(
             (HERE.parent / ".github" / "workflows" / f).read_text(encoding="utf-8")
@@ -267,6 +293,14 @@ class Repo(unittest.TestCase):
         self.bump("0.6.1")
         (self.dev / "release-notes" / "v0.6.1.md").write_text("x\n")
         self.assertEqual(self.ok("should-candidate"), "false", "below v0.6.2")
+
+    def test_ci_done_reads_the_actions_runs_json_on_stdin(self):
+        runs = {"workflow_runs": [{"name": "CI", "event": "push", "status": "completed", "conclusion": "success"}]}
+        self.assertEqual(self.ok("ci-done", "CI", "Line endings", stdin=json.dumps(runs)), "ready")
+        runs["workflow_runs"][0]["status"] = "in_progress"
+        self.assertEqual(self.ok("ci-done", "CI", stdin=json.dumps(runs)), "waiting")
+        runs["workflow_runs"] = [{"name": "CI", "event": "push", "status": "completed", "conclusion": "failure"}]
+        self.assertEqual(self.ok("ci-done", "CI", stdin=json.dumps(runs)), "red")
 
     def test_the_commands_of_the_old_flow_and_of_agent_configs_stamp_are_gone(self):
         for cmd in ["stamp", "prepare", "tag"]:
