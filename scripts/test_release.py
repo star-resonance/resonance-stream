@@ -149,6 +149,15 @@ class Pure(unittest.TestCase):
         names = re.findall(r"^ {4}name: (.+)$", text, re.M)
         self.assertEqual(sorted(r.CANDIDATE_JOBS), sorted(names))
 
+    def test_a_failed_candidate_keeps_its_branch_and_only_a_tagged_one_deletes_it(self):
+        text = (HERE.parent / ".github" / "workflows" / "candidate.yml").read_text(encoding="utf-8")
+        job = re.search(r"^  cleanup:\n(.*?)(?=^  \S|\Z)", text, re.M | re.S).group(1)
+        self.assertIn("name: delete the candidate branch", job)
+        cond = re.search(r"^    if: (.+)$", job, re.M).group(1)
+        self.assertNotIn("always()", cond)
+        self.assertIn("needs.tag.result == 'success'", cond)
+        self.assertIn("tag", re.search(r"^    needs: \[(.+)\]$", job, re.M).group(1).split(", "))
+
     def test_check_promote_wants_the_highest_rc_of_a_new_version_with_that_cargo_version(self):
         tags = ["v0.6.2", "v0.6.3-rc.1", "v0.6.3-rc.2"]
         self.assertEqual(r.check_promote("v0.6.3-rc.2", tags, "0.6.3"), "v0.6.3")
