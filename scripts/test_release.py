@@ -93,10 +93,58 @@ class Pure(unittest.TestCase):
         with self.assertRaisesRegex(r.ReleaseError, "no check run"):
             r.checks_passed([run(own[0], "success", 2)], "7")
 
+    # Auto-candidate's two jobs post check runs on the main commit too: a failed push must never
+    # make Candidate refuse the commit (nor its own next decision).
+    def test_checks_passed_leaves_out_the_auto_candidate_jobs(self):
+        def run(name, conclusion, status="completed"):
+            return {"name": name, "status": status, "conclusion": conclusion,
+                    "details_url": "https://github.com/o/r/actions/runs/2/job/9"}
+
+        r.checks_passed(
+            [dict(run("test", "success"), details_url="https://github.com/o/r/actions/runs/1/job/9"),
+             run("decide on a candidate", "failure"), run("push the candidate branch", "failure"),
+             run("push the candidate branch", None, "in_progress")],
+            "7",
+        )
+
+    def test_should_candidate_wants_an_unreleased_version_above_the_latest_with_notes(self):
+        self.assertTrue(r.should_candidate("0.6.3", ["v0.6.2"], True))
+        self.assertTrue(r.should_candidate("0.6.3", [], True))
+        self.assertFalse(r.should_candidate("0.6.2", ["v0.6.2"], True), "already tagged final")
+        self.assertFalse(r.should_candidate("0.6.1", ["v0.6.2"], True), "below the latest final tag")
+        self.assertFalse(r.should_candidate("0.6.3", ["v0.6.2"], False), "no release notes")
+        self.assertTrue(r.should_candidate("0.6.3", ["v0.6.2", "v0.6.3-rc.1"], True), "an rc is not a release")
+
+    # auto-merge.yml is a workflow_run of the same workflows: its runs are still going when the last
+    # trigger's decide runs, so only the named workflows' push/dispatch runs count.
+    def test_ci_done_reads_only_the_named_workflows_push_and_dispatch_runs(self):
+        def run(name, status, conclusion=None, event="push"):
+            return {"name": name, "event": event, "status": status, "conclusion": conclusion}
+
+        names = ["CI", "CLAUDE.md check", "Line endings"]
+        ok = [run("CI", "completed", "success"), run("Line endings", "completed", "success"),
+              run("CLAUDE.md check", "completed", "skipped", "workflow_dispatch")]
+        self.assertEqual(r.ci_done(ok, names), "ready")
+        self.assertEqual(r.ci_done([run("CI", "completed", "neutral")], names), "ready")
+        self.assertEqual(r.ci_done(ok + [run("CI", "in_progress")], names), "waiting")
+        self.assertEqual(r.ci_done(ok + [run("CI", "queued", None, "workflow_dispatch")], names), "waiting")
+        self.assertEqual(
+            r.ci_done(ok + [run("Auto-merge", "in_progress", None, "workflow_run"),
+                            run("Main red", "completed", "failure", "workflow_run"),
+                            run("CI", "in_progress", None, "pull_request"),
+                            run("Auto-candidate", "in_progress", None, "workflow_run")], names),
+            "ready",
+        )
+        self.assertEqual(r.ci_done(ok + [run("CI", "completed", "failure")], names), "red")
+        for c in ["cancelled", "timed_out", "action_required"]:
+            self.assertEqual(r.ci_done([run("CI", "completed", c)], names), "red", c)
+        self.assertEqual(r.ci_done([], names), "waiting")
+        self.assertEqual(r.ci_done([run("Auto-merge", "completed", "success", "workflow_run")], names), "waiting")
+
     def test_the_job_names_left_out_are_the_candidate_workflows_own_jobs(self):
         text = "\n".join(
             (HERE.parent / ".github" / "workflows" / f).read_text(encoding="utf-8")
-            for f in ["candidate.yml", "candidate-guard.yml"]
+            for f in ["candidate.yml", "candidate-guard.yml", "auto-candidate.yml"]
         )
         names = re.findall(r"^ {4}name: (.+)$", text, re.M)
         self.assertEqual(sorted(r.CANDIDATE_JOBS), sorted(names))
@@ -232,6 +280,27 @@ class Repo(unittest.TestCase):
         self.assertEqual(self.ok("released", "v0.6.3"), "rc/v0.6.2-rc.1 rc/v0.6.3-rc.1")
         short = git(self.dev, "rev-parse", "HEAD")[:12]
         self.ok("check-candidate", f"candidate/{short}")
+
+    def test_should_candidate_reads_cargo_toml_the_tags_and_the_notes_file(self):
+        self.assertEqual(self.ok("should-candidate"), "false", "0.6.2 is released")
+        self.bump("0.6.3")
+        self.assertEqual(self.ok("should-candidate"), "false", "no release-notes/v0.6.3.md")
+        (self.dev / "release-notes").mkdir()
+        (self.dev / "release-notes" / "v0.6.3.md").write_text("x\n")
+        self.assertEqual(self.ok("should-candidate"), "true")
+        git(self.dev, "tag", "v0.6.3-rc.1")
+        self.assertEqual(self.ok("should-candidate"), "false", "HEAD is a candidate already")
+        self.bump("0.6.1")
+        (self.dev / "release-notes" / "v0.6.1.md").write_text("x\n")
+        self.assertEqual(self.ok("should-candidate"), "false", "below v0.6.2")
+
+    def test_ci_done_reads_the_actions_runs_json_on_stdin(self):
+        runs = {"workflow_runs": [{"name": "CI", "event": "push", "status": "completed", "conclusion": "success"}]}
+        self.assertEqual(self.ok("ci-done", "CI", "Line endings", stdin=json.dumps(runs)), "ready")
+        runs["workflow_runs"][0]["status"] = "in_progress"
+        self.assertEqual(self.ok("ci-done", "CI", stdin=json.dumps(runs)), "waiting")
+        runs["workflow_runs"] = [{"name": "CI", "event": "push", "status": "completed", "conclusion": "failure"}]
+        self.assertEqual(self.ok("ci-done", "CI", stdin=json.dumps(runs)), "red")
 
     def test_the_commands_of_the_old_flow_and_of_agent_configs_stamp_are_gone(self):
         for cmd in ["stamp", "prepare", "tag"]:

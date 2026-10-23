@@ -12,6 +12,12 @@ and AGENTS.md stamp.
   latest            the highest release tag, or nothing
   check-candidate B refuses unless B is candidate/<12-character sha of HEAD>, HEAD is on
                     origin/main and origin has no other candidate/* branch
+  should-candidate  true when `next` would accept HEAD (its version has no final tag, is above the
+                    latest one, HEAD is no candidate yet) and release-notes/v<version>.md exists;
+                    otherwise false, the reason on stderr (auto-candidate.yml)
+  ci-done NAME...   reads the Actions runs of a commit (the API's JSON) on stdin; only push and
+                    workflow_dispatch runs of the named workflows count: ready (one ran, all
+                    finished well), waiting (one is not finished, or none ran) or red
   checks-passed ID  reads a commit's check runs (the API's JSON) on stdin; refuses unless one
                     ran, all finished and none failed, leaving out run ID's own jobs and the
                     candidate workflows' jobs from any run
@@ -32,11 +38,11 @@ RELEASE = re.compile(r"^v\d+\.\d+\.\d+$")
 CANDIDATE = re.compile(r"^(v\d+\.\d+\.\d+)-rc\.(\d+)$")
 RC_BRANCH = re.compile(r"^rc/(v\d+\.\d+\.\d+-rc\.\d+)$")
 USAGE = (
-    "usage: release.py next | rc <tag> | latest | check-candidate <branch> | checks-passed <run id> | "
-    "check-promote <rc tag> | rc-branch <branch> | superseded <rc tag> | released <tag>"
+    "usage: release.py next | rc <tag> | latest | check-candidate <branch> | should-candidate | "
+    "checks-passed <run id> | check-promote <rc tag> | rc-branch <branch> | superseded <rc tag> | released <tag>"
 )
 
-# The jobs of candidate.yml and candidate-guard.yml: their check runs on a main commit, from this
+# The jobs of candidate.yml, candidate-guard.yml and auto-candidate.yml: their check runs on a main commit, from this
 # run or an earlier candidate there, are not the commit's CI. A called workflow's jobs are named
 # "<caller job> / <job>".
 CANDIDATE_JOBS = {
@@ -48,7 +54,12 @@ CANDIDATE_JOBS = {
     "rc tag and prerelease",
     "delete the candidate branch",
     "candidate branch unchanged",
+    "decide on a candidate",
+    "push the candidate branch",
 }
+# The events a workflow runs on a main commit with: a push, or the dispatch auto-merge makes after a
+# merge made with GITHUB_TOKEN (which starts no push run).
+CI_EVENTS = {"push", "workflow_dispatch"}
 FAILED = {"failure", "timed_out", "cancelled", "action_required", "stale", "startup_failure"}
 
 
@@ -86,6 +97,14 @@ def check_next(version, tags):
     if latest and version_key(tag) <= version_key(latest):
         raise ReleaseError(f"{tag} is not above the latest release {latest}")
     return tag
+
+
+def should_candidate(version, tags, notes_exist):
+    try:
+        check_next(version, tags)
+    except ReleaseError:
+        return False
+    return notes_exist
 
 
 def candidates(final, tags):
@@ -128,6 +147,13 @@ def check_candidate(branch, head, on_main, others):
         raise ReleaseError(f"{head} is not on origin/main")
     if others:
         raise ReleaseError(f"{', '.join(others)} is left over; Kade deletes it first")
+
+
+def ci_done(runs, names):
+    mine = [c for c in runs if c.get("name") in names and c.get("event") in CI_EVENTS]
+    if not mine or any(c.get("status") != "completed" for c in mine):
+        return "waiting"
+    return "red" if any(c.get("conclusion") in FAILED for c in mine) else "ready"
 
 
 def checks_passed(runs, run_id):
@@ -186,6 +212,21 @@ def next_tag():
     return final
 
 
+def should_candidate_here():
+    """Prints true or false; the reason for a false goes to stderr."""
+    version = version_of(open("Cargo.toml", encoding="utf-8").read())
+    try:
+        final = next_tag()
+    except ReleaseError as e:
+        print(f"release: {e}", file=sys.stderr)
+        return False
+    notes = f"release-notes/{final}.md"
+    if not os.path.isfile(notes):
+        print(f"release: {notes} is missing", file=sys.stderr)
+        return False
+    return should_candidate(version, release_tags(), True)
+
+
 def check_candidate_here(branch):
     head = git("rev-parse", "HEAD")
     on_main = subprocess.run(["git", "merge-base", "--is-ancestor", head, "origin/main"],
@@ -206,6 +247,10 @@ def main(argv):
             print(latest_release(release_tags()) or "")
         elif cmd == "check-candidate":
             check_candidate_here(arg)
+        elif cmd == "should-candidate":
+            print("true" if should_candidate_here() else "false")
+        elif cmd == "ci-done":
+            print(ci_done(json.load(sys.stdin).get("workflow_runs") or [], rest))
         elif cmd == "checks-passed":
             checks_passed(json.load(sys.stdin).get("check_runs") or [], arg)
         elif cmd == "check-promote":
