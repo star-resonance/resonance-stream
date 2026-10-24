@@ -136,11 +136,12 @@ jobs:
             "$(release_download_url "$REPO" "$FINAL")" "$(cat "files/$exe.sig")" < user-notes.md > files/latest.json
           cat files/latest.json
           # The commit list starts at the previous stable release (rc tags and test tags are not one).
+          # The "Release vX.Y.Z" commit Candidate may have made on top of main is not a change.
           prev=$(release_previous_stable_tag "$COMMIT")
           if [ -n "$prev" ]; then
-            git log --no-merges --format='- %s' "$prev..$COMMIT" > commits.md
+            git log --no-merges -E --invert-grep --grep='^Release v[0-9]+\.[0-9]+\.[0-9]+$' --format='- %s' "$prev..$COMMIT" > commits.md
           else
-            git log --no-merges --format='- %s' -n 30 "$COMMIT" > commits.md
+            git log --no-merges -E --invert-grep --grep='^Release v[0-9]+\.[0-9]+\.[0-9]+$' --format='- %s' -n 30 "$COMMIT" > commits.md
           fi
           release_page_body commits.md < "$notes_src" > files/body.md
       - uses: actions/upload-artifact@v7

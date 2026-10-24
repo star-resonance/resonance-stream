@@ -332,6 +332,11 @@ class Workflows(unittest.TestCase):
         self.assertIn("release.py next", text)
         self.assertIn("name: stamped-tree", text)
 
+    # Promote lists the commits since the previous release at the rc tag's commit, which may be the
+    # "Release vX.Y.Z" commit Candidate made: it is no change users or maintainers need listed.
+    def test_promote_leaves_the_release_commit_out_of_the_commit_list(self):
+        self.assertIn(r"-E --invert-grep --grep='^Release v[0-9]+\.[0-9]+\.[0-9]+$'", self.text("promote.yml"))
+
     def test_there_is_no_auto_candidate_and_the_guard_keeps_only_rc_branches(self):
         self.assertFalse((HERE.parent / ".github" / "workflows" / "auto-candidate.yml").exists())
         guard = self.text("candidate-guard.yml")
