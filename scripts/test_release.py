@@ -27,20 +27,59 @@ class Pure(unittest.TestCase):
         with self.assertRaisesRegex(r.ReleaseError, r"no \[workspace\.package\] version"):
             r.version_of('[package]\nversion = "9.9.9"\n')
 
-    def test_check_next_wants_a_new_version_above_the_latest_release(self):
-        self.assertEqual(r.check_next("0.6.3", ["v0.6.2"]), "v0.6.3")
-        self.assertEqual(r.check_next("0.6.3", []), "v0.6.3")
-        self.assertEqual(r.check_next("0.6.3", ["v0.6.2", "v0.6.3-rc.1", "v0.6.0-rc.main"]), "v0.6.3")
-        self.assertEqual(r.check_next("0.10.0", ["v0.9.9"]), "v0.10.0", "numeric, not text, order")
-        with self.assertRaisesRegex(r.ReleaseError, r"v0\.6\.2 is already released"):
-            r.check_next("0.6.2", ["v0.6.2"])
-        with self.assertRaisesRegex(r.ReleaseError, r"not above the latest release v0\.6\.2"):
-            r.check_next("0.6.1", ["v0.6.2"])
+    # Cargo.toml's version is a floor (kade-agent/agent-config docs/release-flow-plan.md, 9.2): the release
+    # is V when V is above the latest final tag L, else L with its patch plus one.
+    def test_final_tag_is_the_version_above_the_latest_release_else_its_next_patch(self):
+        self.assertEqual(r.final_tag("0.6.3", ["v0.6.2"]), "v0.6.3", "V above L")
+        self.assertEqual(r.final_tag("0.7.0", ["v0.6.2"]), "v0.7.0", "a minor needs a version PR")
+        self.assertEqual(r.final_tag("0.6.2", ["v0.6.2"]), "v0.6.3", "V equal to L")
+        self.assertEqual(r.final_tag("0.6.1", ["v0.6.2"]), "v0.6.3", "V below L")
+        self.assertEqual(r.final_tag("0.6.2", []), "v0.6.2", "no L yet")
+        self.assertEqual(r.final_tag("0.10.0", ["v0.9.9"]), "v0.10.0", "numeric, not text, order")
+        self.assertEqual(r.final_tag("0.6.2", ["v0.6.2", "v0.6.10"]), "v0.6.11", "the highest L, numerically")
 
-    def test_check_next_refuses_a_version_that_is_not_x_y_z(self):
+    def test_final_tag_ignores_candidate_and_malformed_tags(self):
+        tags = ["v0.6.2", "v0.6.2-rc.rc-sync-main", "v0.6.3-rc.1", "v0.6.2-rc.1", "v0.6.0-probe", "vX", "v0.7"]
+        self.assertEqual(r.final_tag("0.6.2", tags), "v0.6.3")
+        self.assertEqual(r.final_tag("0.6.2", ["v0.6.2-rc.rc-sync-main"]), "v0.6.2", "no final tag at all")
+
+    def test_final_tag_refuses_a_version_that_is_not_x_y_z(self):
         for v in ["0.6", "0.6.2-rc.1", "v0.6.2", "", "0.6.x"]:
             with self.subTest(v=v), self.assertRaisesRegex(r.ReleaseError, r"not X\.Y\.Z"):
-                r.check_next(v, [])
+                r.final_tag(v, [])
+
+    def test_the_second_candidate_of_a_floor_release_is_rc_2(self):
+        tags = ["v0.6.2", "v0.6.3-rc.1"]
+        final = r.final_tag("0.6.2", tags)
+        self.assertEqual(final, "v0.6.3")
+        self.assertEqual(r.rc_tag(final, tags), "v0.6.3-rc.2")
+        self.assertEqual(r.rc_tag(final, tags + ["v0.6.3-rc.rc-sync-main"]), "v0.6.3-rc.2")
+
+    def test_check_main_ref_is_main_and_nothing_else(self):
+        r.check_main_ref("refs/heads/main")
+        for ref in ["refs/heads/candidate/0123456789ab", "refs/heads/claude/x", "refs/heads/rc/v0.6.3-rc.1",
+                    "refs/tags/v0.6.3", "refs/heads/main2", "main", ""]:
+            with self.subTest(ref=ref), self.assertRaisesRegex(r.ReleaseError, r"refs/heads/main"):
+                r.check_main_ref(ref)
+
+    def test_stamp_cargo_toml_changes_only_the_workspace_package_version(self):
+        text = '[package]\nversion = "0.6.2"\n\n[workspace.package]\nedition = "2021"\nversion = "0.6.2"\n'
+        self.assertEqual(
+            r.stamp_cargo_toml(text, "0.6.3"),
+            '[package]\nversion = "0.6.2"\n\n[workspace.package]\nedition = "2021"\nversion = "0.6.3"\n',
+        )
+
+    def test_stamp_cargo_lock_changes_only_the_workspace_crates_not_a_dependency_of_the_same_version(self):
+        lock = (
+            '[[package]]\nname = "block2"\nversion = "0.6.2"\n\n'
+            '[[package]]\nname = "resonance-core"\nversion = "0.6.2"\ndependencies = [\n "block2",\n]\n\n'
+            '[[package]]\nname = "resonance-stream"\nversion = "0.6.2"\n'
+        )
+        want = (lock.replace('name = "resonance-core"\nversion = "0.6.2"', 'name = "resonance-core"\nversion = "0.6.3"')
+                    .replace('name = "resonance-stream"\nversion = "0.6.2"', 'name = "resonance-stream"\nversion = "0.6.3"'))
+        self.assertEqual(r.stamp_cargo_lock(lock, {"resonance-core", "resonance-stream"}, "0.6.3"), want)
+        with self.assertRaisesRegex(r.ReleaseError, r"resonance-ui is not in Cargo\.lock"):
+            r.stamp_cargo_lock(lock, {"resonance-core", "resonance-ui"}, "0.6.3")
 
     def test_rc_tag_is_the_next_candidate_number_of_a_version(self):
         self.assertEqual(r.rc_tag("v0.6.3", []), "v0.6.3-rc.1")
@@ -236,15 +275,75 @@ class Repo(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0, p.stdout)
         self.assertRegex(p.stderr, pattern)
 
-    def test_next_prints_the_tag_of_the_cargo_version_and_refuses_a_released_one(self):
-        self.refuses(r"v0\.6\.2 is already released", "next")
+    def commit(self, name="more"):
+        (self.dev / name).write_text(name)
+        git(self.dev, "add", "-A")
+        git(self.dev, "commit", "-q", "-m", name)
+
+    def release_commit(self, tag):
+        """A commit on top of HEAD that is not on main, tagged: what Candidate makes. Returns to main."""
+        git(self.dev, "checkout", "-q", "--detach")
+        self.commit("stamp")
+        git(self.dev, "tag", tag)
+        git(self.dev, "checkout", "-q", "main")
+
+    def test_next_refuses_when_nothing_changed_since_the_latest_release(self):
+        self.refuses(r"nothing to release since v0\.6\.2", "next")
+
+    def test_next_is_the_next_patch_once_the_version_is_released(self):
+        self.commit()
+        self.assertEqual(self.ok("next"), "v0.6.3")
+
+    def test_next_is_the_cargo_version_when_it_is_above_the_latest_release(self):
         self.bump("0.6.3")
+        self.assertEqual(self.ok("next"), "v0.6.3")
+        self.bump("0.7.0")
+        self.assertEqual(self.ok("next"), "v0.7.0")
+
+    def test_next_ignores_a_malformed_tag_like_rc_sync_main(self):
+        git(self.dev, "tag", "v0.6.2-rc.rc-sync-main")
+        self.commit()
         self.assertEqual(self.ok("next"), "v0.6.3")
 
     def test_next_refuses_a_commit_that_already_carries_a_candidate_tag(self):
         self.bump("0.6.3")
         git(self.dev, "tag", "v0.6.3-rc.1")
         self.refuses(r"already a candidate as v0\.6\.3-rc\.1", "next")
+
+    def test_next_refuses_a_commit_whose_release_commit_is_a_candidate(self):
+        self.commit()
+        self.release_commit("v0.6.3-rc.1")
+        self.refuses(r"already a candidate as v0\.6\.3-rc\.1", "next")
+
+    def test_next_after_a_release_made_on_a_release_commit_waits_for_a_new_main_commit(self):
+        self.commit()
+        self.release_commit("v0.6.3")
+        self.refuses(r"nothing to release since v0\.6\.3", "next")
+        self.commit("later")
+        self.assertEqual(self.ok("next"), "v0.6.4")
+
+    def test_main_only_reads_the_ref_argument(self):
+        self.ok("main-only", "refs/heads/main")
+        self.refuses(r"refs/heads/main", "main-only", "refs/heads/candidate/0123456789ab")
+
+    def test_stamp_writes_the_version_into_cargo_toml_and_the_lock_for_the_workspace_crates(self):
+        (self.dev / "crates" / "core").mkdir(parents=True)
+        (self.dev / "crates" / "core" / "Cargo.toml").write_text(
+            '[package]\nname = "resonance-core"\nversion.workspace = true\n')
+        (self.dev / "other").mkdir()
+        (self.dev / "other" / "Cargo.toml").write_text('[package]\nname = "outsider"\nversion = "0.6.2"\n')
+        (self.dev / "Cargo.lock").write_text(
+            '[[package]]\nname = "block2"\nversion = "0.6.2"\n\n'
+            '[[package]]\nname = "resonance-core"\nversion = "0.6.2"\n')
+        self.ok("stamp", "v0.6.3")
+        self.assertEqual(r.version_of((self.dev / "Cargo.toml").read_text()), "0.6.3")
+        lock = (self.dev / "Cargo.lock").read_text()
+        self.assertIn('name = "block2"\nversion = "0.6.2"', lock)
+        self.assertIn('name = "resonance-core"\nversion = "0.6.3"', lock)
+        self.assertIn('version = "0.6.2"', (self.dev / "other" / "Cargo.toml").read_text())
+
+    def test_stamp_refuses_a_tag_that_is_not_a_final_release(self):
+        self.refuses(r"not a release tag", "stamp", "v0.6.3-rc.1")
 
     def test_latest_ignores_rc_and_other_v_tags(self):
         for t in ["v0.0.0-probe", "v0.6.10", "v0.6.11-rc.1"]:
@@ -314,6 +413,34 @@ class Repo(unittest.TestCase):
     def test_the_commands_of_the_old_flow_and_of_agent_configs_stamp_are_gone(self):
         for cmd in ["stamp", "prepare", "tag"]:
             self.refuses(r"usage: release\.py next \| rc <tag> \| latest \|", cmd, "x")
+
+
+class Workflows(unittest.TestCase):
+    """What must stay true of the release workflows (plan section 9): Candidate runs on main itself."""
+
+    def text(self, name):
+        return (HERE.parent / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+    def test_candidate_runs_on_main_only_and_makes_no_candidate_branch(self):
+        text = self.text("candidate.yml")
+        self.assertIn('release.py main-only "$GITHUB_REF"', text)
+        self.assertNotIn("refs/heads/candidate/", text)
+        self.assertNotIn("check-candidate", text)
+        self.assertNotIn("delete the candidate branch", text)
+
+    def test_candidate_stamps_the_final_version_and_builds_from_the_stamped_tree(self):
+        text = self.text("candidate.yml")
+        self.assertIn("release.py stamp", text)
+        self.assertIn("cargo metadata --locked", text, "the stamped Cargo.lock must need no change")
+        self.assertIn('"Release $FINAL"', text)
+        self.assertIn("release.py next", text)
+        self.assertIn("name: stamped-tree", text)
+
+    def test_there_is_no_auto_candidate_and_the_guard_keeps_only_rc_branches(self):
+        self.assertFalse((HERE.parent / ".github" / "workflows" / "auto-candidate.yml").exists())
+        guard = self.text("candidate-guard.yml")
+        self.assertIn('branches: ["rc/**"]', guard)
+        self.assertNotIn("candidate/**", guard)
 
 
 if __name__ == "__main__":
