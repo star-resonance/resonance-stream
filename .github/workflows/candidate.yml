@@ -55,7 +55,7 @@ jobs:
       blob_lock: ${{ steps.version.outputs.blob_lock }}
       tree: ${{ steps.version.outputs.tree }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -128,7 +128,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # Cargo.toml's version is a floor: build the tree the tag job will commit, with the final version.
@@ -199,7 +199,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # Cargo.toml's version is a floor: build the tree the tag job will commit, with the final version.
@@ -251,7 +251,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
