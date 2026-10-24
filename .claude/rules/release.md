@@ -11,8 +11,8 @@ paths:
 
 # Release rules
 
-Releases follow the global `release-flow` skill (D-33). Here: the version is `Cargo.toml`
-`[workspace.package]`; the notes are `release-notes/v<version>.md` (copy `TEMPLATE.md`); the helpers
+Releases follow the global `release-flow` skill (D-33, D-34). Here: Candidate runs on `main`, and the version in `Cargo.toml`
+`[workspace.package]` is a floor: at or below the latest final tag, the release is that tag's next patch, stamped by Candidate; the notes are `release-notes/v<version>.md` (copy `TEMPLATE.md`); the helpers
 are `scripts/release.py` (tests: `python3 -m unittest discover -s scripts -p 'test_*.py'`) and
 `.github/scripts/release-lib.sh`.
 
