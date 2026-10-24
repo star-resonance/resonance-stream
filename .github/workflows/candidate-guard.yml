@@ -1,59 +1,33 @@
-# Candidate guard (release-flow skill; agent-config docs/release-flow-plan.md, section 4). A candidate/* branch is
-# pushed once, at a commit on main, and never again: there are no rulesets here, so this workflow undoes what a
-# ruleset would refuse. On the push that creates the branch it checks the name
-# (candidate/<12-character sha of the commit>) and that the commit is on main; on any later push,
-# forced or not, it deletes the branch and fails. An rc/* branch is made only by Candidate, with
-# GITHUB_TOKEN, which starts no workflow: any push to one is someone else's, and it is deleted
-# too (Promote checks the head against the tag anyway). A deletion is ignored, and
-# the workflows' own deletions start no workflow either. It checks nothing out, so it runs none of
-# the repository's code. It guards against mistakes: a push that changes this file runs the
-# changed file.
+# Candidate guard (release-flow skill; agent-config docs/release-flow-plan.md, sections 4 and 9). An rc/*
+# branch is made only by Candidate, with GITHUB_TOKEN, which starts no workflow: any push that
+# creates or updates one is someone else's, and the branch is deleted (Promote checks the head
+# against the tag anyway). A deletion is ignored, and the workflows' own deletions start no
+# workflow either. There is no candidate/* branch any more: Candidate runs on main (plan 9.1). It checks
+# nothing out, so it runs none of the repository's code. It guards against mistakes: a push that changes
+# this file runs the changed file.
 name: Candidate guard
 
 on:
   push:
-    branches: ["candidate/**", "rc/**"]
+    branches: ["rc/**"]
 
 permissions: {}
 
 jobs:
   guard:
-    name: candidate branch unchanged
+    name: rc branch unchanged
     if: ${{ !github.event.deleted }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write  # deleting a branch that broke the rule
     steps:
-      - name: Keep the candidate branch as it was created
+      - name: Keep the rc branch as Candidate made it
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          CREATED: ${{ github.event.created }}
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.event.after }}
         run: |
           set -euo pipefail
-          refuse() {
-            echo "::error::$1; $GITHUB_REF_NAME is deleted, push a new candidate branch"
-            gh api -X DELETE "repos/$REPO/git/refs/heads/$GITHUB_REF_NAME" > /dev/null || true
-            exit 1
-          }
-          if [[ "$GITHUB_REF_NAME" == rc/* ]]; then
-            refuse "$GITHUB_REF_NAME is made only by the Candidate workflow, never pushed"
-          fi
-          if [ "$CREATED" != true ]; then
-            refuse "$GITHUB_REF_NAME was pushed again ($BEFORE to $AFTER); a candidate branch never changes"
-          fi
-          case "$GITHUB_REF_NAME" in
-            candidate/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
-            *) refuse "$GITHUB_REF_NAME is not candidate/<12-character sha>" ;;
-          esac
-          if [ "${AFTER:0:12}" != "${GITHUB_REF_NAME#candidate/}" ]; then
-            refuse "$GITHUB_REF_NAME does not name its commit $AFTER"
-          fi
-          status=$(gh api "repos/$REPO/compare/main...$AFTER" --jq .status)
-          case "$status" in
-            identical|behind) echo "$GITHUB_REF_NAME is at $AFTER on main." >> "$GITHUB_STEP_SUMMARY" ;;
-            *) refuse "$AFTER is not on main (compare: $status)" ;;
-          esac
+          echo "::error::$GITHUB_REF_NAME is made only by the Candidate workflow, never pushed; it is deleted"
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$GITHUB_REF_NAME" > /dev/null || true
+          exit 1

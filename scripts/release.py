@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
 """release: the commands the release workflows run (release-flow skill; kade-agent/agent-config
-docs/release-flow-plan.md, sections 3 to 5a). A release is Candidate (.github/workflows/candidate.yml),
-which tags the main commit v<version>-rc.N and makes the branch rc/<rc tag>, then Promote
-(promote.yml), run on that branch, which adds v<version> on the same commit. The version is the one
-in Cargo.toml [workspace.package]. Same commands as agent-config's release.cjs, less its date tag
-and AGENTS.md stamp.
+docs/release-flow-plan.md, sections 3 to 5a and 9). A release is Candidate (.github/workflows/candidate.yml),
+run on main, which tags a commit v<version>-rc.N and makes the branch rc/<rc tag>, then Promote
+(promote.yml), run on that branch, which adds v<version> on the same commit. Cargo.toml's
+[workspace.package] version is a floor (plan 9.2): the release is that version when it is above the
+latest final tag, else the latest tag's next patch. In that case Candidate stamps the final version
+into a release commit whose parent is the main commit, and tags that commit. Same commands as
+agent-config's release.cjs, less its date tag and AGENTS.md stamp.
 
-  next              the final tag of Cargo.toml's version (v<X.Y.Z>); refuses a version that is
-                    released or not above the latest release, and a HEAD that is a candidate already
+  next              the final tag of this commit (final_tag's floor rule); refuses a HEAD that is a
+                    candidate already (or whose release commit is) and a HEAD with no commit since
+                    the latest release
   rc T              the next candidate tag of the final tag T: T-rc.1, T-rc.2, ...
   latest            the highest release tag, or nothing
-  check-candidate B refuses unless B is candidate/<12-character sha of HEAD>, HEAD is on
-                    origin/main and origin has no other candidate/* branch
-  should-candidate  true when `next` would accept HEAD (its version has no final tag, is above the
-                    latest one, HEAD is no candidate yet) and release-notes/v<version>.md exists;
-                    otherwise false, the reason on stderr (auto-candidate.yml)
-  ci-done NAME...   reads the Actions runs of a commit (the API's JSON) on stdin; only push and
-                    workflow_dispatch runs of the named workflows count: ready (one ran, all
-                    finished well), waiting (one is not finished, or none ran) or red
+  main-only REF     refuses unless REF is refs/heads/main (Candidate runs on main only)
+  stamp T           writes T's version into Cargo.toml and the workspace crates' Cargo.lock entries
   checks-passed ID  reads a commit's check runs (the API's JSON) on stdin; refuses unless one
                     ran, all finished and none failed, leaving out run ID's own jobs and the
                     candidate workflows' jobs from any run
@@ -38,11 +35,11 @@ RELEASE = re.compile(r"^v\d+\.\d+\.\d+$")
 CANDIDATE = re.compile(r"^(v\d+\.\d+\.\d+)-rc\.(\d+)$")
 RC_BRANCH = re.compile(r"^rc/(v\d+\.\d+\.\d+-rc\.\d+)$")
 USAGE = (
-    "usage: release.py next | rc <tag> | latest | check-candidate <branch> | should-candidate | "
+    "usage: release.py next | rc <tag> | latest | main-only <ref> | stamp <tag> | "
     "checks-passed <run id> | check-promote <rc tag> | rc-branch <branch> | superseded <rc tag> | released <tag>"
 )
 
-# The jobs of candidate.yml, candidate-guard.yml and auto-candidate.yml: their check runs on a main commit, from this
+# The jobs of candidate.yml and candidate-guard.yml: their check runs on a main commit, from this
 # run or an earlier candidate there, are not the commit's CI. A called workflow's jobs are named
 # "<caller job> / <job>".
 CANDIDATE_JOBS = {
@@ -52,14 +49,8 @@ CANDIDATE_JOBS = {
     "real-app smoke test",
     "make the release files",
     "rc tag and prerelease",
-    "delete the candidate branch",
-    "candidate branch unchanged",
-    "decide on a candidate",
-    "push the candidate branch",
+    "rc branch unchanged",
 }
-# The events a workflow runs on a main commit with: a push, or the dispatch auto-merge makes after a
-# merge made with GITHUB_TOKEN (which starts no push run).
-CI_EVENTS = {"push", "workflow_dispatch"}
 FAILED = {"failure", "timed_out", "cancelled", "action_required", "stale", "startup_failure"}
 
 
@@ -87,24 +78,55 @@ def version_of(cargo_toml):
     return m.group(1)
 
 
-def check_next(version, tags):
+def final_tag(version, tags):
+    """The release of a version file: the version when above the latest final tag, else its next patch."""
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ReleaseError(f"version '{version}' is not X.Y.Z")
-    tag = f"v{version}"
-    if tag in tags:
-        raise ReleaseError(f"{tag} is already released; raise the version in Cargo.toml")
     latest = latest_release(tags)
-    if latest and version_key(tag) <= version_key(latest):
-        raise ReleaseError(f"{tag} is not above the latest release {latest}")
-    return tag
+    if latest is None or version_key(f"v{version}") > version_key(latest):
+        return f"v{version}"
+    major, minor, patch = version_key(latest)
+    return f"v{major}.{minor}.{patch + 1}"
 
 
-def should_candidate(version, tags, notes_exist):
-    try:
-        check_next(version, tags)
-    except ReleaseError:
-        return False
-    return notes_exist
+def check_main_ref(ref):
+    if ref != "refs/heads/main":
+        raise ReleaseError(f"a candidate is made from refs/heads/main only; this run is on {ref or '(none)'}")
+
+
+WORKSPACE_VERSION = re.compile(r'(^\[workspace\.package\][^\[]*?^version\s*=\s*")[^"]*(")', re.M | re.S)
+
+
+def stamp_cargo_toml(text, version):
+    stamped, n = WORKSPACE_VERSION.subn(lambda m: f"{m.group(1)}{version}{m.group(2)}", text, count=1)
+    if not n:
+        raise ReleaseError("no [workspace.package] version in Cargo.toml")
+    return stamped
+
+
+def stamp_cargo_lock(lock, names, version):
+    """Sets the version of the named packages only: a dependency may have the same version number."""
+    for name in sorted(names):
+        pattern = re.compile(
+            r'(^\[\[package\]\]\r?\nname = "' + re.escape(name) + r'"\r?\nversion = ")[^"]*(")', re.M)
+        lock, n = pattern.subn(lambda m: f"{m.group(1)}{version}{m.group(2)}", lock)
+        if not n:
+            raise ReleaseError(f"{name} is not in Cargo.lock")
+    return lock
+
+
+def workspace_crates(root="."):
+    """The names of the crates that take the workspace version (version.workspace = true)."""
+    names = set()
+    for here, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in {"target", "node_modules", ".git", "dist"}]
+        if "Cargo.toml" not in files:
+            continue
+        text = open(os.path.join(here, "Cargo.toml"), encoding="utf-8").read()
+        name = re.search(r'^\[package\][^\[]*?^name\s*=\s*"([^"]+)"', text, re.M | re.S)
+        if name and re.search(r"^version\.workspace\s*=\s*true", text, re.M):
+            names.add(name.group(1))
+    return names
 
 
 def candidates(final, tags):
@@ -135,25 +157,6 @@ def superseded_branches(branches, rc):
 
 def released_branches(branches, final):
     return [b for b, m in rc_branches(branches) if version_key(m.group(1)) <= version_key(final)]
-
-
-def check_candidate(branch, head, on_main, others):
-    m = re.fullmatch(r"candidate/([0-9a-f]{12})", branch)
-    if not m:
-        raise ReleaseError(f"{branch} is not candidate/<12-character sha>")
-    if not head.startswith(m.group(1)):
-        raise ReleaseError(f"{branch} names {m.group(1)}, not HEAD {head}")
-    if not on_main:
-        raise ReleaseError(f"{head} is not on origin/main")
-    if others:
-        raise ReleaseError(f"{', '.join(others)} is left over; Kade deletes it first")
-
-
-def ci_done(runs, names):
-    mine = [c for c in runs if c.get("name") in names and c.get("event") in CI_EVENTS]
-    if not mine or any(c.get("status") != "completed" for c in mine):
-        return "waiting"
-    return "red" if any(c.get("conclusion") in FAILED for c in mine) else "ready"
 
 
 def checks_passed(runs, run_id):
@@ -205,33 +208,32 @@ def origin_branches(pattern):
 
 
 def next_tag():
-    final = check_next(version_of(open("Cargo.toml", encoding="utf-8").read()), release_tags())
-    here = [t for t in git("tag", "--points-at", "HEAD").split("\n") if CANDIDATE.match(t)]
-    if here:
-        raise ReleaseError(f"{git('rev-parse', 'HEAD')} is already a candidate as {here[0]}")
+    tags = release_tags()
+    final = final_tag(version_of(open("Cargo.toml", encoding="utf-8").read()), tags)
+    head = git("rev-parse", "HEAD")
+    for t in tags:
+        if CANDIDATE.match(t):
+            # Candidate tags HEAD itself, or the release commit made on top of it.
+            commit, *parents = git("rev-list", "--parents", "-n", "1", f"{t}^{{commit}}").split()
+            if head in (commit, *parents):
+                raise ReleaseError(f"{head} is already a candidate as {t}")
+    latest = latest_release(tags)
+    if latest and git("rev-list", "--count", f"{latest}^{{commit}}..HEAD") == "0":
+        raise ReleaseError(f"nothing to release since {latest}")
     return final
 
 
-def should_candidate_here():
-    """Prints true or false; the reason for a false goes to stderr."""
-    version = version_of(open("Cargo.toml", encoding="utf-8").read())
-    try:
-        final = next_tag()
-    except ReleaseError as e:
-        print(f"release: {e}", file=sys.stderr)
-        return False
-    notes = f"release-notes/{final}.md"
-    if not os.path.isfile(notes):
-        print(f"release: {notes} is missing", file=sys.stderr)
-        return False
-    return should_candidate(version, release_tags(), True)
-
-
-def check_candidate_here(branch):
-    head = git("rev-parse", "HEAD")
-    on_main = subprocess.run(["git", "merge-base", "--is-ancestor", head, "origin/main"],
-                             capture_output=True).returncode == 0
-    check_candidate(branch, head, on_main, [b for b in origin_branches("candidate/*") if b != branch])
+def stamp(tag):
+    if not RELEASE.match(tag or ""):
+        raise ReleaseError(f"{tag or '(none)'} is not a release tag")
+    version = tag[1:]
+    names = workspace_crates()
+    for path, edit in [("Cargo.toml", lambda t: stamp_cargo_toml(t, version)),
+                       ("Cargo.lock", lambda t: stamp_cargo_lock(t, names, version))]:
+        if not os.path.isfile(path):
+            continue
+        text = open(path, encoding="utf-8", newline="").read()
+        open(path, "w", encoding="utf-8", newline="").write(edit(text))
 
 
 def main(argv):
@@ -245,12 +247,10 @@ def main(argv):
             print(rc_tag(arg, release_tags()))
         elif cmd == "latest":
             print(latest_release(release_tags()) or "")
-        elif cmd == "check-candidate":
-            check_candidate_here(arg)
-        elif cmd == "should-candidate":
-            print("true" if should_candidate_here() else "false")
-        elif cmd == "ci-done":
-            print(ci_done(json.load(sys.stdin).get("workflow_runs") or [], rest))
+        elif cmd == "main-only":
+            check_main_ref(arg)
+        elif cmd == "stamp":
+            stamp(arg)
         elif cmd == "checks-passed":
             checks_passed(json.load(sys.stdin).get("check_runs") or [], arg)
         elif cmd == "check-promote":

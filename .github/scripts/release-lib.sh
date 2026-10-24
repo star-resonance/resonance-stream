@@ -161,16 +161,19 @@ release_page_body() {
   printf '\n</details>\n'
 }
 
-# The nearest earlier stable release tag (vX.Y.Z only: no -rc, -beta, -test
-# suffix), where the commit list of <commit> starts; empty when there is none.
-# A commit that carries a stable tag itself looks from its parent; an untagged
-# one (the commit Candidate or Promote is about to tag) looks from itself. Run in the repository, with its tags fetched.
+# The earlier stable release tag (vX.Y.Z only: no -rc, -beta, -test suffix),
+# where the commit list of <commit> starts; empty when there is none.
+# A commit that carries a stable tag itself looks from its parent. An untagged
+# one (the commit Candidate or Promote is about to tag) takes the highest stable
+# tag: a release made on a stamp commit is no ancestor of the main commits after
+# it, so `git describe` would miss it (release-flow plan 9.2). Run in the
+# repository, with its tags fetched.
 release_previous_stable_tag() {
-  local from=$1
   if git tag --points-at "$1" --list 'v*' | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-    from="$1^"
+    git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "$1^" 2>/dev/null || true
+  else
+    git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true
   fi
-  git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' "$from" 2>/dev/null || true
 }
 
 # "NOT VERIFIED: ..." notes of commit messages as a list, each once. A note

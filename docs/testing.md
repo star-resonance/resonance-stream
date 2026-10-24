@@ -97,8 +97,8 @@ cd runbook && python -m pytest -q                   # the pipelines against the 
 | `audit.yml` | Cargo file changes, Mondays, on demand | `cargo audit`; on a pull request a finding is a warning and the check stays green (D-22) |
 | `mutants.yml` | its own file changes, Mondays, on demand (`file` input) | `cargo mutants` on one core file; green when the tool ran, the missed list is in the summary and the `mutants-out` artifact |
 | `bridge-smoke.yml` | `workflow_dispatch`, and `workflow_call` from `candidate.yml` | the real-app pipelines |
-| `candidate-guard.yml` | a push to `candidate/**` or `rc/**` | deletes a bad or re-pushed candidate branch and any pushed `rc/` branch |
-| `candidate.yml` | Kade, on a `candidate/<sha>` branch | checks, one signed exe, smoke (a hard gate), the `-rc.N` tag and prerelease, `rc/<rc tag>` |
+| `candidate-guard.yml` | a push to `rc/**` | deletes any pushed `rc/` branch (only Candidate makes one) |
+| `candidate.yml` | Kade, on `main` | checks, the final version (`Cargo.toml` is a floor; a stamp commit when it differs), one signed exe, smoke (a hard gate), the `-rc.N` tag and prerelease, `rc/<rc tag>` |
 | `promote.yml` | Kade, on `rc/<rc tag>` | the same files as `v<version>` and the stable `latest.json`, nothing rebuilt |
 | `release-feed-check.yml` | release events, daily | the live update feed is readable |
 | `test-branch-guard.yml` | pull requests into `main` | a `test/*` branch must never merge |

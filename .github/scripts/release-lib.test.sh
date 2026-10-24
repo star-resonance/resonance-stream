@@ -227,6 +227,18 @@ eq "previous stable: none before the first" "" "$(cd "$repo" && release_previous
 )
 eq "previous stable: an untagged commit gives its own last release" "v0.6.1" "$(cd "$repo" && release_previous_stable_tag "$(git -C "$repo" rev-parse rc^2)")"
 eq "previous stable: an rc merge sees the release on main's side" "v0.6.1" "$(cd "$repo" && release_previous_stable_tag rc)"
+# Candidate runs on main and may make a release commit that is no ancestor of main (a stamp): the
+# next list must start at that release's tag all the same, not at an older tag on main.
+repo2=$(mktemp -d)
+(
+  cd "$repo2" && git init -q . && git config user.email t@t && git config user.name t
+  git commit -q --allow-empty -m a && git tag v0.5.0
+  git commit -q --allow-empty -m b
+  git checkout -q -b stamp && git commit -q --allow-empty -m "Release v0.5.1" && git tag v0.5.1
+  git checkout -q - && git commit -q --allow-empty -m c
+)
+eq "previous stable: a release commit off main is found from a later main commit" "v0.5.1" "$(cd "$repo2" && release_previous_stable_tag HEAD)"
+rm -rf "$repo2"
 rm -rf "$repo"
 
 eq "no unverified under pipefail" "ok" "$(bash -c 'set -eo pipefail; source ./release-lib.sh; printf "x\n" | rc_unverified; echo ok')"
