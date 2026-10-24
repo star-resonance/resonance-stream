@@ -45,7 +45,7 @@ jobs:
             refs/heads/rc/v*-rc.*) ;;
             *) echo "::error::Promote runs on a branch rc/vX.Y.Z-rc.N only; this run is on $GITHUB_REF"; exit 1 ;;
           esac
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -85,7 +85,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -202,7 +202,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # A broken feed is silent for users (the app just finds no update), so read it back as the app does.
