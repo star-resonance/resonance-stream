@@ -14,8 +14,8 @@
   "type": "commonjs",
   "devDependencies": {
     "autoprefixer": "^10.6.1",
-    "daisyui": "^5.7.47",
-    "postcss": "^8.5.29",
+    "daisyui": "^5.7.50",
+    "postcss": "^8.5.31",
     "tailwindcss": "^4.2.1"
   },
   "dependencies": {
