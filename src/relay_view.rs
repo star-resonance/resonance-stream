@@ -1,10 +1,73 @@
 //! What the Settings page says about the guild relay (`RelayStatus`). Pure, so it is tested on
 //! the host.
 
+use resonance_types::RelayStatus;
+
+/// How the status line is coloured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Nothing to do (off).
+    Muted,
+    /// On its way.
+    Info,
+    /// Working.
+    Success,
+    /// Not working yet, and nothing is wrong with the member's settings.
+    Warning,
+    /// Not working until something changes.
+    Error,
+}
+
+impl Tone {
+    /// The daisyUI text colour class.
+    pub fn class(self) -> &'static str {
+        match self {
+            Tone::Muted => "text-base-content/60",
+            Tone::Info => "text-info",
+            Tone::Success => "text-success",
+            Tone::Warning => "text-warning",
+            Tone::Error => "text-error",
+        }
+    }
+}
+
+/// The sentence and tone for `status`. `broker_url` is the setting as saved: empty means the
+/// built-in default broker.
+pub fn status_line(status: RelayStatus, broker_url: &str) -> (&'static str, Tone) {
+    match status {
+        RelayStatus::Off => ("꺼져 있습니다.", Tone::Muted),
+        RelayStatus::NoBroker if broker_url.trim().is_empty() => (
+            "기본 브로커가 아직 준비되지 않았습니다. 브로커 주소를 입력하세요.",
+            Tone::Warning,
+        ),
+        RelayStatus::NoBroker => (
+            "브로커 주소가 올바르지 않습니다. https:// 로 시작해야 합니다.",
+            Tone::Error,
+        ),
+        RelayStatus::WaitingForGuild => (
+            "길드 정보를 기다리는 중입니다. 게임에 접속해 길드에 가입되어 있어야 합니다.",
+            Tone::Info,
+        ),
+        RelayStatus::Checking => ("브로커에 길드 등록 여부를 확인하는 중입니다.", Tone::Info),
+        RelayStatus::NotEnrolled => (
+            "이 브로커는 현재 길드를 받지 않습니다. 10분 후 다시 확인합니다.",
+            Tone::Error,
+        ),
+        RelayStatus::Relaying => ("길드 채팅을 디스코드로 보내는 중입니다.", Tone::Success),
+        RelayStatus::Rejected => (
+            "브로커가 마지막 메시지를 거부했습니다. 앱 업데이트가 필요할 수 있습니다.",
+            Tone::Error,
+        ),
+        RelayStatus::Retrying => (
+            "브로커에 연결할 수 없습니다. 잠시 후 다시 시도합니다.",
+            Tone::Warning,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use resonance_types::RelayStatus;
 
     const ALL: [RelayStatus; 8] = [
         RelayStatus::Off,
