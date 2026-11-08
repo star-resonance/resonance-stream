@@ -64,7 +64,15 @@ mod tests {
         use SettingsCategory::*;
         assert_eq!(
             SettingsCategory::ALL,
-            [Translation, Chat, Keywords, Appearance, Blocked, Data]
+            [
+                Translation,
+                Chat,
+                Keywords,
+                Appearance,
+                Blocked,
+                GuildRelay,
+                Data
+            ]
         );
         assert_eq!(SettingsCategory::default(), Translation);
     }
