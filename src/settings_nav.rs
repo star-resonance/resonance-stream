@@ -10,17 +10,19 @@ pub enum SettingsCategory {
     Keywords,
     Appearance,
     Blocked,
+    GuildRelay,
     Data,
 }
 
 impl SettingsCategory {
     /// Every category, in sidebar order.
-    pub const ALL: [SettingsCategory; 6] = [
+    pub const ALL: [SettingsCategory; 7] = [
         SettingsCategory::Translation,
         SettingsCategory::Chat,
         SettingsCategory::Keywords,
         SettingsCategory::Appearance,
         SettingsCategory::Blocked,
+        SettingsCategory::GuildRelay,
         SettingsCategory::Data,
     ];
 
@@ -32,6 +34,7 @@ impl SettingsCategory {
             SettingsCategory::Keywords => "키워드",
             SettingsCategory::Appearance => "화면",
             SettingsCategory::Blocked => "차단 목록",
+            SettingsCategory::GuildRelay => "길드 릴레이",
             SettingsCategory::Data => "데이터 및 개발자",
         }
     }
@@ -48,6 +51,9 @@ impl SettingsCategory {
             SettingsCategory::Keywords => "알림을 받을 키워드와 강조할 단어를 관리합니다.",
             SettingsCategory::Appearance => "오버레이 창의 동작, 단축키, 테마를 설정합니다.",
             SettingsCategory::Blocked => "차단한 사용자와 그 메시지를 표시하는 방식을 관리합니다.",
+            SettingsCategory::GuildRelay => {
+                "길드 채팅(원문)을 길드의 디스코드 채널로 보냅니다. 기본값은 꺼짐입니다."
+            }
             SettingsCategory::Data => {
                 "사용자 사전, 채팅 기록, 네트워크 어댑터와 디버그 옵션입니다."
             }

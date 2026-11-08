@@ -2,6 +2,7 @@ mod appearance;
 mod blocked_users;
 mod chat;
 mod data_dev;
+mod guild_relay;
 mod keywords;
 mod translation;
 
@@ -9,6 +10,7 @@ use self::appearance::AppearanceSection;
 use self::blocked_users::BlockedUsersSection;
 use self::chat::ChatSection;
 use self::data_dev::DataDevSection;
+use self::guild_relay::GuildRelaySection;
 use self::keywords::KeywordSection;
 use self::translation::TranslationSection;
 use crate::dictionary_status::sync_outcome;
@@ -35,6 +37,7 @@ fn category_icon(category: SettingsCategory) -> (&'static str, &'static str) {
         SettingsCategory::Keywords => ("M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0", "bg-warning text-warning-content"),
         SettingsCategory::Appearance => ("M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25", "bg-secondary text-secondary-content"),
         SettingsCategory::Blocked => ("M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636", "bg-error text-error-content"),
+        SettingsCategory::GuildRelay => ("M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5", "bg-primary text-primary-content"),
         SettingsCategory::Data => ("M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125", "bg-neutral text-neutral-content"),
     }
 }
@@ -185,6 +188,7 @@ pub fn Settings() -> impl IntoView {
                                     }.into_any(),
                                     SettingsCategory::Appearance => view! { <AppearanceSection /> }.into_any(),
                                     SettingsCategory::Blocked => view! { <BlockedUsersSection /> }.into_any(),
+                                    SettingsCategory::GuildRelay => view! { <GuildRelaySection /> }.into_any(),
                                     SettingsCategory::Data => view! {
                                         <DataDevSection interfaces sync_dict_action save_chat_action />
                                     }.into_any(),
