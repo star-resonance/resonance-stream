@@ -443,6 +443,50 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_broker_url_means_the_built_in_default() {
+        assert_eq!(DEFAULT_BROKER_URL, "", "no broker until #369 deploys one");
+        for url in ["", "  "] {
+            let mut relay =
+                GuildRelay::new(config(true, url)).with_default_url("https://default.example");
+            relay.on_own_player(player(Some(GUILD)));
+            assert_eq!(
+                relay.poll(0).unwrap().url,
+                "https://default.example/v1/enrolled",
+                "{url:?}"
+            );
+        }
+        let mut own =
+            GuildRelay::new(config(true, URL)).with_default_url("https://default.example");
+        own.on_own_player(player(Some(GUILD)));
+        assert_eq!(
+            own.poll(0).unwrap().url,
+            "https://relay.example/v1/enrolled"
+        );
+    }
+
+    #[test]
+    fn plain_http_to_this_machine_is_allowed_only_when_asked_for() {
+        let local = "http://127.0.0.1:8787";
+        let mut refused = GuildRelay::new(config(true, local));
+        refused.on_own_player(player(Some(GUILD)));
+        assert_eq!(refused.poll(0), None);
+        let mut allowed = GuildRelay::new(config(true, local)).with_local_http(true);
+        allowed.on_own_player(player(Some(GUILD)));
+        assert_eq!(
+            allowed.poll(0).unwrap().url,
+            "http://127.0.0.1:8787/v1/enrolled"
+        );
+        let mut remote =
+            GuildRelay::new(config(true, "http://relay.example")).with_local_http(true);
+        remote.on_own_player(player(Some(GUILD)));
+        assert_eq!(
+            remote.poll(0),
+            None,
+            "plain http elsewhere is never allowed"
+        );
+    }
+
+    #[test]
     fn nothing_is_sent_until_the_guild_is_known() {
         let mut relay = on();
         assert_eq!(relay.poll(0), None);
