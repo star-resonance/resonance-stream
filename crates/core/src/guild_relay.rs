@@ -7,8 +7,13 @@
 
 use crate::capture::Origin;
 use crate::protocol::own_player::OwnPlayer;
+use crate::test_env::is_local_http_url;
 use resonance_types::{Channel, ChatMessage, GuildRelayConfig};
 use std::collections::VecDeque;
+
+/// The broker used when the setting is empty. Empty until the Worker is deployed (#369):
+/// until then an empty setting means no broker.
+pub const DEFAULT_BROKER_URL: &str = "";
 
 /// Lines in one `/v1/lines` request.
 pub const MAX_BATCH: usize = 20;
@@ -94,6 +99,8 @@ struct RelayLine {
 
 pub struct GuildRelay {
     config: GuildRelayConfig,
+    default_url: String,
+    allow_local_http: bool,
     guild: Option<u64>,
     enrollment: Enrollment,
     queue: VecDeque<RelayLine>,
@@ -111,6 +118,8 @@ impl GuildRelay {
     pub fn new(config: GuildRelayConfig) -> Self {
         Self {
             config,
+            default_url: DEFAULT_BROKER_URL.to_string(),
+            allow_local_http: false,
             guild: None,
             enrollment: Enrollment::Unknown,
             queue: VecDeque::new(),
@@ -121,6 +130,19 @@ impl GuildRelay {
             backoff_ms: None,
             rejected: false,
         }
+    }
+
+    /// The broker an empty setting means (tests; the app uses `DEFAULT_BROKER_URL`).
+    pub fn with_default_url(mut self, url: &str) -> Self {
+        self.default_url = url.to_string();
+        self
+    }
+
+    /// Also accept `http://` to this machine (`127.0.0.1`, `localhost`, `[::1]`): test runs
+    /// against a stand-in broker.
+    pub fn with_local_http(mut self, allow: bool) -> Self {
+        self.allow_local_http = allow;
+        self
     }
 
     /// New settings. A change starts over: the guild is asked about again, and answers to
@@ -292,16 +314,24 @@ impl GuildRelay {
         }
     }
 
-    /// The broker URL without a trailing `/`, when the relay is on and the URL is `https://`.
+    /// The broker URL without a trailing `/`, when the relay is on and the URL is `https://`
+    /// (or local `http://` when allowed). An empty setting means the default.
     fn base_url(&self) -> Option<&str> {
         if !self.config.enabled {
             return None;
         }
-        let url = self.config.broker_url.trim().trim_end_matches('/');
-        let rest = url
+        let setting = self.config.broker_url.trim();
+        let url = if setting.is_empty() {
+            self.default_url.trim()
+        } else {
+            setting
+        }
+        .trim_end_matches('/');
+        let https = url
             .get(..8)
-            .filter(|s| s.eq_ignore_ascii_case("https://"))?;
-        (url.len() > rest.len()).then_some(url)
+            .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+            && url.len() > 8;
+        (https || (self.allow_local_http && is_local_http_url(url))).then_some(url)
     }
 
     fn restart(&mut self) {
