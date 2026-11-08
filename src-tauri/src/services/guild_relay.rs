@@ -73,15 +73,36 @@ impl Http {
 }
 
 impl Transport for Http {
-    fn post(&self, _url: &str, _body: &str) -> Reply {
-        let _ = &self.client;
-        Reply::Failed
+    fn post(&self, url: &str, body: &str) -> Reply {
+        let response = self
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_string())
+            .send();
+        let Ok(response) = response else {
+            return Reply::Failed;
+        };
+        let status = response.status().as_u16();
+        let retry_after_secs = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_retry_after);
+        match response.text() {
+            Ok(body) => Reply::Http {
+                status,
+                retry_after_secs,
+                body,
+            },
+            Err(_) => Reply::Failed,
+        }
     }
 }
 
 /// `Retry-After` as a whole number of seconds; the HTTP-date form is not used by the broker.
-pub fn parse_retry_after(_value: &str) -> Option<u64> {
-    None
+pub fn parse_retry_after(value: &str) -> Option<u64> {
+    value.trim().parse().ok()
 }
 
 /// Starts the worker thread. It ends when every `RelayHandle` is dropped.
@@ -101,12 +122,50 @@ pub fn spawn(
 /// The worker's loop: take the events, poll the relay, send what it asks for, report a status
 /// change. Returns when the channel is closed.
 fn run(
-    _relay: GuildRelay,
-    _rx: &Receiver<Event>,
-    _transport: &impl Transport,
-    _on_status: impl FnMut(RelayStatus),
+    mut relay: GuildRelay,
+    rx: &Receiver<Event>,
+    transport: &impl Transport,
+    mut on_status: impl FnMut(RelayStatus),
 ) {
-    let _ = (TICK, Instant::now(), RecvTimeoutError::Timeout);
+    let start = Instant::now();
+    let now = || start.elapsed().as_millis() as u64;
+    let mut last = relay.status();
+    on_status(last);
+    // Reports the status when it changed since the last report.
+    let mut report = |relay: &GuildRelay| {
+        let status = relay.status();
+        if status != last {
+            last = status;
+            on_status(status);
+        }
+    };
+    loop {
+        match rx.recv_timeout(TICK) {
+            Ok(event) => {
+                apply(&mut relay, event);
+                for event in rx.try_iter() {
+                    apply(&mut relay, event);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        if let Some(request) = relay.poll(now()) {
+            // Before the request, which may take up to TIMEOUT: Settings shows "Checking" meanwhile.
+            report(&relay);
+            let reply = transport.post(&request.url, &request.body);
+            relay.on_response(now(), request.generation, reply);
+        }
+        report(&relay);
+    }
+}
+
+fn apply(relay: &mut GuildRelay, event: Event) {
+    match event {
+        Event::Config(config) => relay.set_config(config),
+        Event::Player(player) => relay.on_own_player(player),
+        Event::Line(chat, origin) => relay.on_line(&chat, origin),
+    }
 }
 
 #[cfg(test)]
