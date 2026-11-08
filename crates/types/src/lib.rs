@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 mod app_config;
 pub mod ipc;
-pub use app_config::AppConfig;
+pub use app_config::{AppConfig, GuildRelayConfig};
 
 // --- Chat and system log ---
 

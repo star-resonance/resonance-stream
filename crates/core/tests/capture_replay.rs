@@ -43,7 +43,7 @@ fn the_sanitised_corpus_decodes_the_same_every_time() {
             )
         })
         .filter_map(|action| match action {
-            PipelineAction::EmitNewMessage(chat) => Some(chat),
+            PipelineAction::EmitNewMessage(chat, _) => Some(chat),
             PipelineAction::UpdateBlockedMessage(_) | PipelineAction::OwnPlayer(_) => None,
         })
         .collect();
@@ -93,7 +93,7 @@ fn real_captures_replay_without_panicking() {
                     || {},
                 )
                 .iter()
-                .filter(|a| matches!(a, PipelineAction::EmitNewMessage(_)))
+                .filter(|a| matches!(a, PipelineAction::EmitNewMessage(_, _)))
                 .count();
         }
         println!("{}: {packets} packets -> {chats} chats", path.display());

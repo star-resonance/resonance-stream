@@ -10,6 +10,7 @@ pub mod download;
 pub mod favorites_migration;
 pub mod flow;
 pub mod furigana;
+pub mod guild_relay;
 pub mod history;
 pub mod kanji_on;
 pub mod log_throttle;

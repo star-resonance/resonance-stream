@@ -143,7 +143,7 @@ mod tests {
             );
             seq = seq.wrapping_add(frame.len() as u32);
             for action in actions {
-                if let PipelineAction::EmitNewMessage(m) = action {
+                if let PipelineAction::EmitNewMessage(m, _) = action {
                     out.push(m);
                 }
             }
