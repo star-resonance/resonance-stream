@@ -326,6 +326,7 @@ mod tests {
                 "global-tab-switch",
                 "tray-toggle-always-on-top",
                 "tray-toggle-click-through",
+                "guild-relay-state",
             ]
         );
     }

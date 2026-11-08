@@ -1173,6 +1173,29 @@ mod tests {
     }
 
     #[test]
+    fn the_relay_status_is_its_variant_name_on_the_wire_and_unknown_reads_as_off() {
+        use serde_json::{from_value, json, to_value};
+        for (status, name) in [
+            (RelayStatus::Off, "Off"),
+            (RelayStatus::NoBroker, "NoBroker"),
+            (RelayStatus::WaitingForGuild, "WaitingForGuild"),
+            (RelayStatus::Checking, "Checking"),
+            (RelayStatus::NotEnrolled, "NotEnrolled"),
+            (RelayStatus::Relaying, "Relaying"),
+            (RelayStatus::Rejected, "Rejected"),
+            (RelayStatus::Retrying, "Retrying"),
+        ] {
+            assert_eq!(to_value(status).unwrap(), name);
+            assert_eq!(from_value::<RelayStatus>(json!(name)).unwrap(), status);
+        }
+        assert_eq!(
+            from_value::<RelayStatus>(json!("SomethingNew")).unwrap(),
+            RelayStatus::Off
+        );
+        assert_eq!(RelayStatus::default(), RelayStatus::Off);
+    }
+
+    #[test]
     fn service_states_are_their_display_names_on_the_wire() {
         use serde_json::{from_value, json, to_value};
         for (state, name) in [
