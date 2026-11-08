@@ -5,10 +5,12 @@
 //! Nothing here logs a guild ID, a URL or a line's text.
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use parking_lot::Mutex;
 use resonance_core::capture::Origin;
 use resonance_core::guild_relay::{GuildRelay, RelayStatus, Reply};
 use resonance_core::protocol::own_player::OwnPlayer;
-use resonance_types::{ChatMessage, GuildRelayConfig};
+use resonance_types::{ChatMessage, GuildRelayConfig, GuildRelayStatePayload};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
@@ -32,9 +34,23 @@ pub enum Event {
 #[derive(Clone)]
 pub struct RelayHandle {
     tx: Sender<Event>,
+    /// The last status the worker reported, for a window that missed the event.
+    state: Arc<Mutex<GuildRelayStatePayload>>,
 }
 
 impl RelayHandle {
+    fn with_sender(tx: Sender<Event>) -> Self {
+        Self {
+            tx,
+            state: Arc::default(),
+        }
+    }
+
+    /// The last status, with its seq (`get_guild_relay_state`).
+    pub fn state(&self) -> GuildRelayStatePayload {
+        *self.state.lock()
+    }
+
     pub fn set_config(&self, config: GuildRelayConfig) {
         self.send(Event::Config(config));
     }
@@ -120,23 +136,35 @@ pub fn start(app: &AppHandle, config: GuildRelayConfig) -> RelayHandle {
         Err(_) => {
             log::warn!("[GuildRelay] No HTTP client; the relay is off for this run");
             let (tx, _) = bounded(1);
-            RelayHandle { tx }
+            RelayHandle::with_sender(tx)
         }
     }
 }
 
-/// Starts the worker thread. It ends when every `RelayHandle` is dropped.
+/// Starts the worker thread. Each status change is kept in the handle, then passed to
+/// `on_status` with its seq. The thread ends when every `RelayHandle` is dropped.
 pub fn spawn(
     relay: GuildRelay,
     transport: impl Transport + Send + 'static,
-    on_status: impl FnMut(RelayStatus) + Send + 'static,
+    mut on_status: impl FnMut(GuildRelayStatePayload) + Send + 'static,
 ) -> RelayHandle {
     let (tx, rx) = bounded(QUEUE);
+    let handle = RelayHandle::with_sender(tx);
+    let state = handle.state.clone();
     std::thread::Builder::new()
         .name("guild-relay".into())
-        .spawn(move || run(relay, &rx, &transport, on_status))
+        .spawn(move || {
+            run(relay, &rx, &transport, |status| {
+                let payload = {
+                    let mut last = state.lock();
+                    *last = last.next(status);
+                    *last
+                };
+                on_status(payload);
+            })
+        })
         .expect("spawn the guild relay thread");
-    RelayHandle { tx }
+    handle
 }
 
 /// The worker's loop: take the events, poll the relay, send what it asks for, report a status
@@ -256,7 +284,7 @@ mod tests {
                 })
             })
         };
-        let handle = RelayHandle { tx };
+        let handle = RelayHandle::with_sender(tx);
         handle.own_player(OwnPlayer {
             uid: 5,
             guild_id: Some(77_001),
@@ -330,14 +358,14 @@ mod tests {
                 |_| {},
             )
         });
-        drop(RelayHandle { tx });
+        drop(RelayHandle::with_sender(tx));
         worker.join().unwrap();
     }
 
     #[test]
     fn a_full_queue_drops_events_instead_of_blocking_the_capture() {
         let (tx, _rx) = bounded(1);
-        let handle = RelayHandle { tx };
+        let handle = RelayHandle::with_sender(tx);
         handle.line(&guild_line("a"), Origin::Live);
         handle.line(&guild_line("b"), Origin::Live); // would block forever if it waited
     }
