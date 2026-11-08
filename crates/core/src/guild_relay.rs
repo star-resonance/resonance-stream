@@ -12,9 +12,13 @@ pub use resonance_types::RelayStatus;
 use resonance_types::{Channel, ChatMessage, GuildRelayConfig};
 use std::collections::VecDeque;
 
-/// The broker used when the setting is empty: Kade's Worker (star-resonance/guild-relay-worker),
-/// deployed in #369. Public, not a secret: the guilds it relays are listed in its own secret.
-pub const DEFAULT_BROKER_URL: &str = "https://guild-relay-worker.stella-rain.workers.dev";
+/// The broker used when the setting is empty: `GUILD_RELAY_BROKER_URL` when the app is built
+/// (CI passes the repository variable of that name, the Worker deployed in #369), else none.
+/// Public, not a secret: the guilds a broker relays are listed in its own secret.
+pub const DEFAULT_BROKER_URL: &str = match option_env!("GUILD_RELAY_BROKER_URL") {
+    Some(url) => url,
+    None => "",
+};
 
 /// Lines in one `/v1/lines` request.
 pub const MAX_BATCH: usize = 20;
