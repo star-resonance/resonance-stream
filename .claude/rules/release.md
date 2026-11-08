@@ -38,7 +38,8 @@ deletes a release); both run `.github/scripts/check-release-feed.sh`. A red run 
 update: delete the hand-made release or mark it prerelease, then run Promote again.
 
 **Release notes: simple for users, detailed for maintainers.** `release-notes/v<version>.md` has two
-layers. Above `## 개발자용 상세` is the **user summary**: about 10 plain Korean lines (at most 12), no
+layers. Above `## 개발자용 상세` is the **user summary**: one short Korean line per change, ending in a noun
+(`- 길드 채팅 디스코드 전송 기능 추가`), not sentences; at most 12 lines, no
 commit subjects, PR numbers, file or function names, no English. It is what the update dialog shows
 (`latest.json`'s `notes`) and the top of the release page. Below is the **maintainer detail**, shown
 collapsed on the release page with the commit list since the previous stable tag. Candidate and Promote
