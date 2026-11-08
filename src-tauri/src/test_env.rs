@@ -168,6 +168,12 @@ pub fn allow_local_http() -> bool {
     flag(|env| env.feed_url.is_some() || env.metadata_url.is_some())
 }
 
+/// May the guild relay's broker be `http://127.0.0.1` (and the like)? In any test run, so a test can
+/// point the broker URL setting at a stand-in on this machine; never in a normal run.
+pub fn relay_local_http() -> bool {
+    flag(|_| true)
+}
+
 /// `--llama-url`: the stand-in llama-server to use instead of starting one (`http://127.0.0.1:PORT`).
 pub fn llama_url() -> Option<&'static str> {
     ACTIVE

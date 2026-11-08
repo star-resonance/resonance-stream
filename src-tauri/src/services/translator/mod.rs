@@ -437,6 +437,24 @@ impl Sink for AppSink<'_> {
     fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R {
         f(&mut self.state().nickname_cache.lock())
     }
+
+    fn own_player(&mut self, player: resonance_core::protocol::own_player::OwnPlayer) {
+        if let Some(relay) = self
+            .app
+            .try_state::<crate::services::guild_relay::RelayHandle>()
+        {
+            relay.own_player(player);
+        }
+    }
+
+    fn relay_line(&mut self, chat: &ChatMessage, origin: resonance_core::capture::Origin) {
+        if let Some(relay) = self
+            .app
+            .try_state::<crate::services::guild_relay::RelayHandle>()
+        {
+            relay.line(chat, origin);
+        }
+    }
 }
 
 /// One queued line: `resonance_core::flow::run_translation_job` with the app's effects and the

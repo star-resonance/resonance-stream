@@ -10,6 +10,7 @@ use resonance_core::guild_relay::{GuildRelay, RelayStatus, Reply};
 use resonance_core::protocol::own_player::OwnPlayer;
 use resonance_types::{ChatMessage, GuildRelayConfig};
 use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
 
 /// How many events wait for the worker; past that, new ones are dropped.
 pub const QUEUE: usize = 1024;
@@ -103,6 +104,25 @@ impl Transport for Http {
 /// `Retry-After` as a whole number of seconds; the HTTP-date form is not used by the broker.
 pub fn parse_retry_after(value: &str) -> Option<u64> {
     value.trim().parse().ok()
+}
+
+/// The app's worker: starts with the saved settings and tells every window about each status
+/// change. Without an HTTP client the handle still works, and its events go nowhere.
+pub fn start(app: &AppHandle, config: GuildRelayConfig) -> RelayHandle {
+    let relay = GuildRelay::new(config).with_local_http(crate::test_env::relay_local_http());
+    match Http::new() {
+        Ok(http) => {
+            let app = app.clone();
+            spawn(relay, http, move |status| {
+                let _ = app.emit(resonance_types::ipc::event::GUILD_RELAY_STATE, status);
+            })
+        }
+        Err(_) => {
+            log::warn!("[GuildRelay] No HTTP client; the relay is off for this run");
+            let (tx, _) = bounded(1);
+            RelayHandle { tx }
+        }
+    }
 }
 
 /// Starts the worker thread. It ends when every `RelayHandle` is dropped.

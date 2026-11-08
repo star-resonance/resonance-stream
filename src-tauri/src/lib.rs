@@ -90,6 +90,12 @@ pub fn run() {
             // messages (it queues until connected). Its commands wait for `mark_ready` below.
             bridge::start(&handle);
 
+            // After the bridge, so it hears the relay's first status.
+            app.manage(services::guild_relay::start(
+                &handle,
+                config.guild_relay.clone(),
+            ));
+
             // What the start-up read found wrong with config.json (the state did not exist to log it).
             if let Some(notice) = load_notice {
                 inject_system_message(&handle, SystemLogLevel::Error, "Settings", notice);
