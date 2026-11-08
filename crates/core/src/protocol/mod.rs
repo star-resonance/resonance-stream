@@ -3,4 +3,5 @@
 pub(crate) mod compression;
 pub(crate) mod decoder;
 pub mod framing;
+pub mod own_player;
 pub mod parser;

@@ -432,6 +432,8 @@ fn decodes_to_chat(ty: u16, after_prefix: &[u8]) -> bool {
     decode(ty, after_prefix).is_some_and(|frame| match frame.kind {
         FrameKind::Live => !parsing_pipeline(&frame.root).is_empty(),
         FrameKind::History => !history_pipeline(&frame.root).is_empty(),
+        // World state is blanked: the player's own record names the guild.
+        FrameKind::State => false,
     })
 }
 
@@ -838,6 +840,7 @@ fn decode_lines(text: &str) -> Vec<ChatMessage> {
             let events = match frame.kind {
                 FrameKind::Live => parsing_pipeline(&frame.root),
                 FrameKind::History => history_pipeline(&frame.root),
+                FrameKind::State => Vec::new(),
             };
             out.extend(events.into_iter().map(|Port5003Event::Chat(chat)| chat));
         }
@@ -1188,7 +1191,7 @@ mod tests {
             })
             .filter_map(|action| match action {
                 PipelineAction::EmitNewMessage(chat) => Some(chat),
-                PipelineAction::UpdateBlockedMessage(_) => None,
+                PipelineAction::UpdateBlockedMessage(_) | PipelineAction::OwnPlayer(_) => None,
             })
             .collect()
     }

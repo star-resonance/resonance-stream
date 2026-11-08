@@ -42,6 +42,9 @@ pub enum FrameKind {
     /// `0x8003`, or a plain `0x0003` whose root has field 5: the channel's
     /// recent lines, newest first.
     History,
+    /// `0x8002`: world state; the parser reads only the player's own record
+    /// from it (`protocol::own_player`).
+    State,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,7 +217,7 @@ fn find_sync(data: &[u8]) -> Option<usize> {
     })
 }
 
-/// A frame's body (what follows `[len][type]`) as the parser gets it, if it is chat or history.
+/// A frame's body (what follows `[len][type]`) as the parser gets it, if it is chat, history or world state.
 pub(crate) fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
     let payload = body.get(inner_header(ty)..)?;
     let root = if ty & COMPRESSED != 0 {
@@ -227,6 +230,7 @@ pub(crate) fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
     }
     let kind = match ty {
         TYPE_CHAT => FrameKind::Live,
+        t if t == COMPRESSED | TYPE_CHAT => FrameKind::State,
         t if t == COMPRESSED | TYPE_OWN_LINE => FrameKind::History,
         // Plain `0x0003`: a one-line history has `{3: channel, 5: chat}`, the
         // echo of the player's own line does not (and comes again as `0x0002`).
@@ -307,21 +311,41 @@ mod tests {
         );
     }
 
+    fn state(body: &[u8]) -> Vec<u8> {
+        let packed = compress_to_vec(&root(body)[..], CompressionLevel::Fastest);
+        frame_of(COMPRESSED | TYPE_CHAT, &packed)
+    }
+
     #[test]
-    fn frames_that_are_not_chat_are_skipped_by_their_length() {
+    fn frames_that_are_not_read_are_skipped_by_their_length() {
         let stream = [
             keepalive(),
             frame_of(TYPE_OWN_LINE, &root(b"echo")),
-            frame_of(
-                COMPRESSED | TYPE_CHAT,
-                &compress_to_vec(&root(b"state")[..], CompressionLevel::Fastest),
-            ),
             live(b"one"),
             keepalive(),
         ]
         .concat();
         let got = FrameAssembler::new().push(&stream);
         assert_eq!(roots(&got), [&root(b"one")[..]]);
+    }
+
+    #[test]
+    fn a_world_state_frame_is_inflated_as_state() {
+        let stream = [state(b"world"), live(b"one")].concat();
+        let got = FrameAssembler::new().push(&stream);
+        assert_eq!(
+            got,
+            vec![
+                Frame {
+                    kind: FrameKind::State,
+                    root: root(b"world")
+                },
+                Frame {
+                    kind: FrameKind::Live,
+                    root: root(b"one")
+                },
+            ]
+        );
     }
 
     /// Root `{ 3: channel, 5: chat }` as the server sends a one-line history.
