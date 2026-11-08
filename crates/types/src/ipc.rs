@@ -121,9 +121,11 @@ pub mod event {
     pub const GLOBAL_TAB_SWITCH: &str = "global-tab-switch";
     pub const TRAY_TOGGLE_ALWAYS_ON_TOP: &str = "tray-toggle-always-on-top";
     pub const TRAY_TOGGLE_CLICK_THROUGH: &str = "tray-toggle-click-through";
+    /// The guild relay's status changed; the payload is a `RelayStatus`.
+    pub const GUILD_RELAY_STATE: &str = "guild-relay-state";
 
     /// Every event above.
-    pub const ALL: [&str; 13] = [
+    pub const ALL: [&str; 14] = [
         CHAT_MESSAGE_UPDATE,
         SNIFFER_STATE,
         TRANSLATOR_STATE,
@@ -137,6 +139,7 @@ pub mod event {
         GLOBAL_TAB_SWITCH,
         TRAY_TOGGLE_ALWAYS_ON_TOP,
         TRAY_TOGGLE_CLICK_THROUGH,
+        GUILD_RELAY_STATE,
     ];
 }
 
@@ -326,6 +329,7 @@ mod tests {
                 "global-tab-switch",
                 "tray-toggle-always-on-top",
                 "tray-toggle-click-through",
+                "guild-relay-state",
             ]
         );
     }

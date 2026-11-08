@@ -7,8 +7,14 @@
 
 use crate::capture::Origin;
 use crate::protocol::own_player::OwnPlayer;
+use crate::test_env::is_local_http_url;
+pub use resonance_types::RelayStatus;
 use resonance_types::{Channel, ChatMessage, GuildRelayConfig};
 use std::collections::VecDeque;
+
+/// The broker used when the setting is empty. Empty until the Worker is deployed (#369):
+/// until then an empty setting means no broker.
+pub const DEFAULT_BROKER_URL: &str = "";
 
 /// Lines in one `/v1/lines` request.
 pub const MAX_BATCH: usize = 20;
@@ -26,27 +32,6 @@ pub const NOT_ENROLLED_RETRY_MS: u64 = 10 * 60 * 1_000;
 pub const BACKOFF_START_MS: u64 = 2_000;
 /// The longest wait after errors, in ms.
 pub const BACKOFF_MAX_MS: u64 = 5 * 60 * 1_000;
-
-/// What the member sees in Settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelayStatus {
-    /// The switch is off.
-    Off,
-    /// No broker URL, or one that is not `https://`.
-    NoBroker,
-    /// The player's guild is not known yet, or the player is in none.
-    WaitingForGuild,
-    /// Asking the broker whether the guild is enrolled.
-    Checking,
-    /// This broker does not accept the guild.
-    NotEnrolled,
-    /// Sending lines.
-    Relaying,
-    /// The broker refused the last batch as malformed (400); it was dropped.
-    Rejected,
-    /// The broker could not be reached or failed; waiting to try again.
-    Retrying,
-}
 
 /// One HTTP request for the relay service to send: `POST url` with a JSON `body`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +79,8 @@ struct RelayLine {
 
 pub struct GuildRelay {
     config: GuildRelayConfig,
+    default_url: String,
+    allow_local_http: bool,
     guild: Option<u64>,
     enrollment: Enrollment,
     queue: VecDeque<RelayLine>,
@@ -111,6 +98,8 @@ impl GuildRelay {
     pub fn new(config: GuildRelayConfig) -> Self {
         Self {
             config,
+            default_url: DEFAULT_BROKER_URL.to_string(),
+            allow_local_http: false,
             guild: None,
             enrollment: Enrollment::Unknown,
             queue: VecDeque::new(),
@@ -121,6 +110,19 @@ impl GuildRelay {
             backoff_ms: None,
             rejected: false,
         }
+    }
+
+    /// The broker an empty setting means (tests; the app uses `DEFAULT_BROKER_URL`).
+    pub fn with_default_url(mut self, url: &str) -> Self {
+        self.default_url = url.to_string();
+        self
+    }
+
+    /// Also accept `http://` to this machine (`127.0.0.1`, `localhost`, `[::1]`): test runs
+    /// against a stand-in broker.
+    pub fn with_local_http(mut self, allow: bool) -> Self {
+        self.allow_local_http = allow;
+        self
     }
 
     /// New settings. A change starts over: the guild is asked about again, and answers to
@@ -292,16 +294,24 @@ impl GuildRelay {
         }
     }
 
-    /// The broker URL without a trailing `/`, when the relay is on and the URL is `https://`.
+    /// The broker URL without a trailing `/`, when the relay is on and the URL is `https://`
+    /// (or local `http://` when allowed). An empty setting means the default.
     fn base_url(&self) -> Option<&str> {
         if !self.config.enabled {
             return None;
         }
-        let url = self.config.broker_url.trim().trim_end_matches('/');
-        let rest = url
+        let setting = self.config.broker_url.trim();
+        let url = if setting.is_empty() {
+            self.default_url.trim()
+        } else {
+            setting
+        }
+        .trim_end_matches('/');
+        let https = url
             .get(..8)
-            .filter(|s| s.eq_ignore_ascii_case("https://"))?;
-        (url.len() > rest.len()).then_some(url)
+            .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+            && url.len() > 8;
+        (https || (self.allow_local_http && is_local_http_url(url))).then_some(url)
     }
 
     fn restart(&mut self) {
@@ -440,6 +450,50 @@ mod tests {
             assert_eq!(relay.poll(0), None, "{url:?}");
             assert_eq!(relay.status(), RelayStatus::NoBroker, "{url:?}");
         }
+    }
+
+    #[test]
+    fn an_empty_broker_url_means_the_built_in_default() {
+        assert_eq!(DEFAULT_BROKER_URL, "", "no broker until #369 deploys one");
+        for url in ["", "  "] {
+            let mut relay =
+                GuildRelay::new(config(true, url)).with_default_url("https://default.example");
+            relay.on_own_player(player(Some(GUILD)));
+            assert_eq!(
+                relay.poll(0).unwrap().url,
+                "https://default.example/v1/enrolled",
+                "{url:?}"
+            );
+        }
+        let mut own =
+            GuildRelay::new(config(true, URL)).with_default_url("https://default.example");
+        own.on_own_player(player(Some(GUILD)));
+        assert_eq!(
+            own.poll(0).unwrap().url,
+            "https://relay.example/v1/enrolled"
+        );
+    }
+
+    #[test]
+    fn plain_http_to_this_machine_is_allowed_only_when_asked_for() {
+        let local = "http://127.0.0.1:8787";
+        let mut refused = GuildRelay::new(config(true, local));
+        refused.on_own_player(player(Some(GUILD)));
+        assert_eq!(refused.poll(0), None);
+        let mut allowed = GuildRelay::new(config(true, local)).with_local_http(true);
+        allowed.on_own_player(player(Some(GUILD)));
+        assert_eq!(
+            allowed.poll(0).unwrap().url,
+            "http://127.0.0.1:8787/v1/enrolled"
+        );
+        let mut remote =
+            GuildRelay::new(config(true, "http://relay.example")).with_local_http(true);
+        remote.on_own_player(player(Some(GUILD)));
+        assert_eq!(
+            remote.poll(0),
+            None,
+            "plain http elsewhere is never allowed"
+        );
     }
 
     #[test]

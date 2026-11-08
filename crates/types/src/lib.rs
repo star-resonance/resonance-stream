@@ -315,6 +315,30 @@ pub struct NetworkInterface {
     pub ip: String,
 }
 
+/// What the guild relay is doing, for Settings (`guild-relay-state`). On the wire it is the
+/// variant's name (`"Relaying"`); a name this enum does not know reads as `Off`.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum RelayStatus {
+    /// No broker URL, or one that is not `https://`.
+    NoBroker,
+    /// The player's guild is not known yet, or the player is in none.
+    WaitingForGuild,
+    /// Asking the broker whether the guild is enrolled.
+    Checking,
+    /// This broker does not accept the guild.
+    NotEnrolled,
+    /// Sending lines.
+    Relaying,
+    /// The broker refused the last batch as malformed (400); it was dropped.
+    Rejected,
+    /// The broker could not be reached or failed; waiting to try again.
+    Retrying,
+    /// The switch is off. Also what any unknown status reads as.
+    #[default]
+    #[serde(other)]
+    Off,
+}
+
 // --- Settings with a fixed set of values ---
 
 /// A setting that `config.json` stores as a lowercase name. Reads leniently:
@@ -1149,6 +1173,29 @@ mod tests {
         assert_eq!(states.sniffer.state, SnifferState::Off);
         assert_eq!(states.translator.state, TranslatorState::Off);
         assert_eq!((states.sniffer.seq, states.translator.seq), (0, 0));
+    }
+
+    #[test]
+    fn the_relay_status_is_its_variant_name_on_the_wire_and_unknown_reads_as_off() {
+        use serde_json::{from_value, json, to_value};
+        for (status, name) in [
+            (RelayStatus::Off, "Off"),
+            (RelayStatus::NoBroker, "NoBroker"),
+            (RelayStatus::WaitingForGuild, "WaitingForGuild"),
+            (RelayStatus::Checking, "Checking"),
+            (RelayStatus::NotEnrolled, "NotEnrolled"),
+            (RelayStatus::Relaying, "Relaying"),
+            (RelayStatus::Rejected, "Rejected"),
+            (RelayStatus::Retrying, "Retrying"),
+        ] {
+            assert_eq!(to_value(status).unwrap(), name);
+            assert_eq!(from_value::<RelayStatus>(json!(name)).unwrap(), status);
+        }
+        assert_eq!(
+            from_value::<RelayStatus>(json!("SomethingNew")).unwrap(),
+            RelayStatus::Off
+        );
+        assert_eq!(RelayStatus::default(), RelayStatus::Off);
     }
 
     #[test]

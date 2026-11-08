@@ -284,6 +284,12 @@ fn apply_config(
         }
     }
 
+    if old_config.guild_relay != config.guild_relay {
+        if let Some(relay) = app.try_state::<crate::services::guild_relay::RelayHandle>() {
+            relay.set_config(config.guild_relay.clone());
+        }
+    }
+
     if old_config.raw_capture != config.raw_capture {
         crate::services::sniffer::set_raw_capture(config.raw_capture);
     }

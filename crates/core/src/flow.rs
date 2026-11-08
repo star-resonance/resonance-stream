@@ -3,8 +3,9 @@
 //! app and the test harness (`crates/llama/tests/support/harness.rs`) both run this code; each
 //! gives it a [`Sink`] for the effects (history, events, archive, translator queue).
 
-use crate::capture::PipelineAction;
+use crate::capture::{Origin, PipelineAction};
 use crate::history::{ArchiveTarget, ChatHistory};
+use crate::protocol::own_player::OwnPlayer;
 use crate::text::{
     contains_japanese, convert_to_romaji, nicknames_in, preprocess_with_nicknames,
     translate_masked, Dictionary, TranslationCache,
@@ -35,6 +36,11 @@ pub trait Sink {
     fn with_ledger<R>(&mut self, f: impl FnOnce(&mut TranslationLedger) -> R) -> R;
     /// Japanese nickname -> romaji, filled as senders arrive.
     fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R;
+    /// The player's own record (uid, guild), for the guild relay. Does nothing by default.
+    fn own_player(&mut self, _player: OwnPlayer) {}
+    /// A new line, as captured (the sender's in-game name, no translation), with where it came
+    /// from, for the guild relay. Does nothing by default.
+    fn relay_line(&mut self, _chat: &ChatMessage, _origin: Origin) {}
 }
 
 /// The sniffer's side: what becomes of each action the capture pipeline produced.
@@ -43,8 +49,7 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
 
     for action in actions {
         match action {
-            // Read by the guild relay, which is not built yet.
-            PipelineAction::OwnPlayer(_) => {}
+            PipelineAction::OwnPlayer(player) => sink.own_player(player),
             PipelineAction::UpdateBlockedMessage(chat) => {
                 let flagged = sink.with_history(|history| {
                     let row = history.get_mut(chat.pid)?;
@@ -58,7 +63,9 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
                     sink.emit_update(&row);
                 }
             }
-            PipelineAction::EmitNewMessage(mut chat, _) => {
+            PipelineAction::EmitNewMessage(mut chat, origin) => {
+                // Before the romaji swap: the relay posts the name as the game shows it.
+                sink.relay_line(&chat, origin);
                 // Apply Romaji Swap
                 if contains_japanese(&chat.nickname) {
                     let nickname = chat.nickname.clone();
@@ -162,6 +169,7 @@ mod tests {
     use super::*;
     use crate::capture::{Origin, PipelineAction};
     use crate::history::{ArchiveTarget, ChannelLimits, ChatHistory};
+    use crate::protocol::own_player::OwnPlayer;
     use crate::text::{Dictionary, TranslationCache};
     use crate::workers::TranslationLedger;
     use resonance_types::{Channel, ChatMessage};
@@ -177,6 +185,8 @@ mod tests {
         nicknames: HashMap<String, String>,
         dictionary: Arc<Dictionary>,
         effects: Vec<String>,
+        /// What the guild relay was handed, apart from `effects` so the tests above keep theirs.
+        relayed: Vec<String>,
     }
 
     impl Recorder {
@@ -189,6 +199,7 @@ mod tests {
                 nicknames: HashMap::new(),
                 dictionary: Arc::new(Dictionary::default()),
                 effects: Vec::new(),
+                relayed: Vec::new(),
             }
         }
     }
@@ -231,6 +242,35 @@ mod tests {
         fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R {
             f(&mut self.nicknames)
         }
+        fn own_player(&mut self, player: OwnPlayer) {
+            self.relayed
+                .push(format!("player {} {:?}", player.uid, player.guild_id));
+        }
+        fn relay_line(&mut self, chat: &ChatMessage, origin: Origin) {
+            self.relayed.push(format!("line {} {origin:?}", chat.pid));
+        }
+    }
+
+    #[test]
+    fn the_guild_relay_gets_the_player_record_and_every_new_line_with_its_origin() {
+        let mut sink = Recorder::new();
+        let player = OwnPlayer {
+            uid: 424_242,
+            guild_id: Some(77_001),
+        };
+        dispatch(
+            &mut sink,
+            vec![
+                PipelineAction::OwnPlayer(player),
+                PipelineAction::EmitNewMessage(line(1, "Bob", "live"), Origin::Live),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "old"), Origin::History),
+                PipelineAction::UpdateBlockedMessage(line(1, "Bob", "live")),
+            ],
+        );
+        assert_eq!(
+            sink.relayed,
+            ["player 424242 Some(77001)", "line 1 Live", "line 2 History"]
+        );
     }
 
     fn line(pid: u64, nickname: &str, message: &str) -> ChatMessage {
