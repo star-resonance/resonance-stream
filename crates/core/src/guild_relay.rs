@@ -12,9 +12,9 @@ pub use resonance_types::RelayStatus;
 use resonance_types::{Channel, ChatMessage, GuildRelayConfig};
 use std::collections::VecDeque;
 
-/// The broker used when the setting is empty. Empty until the Worker is deployed (#369):
-/// until then an empty setting means no broker.
-pub const DEFAULT_BROKER_URL: &str = "";
+/// The broker used when the setting is empty: Kade's Worker (star-resonance/guild-relay-worker),
+/// deployed in #369. Public, not a secret: the guilds it relays are listed in its own secret.
+pub const DEFAULT_BROKER_URL: &str = "https://guild-relay-worker.stella-rain.workers.dev";
 
 /// Lines in one `/v1/lines` request.
 pub const MAX_BATCH: usize = 20;
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_or_plain_http_broker_url_sends_nothing() {
+    fn with_no_default_an_empty_or_plain_http_broker_url_sends_nothing() {
         for url in [
             "",
             "   ",
@@ -445,7 +445,7 @@ mod tests {
             "ftp://relay.example",
             "relay.example",
         ] {
-            let mut relay = GuildRelay::new(config(true, url));
+            let mut relay = GuildRelay::new(config(true, url)).with_default_url("");
             relay.on_own_player(player(Some(GUILD)));
             assert_eq!(relay.poll(0), None, "{url:?}");
             assert_eq!(relay.status(), RelayStatus::NoBroker, "{url:?}");
@@ -453,8 +453,21 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_default_is_the_deployed_broker() {
+        assert_eq!(
+            DEFAULT_BROKER_URL,
+            "https://guild-relay-worker.stella-rain.workers.dev"
+        );
+        let mut relay = GuildRelay::new(config(true, ""));
+        relay.on_own_player(player(Some(GUILD)));
+        assert_eq!(
+            relay.poll(0).unwrap().url,
+            "https://guild-relay-worker.stella-rain.workers.dev/v1/enrolled"
+        );
+    }
+
+    #[test]
     fn an_empty_broker_url_means_the_built_in_default() {
-        assert_eq!(DEFAULT_BROKER_URL, "", "no broker until #369 deploys one");
         for url in ["", "  "] {
             let mut relay =
                 GuildRelay::new(config(true, url)).with_default_url("https://default.example");
