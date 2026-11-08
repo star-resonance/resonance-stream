@@ -12,6 +12,7 @@ use crate::ui_types::{
 };
 use leptos::prelude::{signal, GetUntracked, ReadSignal, Set, WriteSignal};
 use resonance_types::FavoritesState;
+use resonance_types::GuildRelayConfig;
 use std::collections::HashMap;
 
 /// A saved font size of this or less is taken for a broken config.
@@ -93,6 +94,8 @@ pub struct ConfigSignals {
     pub set_chat_log_retention_days: WriteSignal<u32>,
     pub raw_capture: ReadSignal<bool>,
     pub set_raw_capture: WriteSignal<bool>,
+    pub guild_relay: ReadSignal<GuildRelayConfig>,
+    pub set_guild_relay: WriteSignal<GuildRelayConfig>,
 }
 
 impl ConfigSignals {
@@ -140,6 +143,7 @@ impl ConfigSignals {
         let (favorite_tabs, set_favorite_tabs) = signal::<Vec<FavoriteTab>>(Vec::new());
         let (chat_log_retention_days, set_chat_log_retention_days) = signal::<u32>(0);
         let (raw_capture, set_raw_capture) = signal::<bool>(false);
+        let (guild_relay, set_guild_relay) = signal(GuildRelayConfig::default());
         ConfigSignals {
             init_done,
             set_init_done,
@@ -211,6 +215,8 @@ impl ConfigSignals {
             set_chat_log_retention_days,
             raw_capture,
             set_raw_capture,
+            guild_relay,
+            set_guild_relay,
         }
     }
 
@@ -252,6 +258,7 @@ impl ConfigSignals {
             favorite_tabs: self.favorite_tabs.get_untracked(),
             chat_log_retention_days: self.chat_log_retention_days.get_untracked(),
             raw_capture: self.raw_capture.get_untracked(),
+            guild_relay: self.guild_relay.get_untracked(),
         }
     }
 
@@ -312,6 +319,7 @@ impl ConfigSignals {
             favorite_tabs,
             chat_log_retention_days,
             raw_capture,
+            guild_relay,
         } = config;
         self.set_init_done.set(init_done);
         self.set_use_translation.set(use_translation);
@@ -365,6 +373,7 @@ impl ConfigSignals {
         self.set_chat_log_retention_days
             .set(chat_log_retention_days);
         self.set_raw_capture.set(raw_capture);
+        self.set_guild_relay.set(guild_relay);
     }
 }
 
@@ -415,6 +424,10 @@ mod tests {
             favorite_tabs: vec![tab(2, "레이드"), tab(5, "던전")],
             chat_log_retention_days: 5,
             raw_capture: true,
+            guild_relay: GuildRelayConfig {
+                enabled: true,
+                broker_url: "https://relay.example".into(),
+            },
         }
     }
 

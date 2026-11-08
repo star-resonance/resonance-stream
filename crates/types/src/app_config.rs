@@ -81,6 +81,18 @@ pub struct AppConfig {
     /// Debug: append the game's raw port-5003 packets to `captures/`. Applies live.
     #[serde(default)]
     pub raw_capture: bool,
+    /// Sending guild chat to the guild's Discord channel through a broker (#367).
+    #[serde(default)]
+    pub guild_relay: GuildRelayConfig,
+}
+
+/// The guild relay's settings. Off until the member turns it on (decided in #367).
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct GuildRelayConfig {
+    pub enabled: bool,
+    /// The broker's base URL (`https://` only). Empty: no broker, nothing is sent.
+    pub broker_url: String,
 }
 
 fn default_spacing() -> u32 {
@@ -129,6 +141,7 @@ impl Default for AppConfig {
             favorite_tabs: Vec::new(),
             chat_log_retention_days: 0,
             raw_capture: false,
+            guild_relay: GuildRelayConfig::default(),
         }
     }
 }
