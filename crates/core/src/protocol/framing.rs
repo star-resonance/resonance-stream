@@ -217,7 +217,7 @@ fn find_sync(data: &[u8]) -> Option<usize> {
     })
 }
 
-/// A frame's body (what follows `[len][type]`) as the parser gets it, if it is chat or history.
+/// A frame's body (what follows `[len][type]`) as the parser gets it, if it is chat, history or world state.
 pub(crate) fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
     let payload = body.get(inner_header(ty)..)?;
     let root = if ty & COMPRESSED != 0 {
@@ -230,6 +230,7 @@ pub(crate) fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
     }
     let kind = match ty {
         TYPE_CHAT => FrameKind::Live,
+        t if t == COMPRESSED | TYPE_CHAT => FrameKind::State,
         t if t == COMPRESSED | TYPE_OWN_LINE => FrameKind::History,
         // Plain `0x0003`: a one-line history has `{3: channel, 5: chat}`, the
         // echo of the player's own line does not (and comes again as `0x0002`).
