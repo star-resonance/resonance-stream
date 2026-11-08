@@ -95,6 +95,7 @@ impl ChatPipeline {
             let events = match frame.kind {
                 FrameKind::Live => parsing_pipeline(&frame.root),
                 FrameKind::History => history_pipeline(&frame.root),
+                FrameKind::State => Vec::new(),
             };
             for event in events {
                 // Guard clause for the event loop using let-else
