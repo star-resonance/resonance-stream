@@ -68,6 +68,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/release.py main-only "$GITHUB_REF"
+          # A branch named rc would stop the tag job after it tagged and released (run 42508857371).
+          python3 scripts/release.py rc-free
           gh api "repos/$REPO/commits/$GITHUB_SHA/check-runs?per_page=100" \
             | python3 scripts/release.py checks-passed "$GITHUB_RUN_ID"
       - name: The final version, its notes, and the stamped tree
