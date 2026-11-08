@@ -453,17 +453,20 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_default_is_the_deployed_broker() {
-        assert_eq!(
-            DEFAULT_BROKER_URL,
-            "https://guild-relay-worker.stella-rain.workers.dev"
-        );
+    fn the_built_in_default_is_the_build_time_variable_or_none() {
+        let expected = option_env!("GUILD_RELAY_BROKER_URL").unwrap_or("");
+        assert_eq!(DEFAULT_BROKER_URL, expected);
         let mut relay = GuildRelay::new(config(true, ""));
         relay.on_own_player(player(Some(GUILD)));
-        assert_eq!(
-            relay.poll(0).unwrap().url,
-            "https://guild-relay-worker.stella-rain.workers.dev/v1/enrolled"
-        );
+        if expected.is_empty() {
+            assert_eq!(relay.poll(0), None);
+            assert_eq!(relay.status(), RelayStatus::NoBroker);
+        } else {
+            assert_eq!(
+                relay.poll(0).unwrap().url,
+                format!("{expected}/v1/enrolled")
+            );
+        }
     }
 
     #[test]
