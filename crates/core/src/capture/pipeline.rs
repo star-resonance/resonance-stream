@@ -577,6 +577,36 @@ mod tests {
         assert_eq!(texts, ["seen live", "missed", "also missed"]);
     }
 
+    #[test]
+    fn each_new_message_says_whether_it_came_live_from_history_or_from_a_replay() {
+        let mut pipeline = ChatPipeline::new();
+        let mut got = Vec::new();
+        let live = chat_segment(2, "live");
+        let history = history_segment(&[(1, "missed")]);
+        for (seq, segment) in [(1_000, &live), (1_000 + live.len() as u32, &history)] {
+            for action in
+                pipeline.feed_network_packet(&tcp_from_5003(seq, segment), |_| false, || 1, || {})
+            {
+                if let PipelineAction::EmitNewMessage(chat, origin) = action {
+                    got.push((chat.message, origin));
+                }
+            }
+        }
+        if let Some(PipelineAction::EmitNewMessage(chat, origin)) =
+            pipeline.feed_chat(chat_from(7, 1000, 1, "replayed"), |_| false, || 1)
+        {
+            got.push((chat.message, origin));
+        }
+        assert_eq!(
+            got,
+            [
+                ("live".to_string(), Origin::Live),
+                ("missed".to_string(), Origin::History),
+                ("replayed".to_string(), Origin::Replay),
+            ]
+        );
+    }
+
     // ---- feed_chat: one decoded message through the same rules as a captured one ----
 
     fn chat_from(uid: u64, timestamp: u64, sequence_id: u64, text: &str) -> ChatMessage {
