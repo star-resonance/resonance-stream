@@ -339,6 +339,26 @@ pub enum RelayStatus {
     Off,
 }
 
+/// The guild relay's status as the windows get it (`guild-relay-state`, `get_guild_relay_state`).
+/// `seq` grows by one with each change, so the ui can drop a snapshot an event overtook; 0: none
+/// known.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuildRelayStatePayload {
+    pub status: RelayStatus,
+    #[serde(default)]
+    pub seq: u64,
+}
+
+impl GuildRelayStatePayload {
+    /// The payload for the next change.
+    pub fn next(self, status: RelayStatus) -> Self {
+        Self {
+            status,
+            seq: self.seq + 1,
+        }
+    }
+}
+
 // --- Settings with a fixed set of values ---
 
 /// A setting that `config.json` stores as a lowercase name. Reads leniently:

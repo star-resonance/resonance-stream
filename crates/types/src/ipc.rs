@@ -121,7 +121,7 @@ pub mod event {
     pub const GLOBAL_TAB_SWITCH: &str = "global-tab-switch";
     pub const TRAY_TOGGLE_ALWAYS_ON_TOP: &str = "tray-toggle-always-on-top";
     pub const TRAY_TOGGLE_CLICK_THROUGH: &str = "tray-toggle-click-through";
-    /// The guild relay's status changed; the payload is a `RelayStatus`.
+    /// The guild relay's status changed; the payload is a `GuildRelayStatePayload`.
     pub const GUILD_RELAY_STATE: &str = "guild-relay-state";
 
     /// Every event above.
