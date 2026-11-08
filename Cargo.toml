@@ -27,7 +27,7 @@ members = ["src-tauri", "crates/core", "crates/llama", "crates/types"]
 # The one place the app version is set. src-tauri inherits it, and
 # tauri.conf.json has no "version", so Tauri falls back to src-tauri's.
 [workspace.package]
-version = "0.6.2"
+version = "0.6.3"
 
 # Profiles only take effect here, at the workspace root (cargo ignored them
 # in src-tauri/Cargo.toml). They apply to every release build, the wasm UI
