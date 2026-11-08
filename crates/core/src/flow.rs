@@ -187,6 +187,8 @@ mod tests {
         effects: Vec<String>,
         /// What the guild relay was handed, apart from `effects` so the tests above keep theirs.
         relayed: Vec<String>,
+        /// The reading each relayed line carried.
+        relayed_readings: Vec<Option<String>>,
     }
 
     impl Recorder {
@@ -200,6 +202,7 @@ mod tests {
                 dictionary: Arc::new(Dictionary::default()),
                 effects: Vec::new(),
                 relayed: Vec::new(),
+                relayed_readings: Vec::new(),
             }
         }
     }
@@ -248,6 +251,7 @@ mod tests {
         }
         fn relay_line(&mut self, chat: &ChatMessage, origin: Origin) {
             self.relayed.push(format!("line {} {origin:?}", chat.pid));
+            self.relayed_readings.push(chat.nickname_romaji.clone());
         }
     }
 
@@ -271,6 +275,19 @@ mod tests {
             sink.relayed,
             ["player 424242 Some(77001)", "line 1 Live", "line 2 History"]
         );
+    }
+
+    #[test]
+    fn the_guild_relay_gets_a_japanese_name_with_its_reading() {
+        let mut sink = Recorder::new();
+        dispatch(
+            &mut sink,
+            vec![
+                PipelineAction::EmitNewMessage(line(1, "アズルル", "hi"), Origin::Live),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "hi"), Origin::Live),
+            ],
+        );
+        assert_eq!(sink.relayed_readings, [Some("Azururu".to_string()), None]);
     }
 
     fn line(pid: u64, nickname: &str, message: &str) -> ChatMessage {
