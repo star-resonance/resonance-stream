@@ -1176,6 +1176,23 @@ mod tests {
     }
 
     #[test]
+    fn the_relay_state_payload_carries_a_growing_seq_so_a_late_snapshot_can_be_dropped() {
+        use serde_json::{from_value, json, to_value};
+        let start = GuildRelayStatePayload::default();
+        assert_eq!((start.status, start.seq), (RelayStatus::Off, 0));
+        let a = start.next(RelayStatus::Checking);
+        let b = a.next(RelayStatus::Relaying);
+        assert_eq!((a.status, a.seq), (RelayStatus::Checking, 1));
+        assert_eq!((b.status, b.seq), (RelayStatus::Relaying, 2));
+        assert_eq!(
+            to_value(b).unwrap(),
+            json!({ "status": "Relaying", "seq": 2 })
+        );
+        let old: GuildRelayStatePayload = from_value(json!({ "status": "Retrying" })).unwrap();
+        assert_eq!((old.status, old.seq), (RelayStatus::Retrying, 0));
+    }
+
+    #[test]
     fn the_relay_status_is_its_variant_name_on_the_wire_and_unknown_reads_as_off() {
         use serde_json::{from_value, json, to_value};
         for (status, name) in [
