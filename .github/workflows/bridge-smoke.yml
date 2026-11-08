@@ -24,6 +24,11 @@ on:
         type: string
         required: false
         default: ''
+      stamped-artifact:
+        description: 'Name of an artifact of this run with the Cargo.toml and Cargo.lock that exe was built from (empty: the checkout''s own)'
+        type: string
+        required: false
+        default: ''
 
 concurrency:
   group: bridge-smoke-${{ github.workflow }}-${{ github.ref }}
@@ -45,6 +50,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # Candidate's exe carries the stamped version (Cargo.toml's is a floor); the checkout must say the
+      # same, or CP-version compares the exe with the floor.
+      - name: Take the stamped Cargo.toml and Cargo.lock
+        if: inputs.stamped-artifact != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.stamped-artifact }}
+          path: stamped
+      - name: Use the stamped Cargo.toml and Cargo.lock
+        if: inputs.stamped-artifact != ''
+        shell: bash
+        run: cp stamped/Cargo.toml stamped/Cargo.lock .
       - uses: dtolnay/rust-toolchain@stable
         if: inputs.exe-artifact == ''
         with:
