@@ -1,7 +1,7 @@
 use crate::capture::message_processor::{MessageProcessor, ProcessAction, DEFAULT_DEDUP_CAPACITY};
 use crate::capture::stream_tracker::{StreamKey, StreamTracker};
 use crate::protocol::framing::FrameKind;
-use crate::protocol::own_player::OwnPlayer;
+use crate::protocol::own_player::{own_player, OwnPlayer};
 use crate::protocol::parser::{history_pipeline, parsing_pipeline, Port5003Event};
 use crate::text::normalize_emotes;
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
@@ -20,6 +20,8 @@ pub struct ChatPipeline {
     tracker: StreamTracker,
     processor: MessageProcessor,
     keep_unknown_fields: bool,
+    /// The last own-player record reported, so an unchanged one is not sent again.
+    own_player: Option<OwnPlayer>,
 }
 
 impl ChatPipeline {
@@ -28,6 +30,7 @@ impl ChatPipeline {
             tracker: StreamTracker::new(),
             processor: MessageProcessor::new(),
             keep_unknown_fields: false,
+            own_player: None,
         }
     }
 
@@ -99,7 +102,15 @@ impl ChatPipeline {
             let events = match frame.kind {
                 FrameKind::Live => parsing_pipeline(&frame.root),
                 FrameKind::History => history_pipeline(&frame.root),
-                FrameKind::State => Vec::new(),
+                FrameKind::State => {
+                    if let Some(player) = own_player(&frame.root) {
+                        if self.own_player != Some(player) {
+                            self.own_player = Some(player);
+                            actions.push(PipelineAction::OwnPlayer(player));
+                        }
+                    }
+                    continue;
+                }
             };
             for event in events {
                 // Guard clause for the event loop using let-else
