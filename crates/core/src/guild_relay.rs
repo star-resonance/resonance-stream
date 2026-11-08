@@ -1,6 +1,342 @@
 //! The guild relay: which guild lines go to the guild's broker, in what batches, and what to do
 //! with each answer (#367). Pure logic: no network and no clock; the app's relay service (#371)
 //! sends the requests `poll` gives and feeds the answers back with `on_response`.
+//!
+//! Nothing but the enrollment question leaves the PC until the broker has said the guild is
+//! enrolled; a line seen before that waits in memory and is dropped if the answer is no.
+
+use crate::capture::Origin;
+use crate::protocol::own_player::OwnPlayer;
+use resonance_types::{Channel, ChatMessage, GuildRelayConfig};
+use std::collections::VecDeque;
+
+/// Lines in one `/v1/lines` request.
+pub const MAX_BATCH: usize = 20;
+/// The shortest time between two `/v1/lines` requests, in ms.
+pub const BATCH_INTERVAL_MS: u64 = 2_000;
+/// Lines kept waiting at most; the oldest is dropped first.
+pub const MAX_QUEUED: usize = 500;
+/// Longer text is cut to this many characters.
+pub const MAX_TEXT_CHARS: usize = 1_000;
+/// Longer names are cut to this many characters.
+pub const MAX_NICKNAME_CHARS: usize = 32;
+/// After a guild is found not enrolled, the time before asking again, in ms.
+pub const NOT_ENROLLED_RETRY_MS: u64 = 10 * 60 * 1_000;
+/// The first wait after a server or network error, in ms; it doubles on each further error.
+pub const BACKOFF_START_MS: u64 = 2_000;
+/// The longest wait after errors, in ms.
+pub const BACKOFF_MAX_MS: u64 = 5 * 60 * 1_000;
+
+/// What the member sees in Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayStatus {
+    /// The switch is off.
+    Off,
+    /// No broker URL, or one that is not `https://`.
+    NoBroker,
+    /// The player's guild is not known yet, or the player is in none.
+    WaitingForGuild,
+    /// Asking the broker whether the guild is enrolled.
+    Checking,
+    /// This broker does not accept the guild.
+    NotEnrolled,
+    /// Sending lines.
+    Relaying,
+    /// The broker refused the last batch as malformed (400); it was dropped.
+    Rejected,
+    /// The broker could not be reached or failed; waiting to try again.
+    Retrying,
+}
+
+/// One HTTP request for the relay service to send: `POST url` with a JSON `body`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayRequest {
+    pub url: String,
+    pub body: String,
+    /// Passed back to `on_response`, so an answer to a request made before a settings or guild
+    /// change is ignored.
+    pub generation: u64,
+}
+
+/// The broker's answer to a `RelayRequest`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reply {
+    Http {
+        status: u16,
+        /// The `Retry-After` header, in seconds.
+        retry_after_secs: Option<u64>,
+        body: String,
+    },
+    /// No answer: the connection failed or timed out.
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Enrollment {
+    Unknown,
+    Enrolled,
+    NotEnrolled { ask_again_at: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InFlight {
+    Enrolled,
+    Lines(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RelayLine {
+    uid: u64,
+    nickname: String,
+    text: String,
+    timestamp: u64,
+}
+
+pub struct GuildRelay {
+    config: GuildRelayConfig,
+    guild: Option<u64>,
+    enrollment: Enrollment,
+    queue: VecDeque<RelayLine>,
+    in_flight: Option<InFlight>,
+    generation: u64,
+    batch_size: usize,
+    /// No request before this time.
+    next_at: u64,
+    /// The last wait after an error; `None` after a success.
+    backoff_ms: Option<u64>,
+    rejected: bool,
+}
+
+impl GuildRelay {
+    pub fn new(config: GuildRelayConfig) -> Self {
+        Self {
+            config,
+            guild: None,
+            enrollment: Enrollment::Unknown,
+            queue: VecDeque::new(),
+            in_flight: None,
+            generation: 0,
+            batch_size: MAX_BATCH,
+            next_at: 0,
+            backoff_ms: None,
+            rejected: false,
+        }
+    }
+
+    /// New settings. A change starts over: the guild is asked about again, and answers to
+    /// requests already sent are ignored. Turning the relay off drops the waiting lines.
+    pub fn set_config(&mut self, config: GuildRelayConfig) {
+        if config == self.config {
+            return;
+        }
+        self.config = config;
+        self.restart();
+        if !self.config.enabled {
+            self.queue.clear();
+        }
+    }
+
+    /// The player's record from world state. A change of guild starts over; leaving a guild (for
+    /// none or another) also drops the waiting lines, which were seen in the old one. Lines
+    /// seen before the first record are kept: they are the guild's the record names.
+    pub fn on_own_player(&mut self, player: OwnPlayer) {
+        if player.guild_id == self.guild {
+            return;
+        }
+        if self.guild.is_some() {
+            self.queue.clear();
+        }
+        self.guild = player.guild_id;
+        self.restart();
+    }
+
+    /// A new chat line. Only live GUILD lines with a sender and a send time are kept, and only
+    /// while the relay is on and the guild is not known to be refused. Block lists are ignored.
+    pub fn on_line(&mut self, chat: &ChatMessage, origin: Origin) {
+        if self.base_url().is_none()
+            || origin != Origin::Live
+            || chat.channel != Channel::Guild
+            || chat.uid == 0
+            || chat.timestamp == 0
+            || matches!(self.enrollment, Enrollment::NotEnrolled { .. })
+        {
+            return;
+        }
+        if self.queue.len() == MAX_QUEUED {
+            self.queue.pop_front();
+        }
+        self.queue.push_back(RelayLine {
+            uid: chat.uid,
+            nickname: chat.nickname.chars().take(MAX_NICKNAME_CHARS).collect(),
+            text: chat.message.chars().take(MAX_TEXT_CHARS).collect(),
+            timestamp: chat.timestamp,
+        });
+    }
+
+    /// The next request to send at time `now` (ms), if any. One at a time: nothing more until
+    /// its answer comes back through `on_response`.
+    pub fn poll(&mut self, now: u64) -> Option<RelayRequest> {
+        let base = self.base_url()?.to_string();
+        let guild = self.guild?;
+        if self.in_flight.is_some() || now < self.next_at {
+            return None;
+        }
+        let (path, body, in_flight) = match self.enrollment {
+            Enrollment::NotEnrolled { ask_again_at } if now < ask_again_at => return None,
+            Enrollment::Unknown | Enrollment::NotEnrolled { .. } => {
+                self.enrollment = Enrollment::Unknown;
+                let body = serde_json::json!({ "guildId": guild });
+                ("/v1/enrolled", body, InFlight::Enrolled)
+            }
+            Enrollment::Enrolled => {
+                if self.queue.is_empty() {
+                    return None;
+                }
+                let count = self.batch_size.min(self.queue.len());
+                let lines: Vec<_> = self
+                    .queue
+                    .iter()
+                    .take(count)
+                    .map(|l| {
+                        serde_json::json!({
+                            "uid": l.uid,
+                            "nickname": l.nickname,
+                            "text": l.text,
+                            "timestamp": l.timestamp,
+                        })
+                    })
+                    .collect();
+                let body = serde_json::json!({ "guildId": guild, "lines": lines });
+                ("/v1/lines", body, InFlight::Lines(count))
+            }
+        };
+        self.in_flight = Some(in_flight);
+        Some(RelayRequest {
+            url: format!("{base}{path}"),
+            body: body.to_string(),
+            generation: self.generation,
+        })
+    }
+
+    /// The answer to the request `poll` gave with this `generation`, at time `now` (ms).
+    pub fn on_response(&mut self, now: u64, generation: u64, reply: Reply) {
+        if generation != self.generation {
+            return;
+        }
+        let Some(in_flight) = self.in_flight.take() else {
+            return;
+        };
+        let (status, retry_after_secs, body) = match reply {
+            Reply::Http {
+                status,
+                retry_after_secs,
+                body,
+            } => (status, retry_after_secs, body),
+            Reply::Failed => (0, None, String::new()),
+        };
+        match (in_flight, status) {
+            (_, 403) => self.refused(now),
+            (InFlight::Enrolled, 200) => {
+                self.succeeded(now);
+                let enrolled = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v["enrolled"].as_bool());
+                match enrolled {
+                    Some(true) => self.enrollment = Enrollment::Enrolled,
+                    Some(false) => self.refused(now),
+                    None => self.failed(now, None),
+                }
+            }
+            (InFlight::Lines(count), 200) => {
+                self.queue.drain(..count.min(self.queue.len()));
+                self.succeeded(now);
+                self.next_at = now + BATCH_INTERVAL_MS;
+            }
+            (InFlight::Lines(count), 400) => {
+                self.queue.drain(..count.min(self.queue.len()));
+                self.backoff_ms = None;
+                self.rejected = true;
+                self.next_at = now + BATCH_INTERVAL_MS;
+            }
+            (InFlight::Lines(count), 413) => {
+                if count <= 1 {
+                    self.queue.pop_front();
+                } else {
+                    self.batch_size = count / 2;
+                }
+                self.next_at = now + BATCH_INTERVAL_MS;
+            }
+            (_, 429) => self.failed(now, retry_after_secs.map(|s| s * 1_000)),
+            _ => self.failed(now, None),
+        }
+    }
+
+    pub fn status(&self) -> RelayStatus {
+        if !self.config.enabled {
+            return RelayStatus::Off;
+        }
+        if self.base_url().is_none() {
+            return RelayStatus::NoBroker;
+        }
+        if self.guild.is_none() {
+            return RelayStatus::WaitingForGuild;
+        }
+        if self.backoff_ms.is_some() {
+            return RelayStatus::Retrying;
+        }
+        match self.enrollment {
+            Enrollment::Unknown => RelayStatus::Checking,
+            Enrollment::NotEnrolled { .. } => RelayStatus::NotEnrolled,
+            Enrollment::Enrolled if self.rejected => RelayStatus::Rejected,
+            Enrollment::Enrolled => RelayStatus::Relaying,
+        }
+    }
+
+    /// The broker URL without a trailing `/`, when the relay is on and the URL is `https://`.
+    fn base_url(&self) -> Option<&str> {
+        if !self.config.enabled {
+            return None;
+        }
+        let url = self.config.broker_url.trim().trim_end_matches('/');
+        let rest = url
+            .get(..8)
+            .filter(|s| s.eq_ignore_ascii_case("https://"))?;
+        (url.len() > rest.len()).then_some(url)
+    }
+
+    fn restart(&mut self) {
+        self.enrollment = Enrollment::Unknown;
+        self.in_flight = None;
+        self.generation += 1;
+        self.batch_size = MAX_BATCH;
+        self.next_at = 0;
+        self.backoff_ms = None;
+        self.rejected = false;
+    }
+
+    fn succeeded(&mut self, now: u64) {
+        self.backoff_ms = None;
+        self.rejected = false;
+        self.next_at = now;
+    }
+
+    fn refused(&mut self, now: u64) {
+        self.queue.clear();
+        self.backoff_ms = None;
+        self.enrollment = Enrollment::NotEnrolled {
+            ask_again_at: now + NOT_ENROLLED_RETRY_MS,
+        };
+    }
+
+    /// Waits `wait_ms` if the broker named a time, otherwise the next backoff step.
+    fn failed(&mut self, now: u64, wait_ms: Option<u64>) {
+        let backoff = self
+            .backoff_ms
+            .map_or(BACKOFF_START_MS, |b| (b * 2).min(BACKOFF_MAX_MS));
+        self.backoff_ms = Some(backoff);
+        self.next_at = now + wait_ms.unwrap_or(backoff);
+    }
+}
 
 #[cfg(test)]
 mod tests {
