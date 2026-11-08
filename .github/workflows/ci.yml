@@ -21,6 +21,8 @@ env:
   # Line tables only: the gate needs test results, not debugger symbols. Much
   # smaller PDBs on Windows -- faster linking, a smaller build cache.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # The guild relay's default broker, built into the app (crates/core guild_relay.rs).
+  GUILD_RELAY_BROKER_URL: ${{ vars.GUILD_RELAY_BROKER_URL }}
 
 # Build cache policy (both jobs): every run restores, only main saves. A cache
 # saved by a PR ref is readable by that PR alone and counts against the repo's

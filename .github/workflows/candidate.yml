@@ -36,6 +36,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The guild relay's default broker, built into the app (crates/core guild_relay.rs).
+  GUILD_RELAY_BROKER_URL: ${{ vars.GUILD_RELAY_BROKER_URL }}
 
 jobs:
   check:
