@@ -8,6 +8,7 @@
 use crate::capture::Origin;
 use crate::protocol::own_player::OwnPlayer;
 use crate::test_env::is_local_http_url;
+pub use resonance_types::RelayStatus;
 use resonance_types::{Channel, ChatMessage, GuildRelayConfig};
 use std::collections::VecDeque;
 
@@ -31,27 +32,6 @@ pub const NOT_ENROLLED_RETRY_MS: u64 = 10 * 60 * 1_000;
 pub const BACKOFF_START_MS: u64 = 2_000;
 /// The longest wait after errors, in ms.
 pub const BACKOFF_MAX_MS: u64 = 5 * 60 * 1_000;
-
-/// What the member sees in Settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelayStatus {
-    /// The switch is off.
-    Off,
-    /// No broker URL, or one that is not `https://`.
-    NoBroker,
-    /// The player's guild is not known yet, or the player is in none.
-    WaitingForGuild,
-    /// Asking the broker whether the guild is enrolled.
-    Checking,
-    /// This broker does not accept the guild.
-    NotEnrolled,
-    /// Sending lines.
-    Relaying,
-    /// The broker refused the last batch as malformed (400); it was dropped.
-    Rejected,
-    /// The broker could not be reached or failed; waiting to try again.
-    Retrying,
-}
 
 /// One HTTP request for the relay service to send: `POST url` with a JSON `body`.
 #[derive(Debug, Clone, PartialEq, Eq)]

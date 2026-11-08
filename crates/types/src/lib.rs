@@ -315,6 +315,27 @@ pub struct NetworkInterface {
     pub ip: String,
 }
 
+/// What the member sees in Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayStatus {
+    /// The switch is off.
+    Off,
+    /// No broker URL, or one that is not `https://`.
+    NoBroker,
+    /// The player's guild is not known yet, or the player is in none.
+    WaitingForGuild,
+    /// Asking the broker whether the guild is enrolled.
+    Checking,
+    /// This broker does not accept the guild.
+    NotEnrolled,
+    /// Sending lines.
+    Relaying,
+    /// The broker refused the last batch as malformed (400); it was dropped.
+    Rejected,
+    /// The broker could not be reached or failed; waiting to try again.
+    Retrying,
+}
+
 // --- Settings with a fixed set of values ---
 
 /// A setting that `config.json` stores as a lowercase name. Reads leniently:
