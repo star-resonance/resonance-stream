@@ -12,9 +12,43 @@ pub struct OwnPlayer {
     pub guild_id: Option<u64>,
 }
 
+use crate::protocol::decoder::{field_end, read_varint, Fields, Value};
+
 /// The own-player record in a world-state root, if it has one.
-pub fn own_player(_root: &[u8]) -> Option<OwnPlayer> {
-    None
+pub fn own_player(root: &[u8]) -> Option<OwnPlayer> {
+    if root.first() != Some(&0x0A) {
+        return None;
+    }
+    let (len, read) = read_varint(root.get(1..)?);
+    if read == 0 {
+        return None;
+    }
+    let start = 1 + read;
+    let body = &root[start..field_end(start, len, root.len())];
+    let record = bytes_of(body, 1)?;
+    let uid = int_of(record, 1).filter(|&uid| uid != 0)?;
+    let names = bytes_of(record, 3)?;
+    if int_of(names, 1) != Some(uid) || int_of(names, 2) != Some(uid) {
+        return None;
+    }
+    let guild_id = bytes_of(record, 13)
+        .and_then(|guild| int_of(guild, 1))
+        .filter(|&id| id != 0);
+    Some(OwnPlayer { uid, guild_id })
+}
+
+fn bytes_of(message: &[u8], number: u64) -> Option<&[u8]> {
+    Fields::new(message).find_map(|f| match f.value {
+        Value::Bytes(bytes) if f.number() == number => Some(bytes),
+        _ => None,
+    })
+}
+
+fn int_of(message: &[u8], number: u64) -> Option<u64> {
+    Fields::new(message).find_map(|f| match f.value {
+        Value::Varint(v) if f.number() == number => Some(v),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
