@@ -332,6 +332,17 @@ class Workflows(unittest.TestCase):
         self.assertIn("release.py next", text)
         self.assertIn("name: stamped-tree", text)
 
+    # The smoke test's CP-version compares the exe's version with the checkout's Cargo.toml: on a
+    # floor release (v0.6.3 from a 0.6.2 Cargo.toml) the checkout must hold the stamped files too.
+    def test_the_smoke_test_checks_out_the_stamped_tree_the_exe_was_built_from(self):
+        candidate = self.text("candidate.yml")
+        smoke_job = candidate[candidate.index("\n  smoke:"):candidate.index("\n  files:")]
+        self.assertIn("stamped-artifact: stamped-tree", smoke_job)
+        smoke = self.text("bridge-smoke.yml")
+        self.assertIn("stamped-artifact:", smoke)
+        self.assertIn("name: ${{ inputs.stamped-artifact }}", smoke)
+        self.assertIn("cp stamped/Cargo.toml stamped/Cargo.lock .", smoke)
+
     # Promote lists the commits since the previous release at the rc tag's commit, which may be the
     # "Release vX.Y.Z" commit Candidate made: it is no change users or maintainers need listed.
     def test_promote_leaves_the_release_commit_out_of_the_commit_list(self):

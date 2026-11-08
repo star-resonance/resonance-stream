@@ -244,6 +244,7 @@ jobs:
     uses: ./.github/workflows/bridge-smoke.yml
     with:
       exe-artifact: test-exe
+      stamped-artifact: stamped-tree
 
   files:
     name: make the release files
