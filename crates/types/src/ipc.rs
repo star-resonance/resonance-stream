@@ -8,8 +8,9 @@
 //! field, a command or an event is a protocol change.
 
 use crate::{
-    AppConfig, ChatMessage, DictionaryStatus, FavoritesState, FolderStatus, NetworkInterface,
-    PopupKind, RubySpan, ServiceStates, SystemMessage, UpdateCheckResult, UpdateTarget, WindowRect,
+    AppConfig, ChatMessage, DictionaryStatus, FavoritesState, FolderStatus, GuildRelayStatePayload,
+    NetworkInterface, PopupKind, RubySpan, ServiceStates, SystemMessage, UpdateCheckResult,
+    UpdateTarget, WindowRect,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -68,6 +69,8 @@ commands! {
     GetSystemHistory = "get_system_history" {} -> Vec<SystemMessage>;
     ClearChatHistory = "clear_chat_history" {} -> ();
     GetServiceStates = "get_service_states" {} -> ServiceStates;
+    /// The guild relay's last status; Off when the relay never started.
+    GetGuildRelayState = "get_guild_relay_state" {} -> GuildRelayStatePayload;
     AnnotateFurigana = "annotate_furigana" { texts: Vec<String> } -> Vec<Vec<RubySpan>>;
     /// A line for the system log from the ui. `level` is a `SystemLogLevel` as it serializes.
     UiSystemMessage = "ui_system_message" { level: String, source: String, message: String } -> ();
@@ -121,7 +124,7 @@ pub mod event {
     pub const GLOBAL_TAB_SWITCH: &str = "global-tab-switch";
     pub const TRAY_TOGGLE_ALWAYS_ON_TOP: &str = "tray-toggle-always-on-top";
     pub const TRAY_TOGGLE_CLICK_THROUGH: &str = "tray-toggle-click-through";
-    /// The guild relay's status changed; the payload is a `RelayStatus`.
+    /// The guild relay's status changed; the payload is a `GuildRelayStatePayload`.
     pub const GUILD_RELAY_STATE: &str = "guild-relay-state";
 
     /// Every event above.
@@ -307,7 +310,7 @@ mod tests {
     fn the_backend_registers_exactly_the_commands_listed_here() {
         let listed: BTreeSet<String> = COMMAND_NAMES.iter().map(|n| n.to_string()).collect();
         let registered = registered_commands();
-        assert_eq!(registered.len(), 44, "{registered:?}");
+        assert_eq!(registered.len(), 45, "{registered:?}");
         assert_eq!(listed, registered);
     }
 

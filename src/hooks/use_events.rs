@@ -9,7 +9,8 @@ use crate::ui_types::{
 use crate::view_signals::ChatSignals;
 use leptos::logging::log;
 use leptos::prelude::*;
-use resonance_types::ipc::{event, ClearChatHistory, GetServiceStates};
+use resonance_types::ipc::{event, ClearChatHistory, GetGuildRelayState, GetServiceStates};
+use resonance_types::GuildRelayStatePayload;
 use wasm_bindgen::prelude::*;
 
 pub async fn clear_backend_history() {
@@ -34,6 +35,7 @@ pub async fn setup_event_listeners(signals: AppSignals) {
     let translation_closure = create_translation_handler(signals);
     let update_message_closure = create_update_message_handler(signals);
     let firewall_closure = create_firewall_missing_handler(signals);
+    let guild_relay_closure = create_guild_relay_state_handler(signals);
 
     crate::favorites_sync::listen_for_changes(signals.config).await;
 
@@ -45,6 +47,7 @@ pub async fn setup_event_listeners(signals: AppSignals) {
     listen(event::TRANSLATION_EVENT, &translation_closure).await;
     listen(event::CHAT_MESSAGE_UPDATE, &update_message_closure).await;
     listen(event::FIREWALL_MISSING, &firewall_closure).await;
+    listen(event::GUILD_RELAY_STATE, &guild_relay_closure).await;
 
     // 3. Prevent memory leaks / keep closures alive
     packet_closure.forget();
@@ -54,6 +57,7 @@ pub async fn setup_event_listeners(signals: AppSignals) {
     translation_closure.forget();
     update_message_closure.forget();
     firewall_closure.forget();
+    guild_relay_closure.forget();
 
     // 4. States emitted before we listened (the translator starts with the
     // app; a reloaded page missed everything): ask once, now that no later
@@ -62,10 +66,20 @@ pub async fn setup_event_listeners(signals: AppSignals) {
         apply_sniffer_state(signals, states.sniffer);
         apply_translator_state(signals, states.translator);
     }
+    if let Ok(relay) = call(&GetGuildRelayState {}).await {
+        apply_guild_relay_state(signals, relay);
+    }
 }
 
 static SNIFFER_SEQ: SeqGate = SeqGate::new();
 static TRANSLATOR_SEQ: SeqGate = SeqGate::new();
+static GUILD_RELAY_SEQ: SeqGate = SeqGate::new();
+
+fn apply_guild_relay_state(signals: AppSignals, payload: GuildRelayStatePayload) {
+    if GUILD_RELAY_SEQ.accept(payload.seq) {
+        signals.service.set_guild_relay_state.set(payload.status);
+    }
+}
 
 fn apply_translator_state(signals: AppSignals, payload: TranslatorStatePayload) {
     if !TRANSLATOR_SEQ.accept(payload.seq) {
@@ -222,6 +236,14 @@ fn create_sniffer_state_handler(signals: AppSignals) -> Closure<dyn FnMut(JsValu
     Closure::wrap(Box::new(move |event_obj: JsValue| {
         if let Some(payload) = payload::<SnifferStatePayload>(event_obj) {
             apply_sniffer_state(signals, payload);
+        }
+    }) as Box<dyn FnMut(JsValue)>)
+}
+
+fn create_guild_relay_state_handler(signals: AppSignals) -> Closure<dyn FnMut(JsValue)> {
+    Closure::wrap(Box::new(move |event_obj: JsValue| {
+        if let Some(payload) = payload::<GuildRelayStatePayload>(event_obj) {
+            apply_guild_relay_state(signals, payload);
         }
     }) as Box<dyn FnMut(JsValue)>)
 }

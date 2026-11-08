@@ -5,6 +5,7 @@
 
 use crate::ui_types::{GistMetadata, SnifferState, TranslatorState};
 use leptos::prelude::{signal, ReadSignal, WriteSignal};
+use resonance_types::RelayStatus;
 
 /// What the backend services report: the translator and the sniffer, whether the model is there, and what the user has to do about it.
 #[derive(Copy, Clone, Debug)]
@@ -25,6 +26,9 @@ pub struct ServiceSignals {
     pub set_restart_required: WriteSignal<bool>,
     pub dict_update_available: ReadSignal<bool>,
     pub set_dict_update_available: WriteSignal<bool>,
+    /// What the guild relay is doing (`guild-relay-state`).
+    pub guild_relay_state: ReadSignal<RelayStatus>,
+    pub set_guild_relay_state: WriteSignal<RelayStatus>,
 }
 
 impl ServiceSignals {
@@ -38,6 +42,7 @@ impl ServiceSignals {
         let (model_ready, set_model_ready) = signal::<bool>(false);
         let (restart_required, set_restart_required) = signal::<bool>(false);
         let (dict_update_available, set_dict_update_available) = signal::<bool>(false);
+        let (guild_relay_state, set_guild_relay_state) = signal(RelayStatus::Off);
         ServiceSignals {
             translator_state,
             set_translator_state,
@@ -55,6 +60,8 @@ impl ServiceSignals {
             set_restart_required,
             dict_update_available,
             set_dict_update_available,
+            guild_relay_state,
+            set_guild_relay_state,
         }
     }
 }

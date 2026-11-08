@@ -339,6 +339,26 @@ pub enum RelayStatus {
     Off,
 }
 
+/// The guild relay's status as the windows get it (`guild-relay-state`, `get_guild_relay_state`).
+/// `seq` grows by one with each change, so the ui can drop a snapshot an event overtook; 0: none
+/// known.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuildRelayStatePayload {
+    pub status: RelayStatus,
+    #[serde(default)]
+    pub seq: u64,
+}
+
+impl GuildRelayStatePayload {
+    /// The payload for the next change.
+    pub fn next(self, status: RelayStatus) -> Self {
+        Self {
+            status,
+            seq: self.seq + 1,
+        }
+    }
+}
+
 // --- Settings with a fixed set of values ---
 
 /// A setting that `config.json` stores as a lowercase name. Reads leniently:
@@ -1173,6 +1193,23 @@ mod tests {
         assert_eq!(states.sniffer.state, SnifferState::Off);
         assert_eq!(states.translator.state, TranslatorState::Off);
         assert_eq!((states.sniffer.seq, states.translator.seq), (0, 0));
+    }
+
+    #[test]
+    fn the_relay_state_payload_carries_a_growing_seq_so_a_late_snapshot_can_be_dropped() {
+        use serde_json::{from_value, json, to_value};
+        let start = GuildRelayStatePayload::default();
+        assert_eq!((start.status, start.seq), (RelayStatus::Off, 0));
+        let a = start.next(RelayStatus::Checking);
+        let b = a.next(RelayStatus::Relaying);
+        assert_eq!((a.status, a.seq), (RelayStatus::Checking, 1));
+        assert_eq!((b.status, b.seq), (RelayStatus::Relaying, 2));
+        assert_eq!(
+            to_value(b).unwrap(),
+            json!({ "status": "Relaying", "seq": 2 })
+        );
+        let old: GuildRelayStatePayload = from_value(json!({ "status": "Retrying" })).unwrap();
+        assert_eq!((old.status, old.seq), (RelayStatus::Retrying, 0));
     }
 
     #[test]

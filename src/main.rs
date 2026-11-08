@@ -11,6 +11,7 @@ pub mod favorites_sync;
 pub mod hooks;
 pub mod popup_view;
 pub mod readability;
+pub mod relay_view;
 pub mod ruby_view;
 pub mod service_state;
 pub mod settings_nav;

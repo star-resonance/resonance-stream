@@ -57,6 +57,15 @@ pub fn get_service_states(state: tauri::State<AppState>) -> crate::ServiceStates
     state.service_states.lock().clone()
 }
 
+/// The guild relay's last status, asked for like `get_service_states` (events before the listener
+/// was registered are lost). Off when the relay never started.
+#[tauri::command]
+pub fn get_guild_relay_state(app: AppHandle) -> resonance_types::GuildRelayStatePayload {
+    app.try_state::<crate::services::guild_relay::RelayHandle>()
+        .map(|relay| relay.state())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub fn launch_translator(app: AppHandle, state: State<'_, AppState>) {
     // Idempotent: a translator that is already running is left alone.

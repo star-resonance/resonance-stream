@@ -181,6 +181,7 @@ pub fn run() {
             annotate_furigana,
             get_system_history,
             get_service_states,
+            get_guild_relay_state,
             check_all_updates,
             ignore_update,
             download_app_update,
