@@ -162,6 +162,7 @@ mod tests {
     use super::*;
     use crate::capture::{Origin, PipelineAction};
     use crate::history::{ArchiveTarget, ChannelLimits, ChatHistory};
+    use crate::protocol::own_player::OwnPlayer;
     use crate::text::{Dictionary, TranslationCache};
     use crate::workers::TranslationLedger;
     use resonance_types::{Channel, ChatMessage};
@@ -177,6 +178,8 @@ mod tests {
         nicknames: HashMap<String, String>,
         dictionary: Arc<Dictionary>,
         effects: Vec<String>,
+        /// What the guild relay was handed, apart from `effects` so the tests above keep theirs.
+        relayed: Vec<String>,
     }
 
     impl Recorder {
@@ -189,6 +192,7 @@ mod tests {
                 nicknames: HashMap::new(),
                 dictionary: Arc::new(Dictionary::default()),
                 effects: Vec::new(),
+                relayed: Vec::new(),
             }
         }
     }
@@ -231,6 +235,35 @@ mod tests {
         fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R {
             f(&mut self.nicknames)
         }
+        fn own_player(&mut self, player: OwnPlayer) {
+            self.relayed
+                .push(format!("player {} {:?}", player.uid, player.guild_id));
+        }
+        fn relay_line(&mut self, chat: &ChatMessage, origin: Origin) {
+            self.relayed.push(format!("line {} {origin:?}", chat.pid));
+        }
+    }
+
+    #[test]
+    fn the_guild_relay_gets_the_player_record_and_every_new_line_with_its_origin() {
+        let mut sink = Recorder::new();
+        let player = OwnPlayer {
+            uid: 424_242,
+            guild_id: Some(77_001),
+        };
+        dispatch(
+            &mut sink,
+            vec![
+                PipelineAction::OwnPlayer(player),
+                PipelineAction::EmitNewMessage(line(1, "Bob", "live"), Origin::Live),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "old"), Origin::History),
+                PipelineAction::UpdateBlockedMessage(line(1, "Bob", "live")),
+            ],
+        );
+        assert_eq!(
+            sink.relayed,
+            ["player 424242 Some(77001)", "line 1 Live", "line 2 History"]
+        );
     }
 
     fn line(pid: u64, nickname: &str, message: &str) -> ChatMessage {
