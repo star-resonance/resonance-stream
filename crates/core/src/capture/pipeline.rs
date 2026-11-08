@@ -1,6 +1,7 @@
 use crate::capture::message_processor::{MessageProcessor, ProcessAction, DEFAULT_DEDUP_CAPACITY};
 use crate::capture::stream_tracker::{StreamKey, StreamTracker};
 use crate::protocol::framing::FrameKind;
+use crate::protocol::own_player::OwnPlayer;
 use crate::protocol::parser::{history_pipeline, parsing_pipeline, Port5003Event};
 use crate::text::normalize_emotes;
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
@@ -10,6 +11,9 @@ use std::collections::HashMap;
 pub enum PipelineAction {
     UpdateBlockedMessage(ChatMessage),
     EmitNewMessage(ChatMessage),
+    /// Who is playing and in which guild, read from world state: sent when the
+    /// first record arrives and again whenever it changes.
+    OwnPlayer(OwnPlayer),
 }
 
 pub struct ChatPipeline {
@@ -581,6 +585,9 @@ mod tests {
             Some(PipelineAction::UpdateBlockedMessage(_)) => {
                 panic!("expected a new message, got a block update")
             }
+            Some(PipelineAction::OwnPlayer(_)) => {
+                panic!("expected a new message, got an own-player record")
+            }
             None => panic!("expected a new message, got nothing"),
         }
     }
@@ -687,5 +694,92 @@ mod tests {
             out.extend(pipeline.feed_network_packet(&packet, |_| false, || 1, || {}));
         }
         assert_eq!(out.len(), 1);
+    }
+
+    // ---- world state: the player's own record ----
+
+    fn varint(mut v: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let byte = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(byte);
+                return out;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    fn pb_int(field: u8, v: u64) -> Vec<u8> {
+        [vec![field << 3], varint(v)].concat()
+    }
+
+    fn pb_msg(field: u8, body: &[u8]) -> Vec<u8> {
+        [
+            vec![(field << 3) | 2],
+            varint(body.len() as u64),
+            body.to_vec(),
+        ]
+        .concat()
+    }
+
+    /// A compressed `0x8002` frame holding the player's own record.
+    fn own_record_frame(uid: u64, guild: Option<u64>) -> Vec<u8> {
+        let mut record = [
+            pb_int(1, uid),
+            pb_msg(3, &[pb_int(1, uid), pb_int(2, uid)].concat()),
+        ]
+        .concat();
+        if let Some(id) = guild {
+            record.extend(pb_msg(13, &pb_int(1, id)));
+        }
+        let root = pb_msg(1, &pb_msg(1, &record));
+        frame_of(
+            0x8002,
+            16,
+            &compress_to_vec(&root[..], CompressionLevel::Fastest),
+        )
+    }
+
+    fn own_players(actions: &[PipelineAction]) -> Vec<OwnPlayer> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                PipelineAction::OwnPlayer(p) => Some(*p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_own_record_is_reported_once_and_again_when_it_changes() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seq = 1u32;
+        let mut feed = |frame: Vec<u8>| {
+            let packet = tcp_from_5003(seq, &frame);
+            seq += frame.len() as u32;
+            pipeline.feed_network_packet(&packet, |_| false, || 1, || {})
+        };
+        let in_guild = OwnPlayer {
+            uid: 424_242,
+            guild_id: Some(77_001),
+        };
+
+        let first = feed(own_record_frame(424_242, Some(77_001)));
+        assert_eq!(own_players(&first), [in_guild]);
+        assert_eq!(first.len(), 1, "a record is not a chat line");
+
+        let again = feed(own_record_frame(424_242, Some(77_001)));
+        assert!(again.is_empty(), "the same record is not reported twice");
+
+        let left = feed(own_record_frame(424_242, None));
+        assert_eq!(
+            own_players(&left),
+            [OwnPlayer {
+                uid: 424_242,
+                guild_id: None
+            }]
+        );
     }
 }

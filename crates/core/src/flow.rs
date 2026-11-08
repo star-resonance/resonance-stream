@@ -43,6 +43,8 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
 
     for action in actions {
         match action {
+            // Read by the guild relay, which is not built yet.
+            PipelineAction::OwnPlayer(_) => {}
             PipelineAction::UpdateBlockedMessage(chat) => {
                 let flagged = sink.with_history(|history| {
                     let row = history.get_mut(chat.pid)?;

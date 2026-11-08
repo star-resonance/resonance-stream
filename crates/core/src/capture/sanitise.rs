@@ -1191,7 +1191,7 @@ mod tests {
             })
             .filter_map(|action| match action {
                 PipelineAction::EmitNewMessage(chat) => Some(chat),
-                PipelineAction::UpdateBlockedMessage(_) => None,
+                PipelineAction::UpdateBlockedMessage(_) | PipelineAction::OwnPlayer(_) => None,
             })
             .collect()
     }
