@@ -192,7 +192,7 @@ fn apply(relay: &mut GuildRelay, event: Event) {
 mod tests {
     use super::*;
     use parking_lot::Mutex;
-    use resonance_types::Channel;
+    use resonance_types::{Channel, GuildRelayStatePayload};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::Arc;
@@ -284,6 +284,39 @@ mod tests {
             statuses.windows(2).all(|w| w[0] != w[1]),
             "only changes: {statuses:?}"
         );
+    }
+
+    #[test]
+    fn the_handle_keeps_the_last_status_and_its_seq_for_a_window_that_opens_late() {
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let seen = emitted.clone();
+        let handle = spawn(
+            GuildRelay::new(GuildRelayConfig {
+                enabled: true,
+                broker_url: "https://broker.test".to_string(),
+            }),
+            Fake::default(),
+            move |payload| seen.lock().push(payload),
+        );
+        let wait_for = |status: RelayStatus| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while handle.state().status != status && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+
+        wait_for(RelayStatus::WaitingForGuild);
+        let first = GuildRelayStatePayload {
+            status: RelayStatus::WaitingForGuild,
+            seq: 1,
+        };
+        assert_eq!(handle.state(), first);
+
+        handle.set_config(GuildRelayConfig::default());
+        wait_for(RelayStatus::Off);
+        let second = first.next(RelayStatus::Off);
+        assert_eq!(handle.state(), second);
+        assert_eq!(*emitted.lock(), [first, second]);
     }
 
     #[test]
