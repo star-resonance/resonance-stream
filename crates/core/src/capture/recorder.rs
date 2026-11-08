@@ -201,7 +201,7 @@ mod tests {
             let actions = pipeline.feed_network_packet(&pkt, |_| false, || 1, || {});
             assert!(actions
                 .iter()
-                .all(|a| !matches!(a, PipelineAction::EmitNewMessage(_))));
+                .all(|a| !matches!(a, PipelineAction::EmitNewMessage(_, _))));
         }
     }
 }

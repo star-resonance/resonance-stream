@@ -58,7 +58,7 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
                     sink.emit_update(&row);
                 }
             }
-            PipelineAction::EmitNewMessage(mut chat) => {
+            PipelineAction::EmitNewMessage(mut chat, _) => {
                 // Apply Romaji Swap
                 if contains_japanese(&chat.nickname) {
                     let nickname = chat.nickname.clone();
@@ -160,7 +160,7 @@ pub fn run_translation_job<S: Sink>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::PipelineAction;
+    use crate::capture::{Origin, PipelineAction};
     use crate::history::{ArchiveTarget, ChannelLimits, ChatHistory};
     use crate::text::{Dictionary, TranslationCache};
     use crate::workers::TranslationLedger;
@@ -244,7 +244,7 @@ mod tests {
     }
 
     fn new_line(pid: u64, message: &str) -> PipelineAction {
-        PipelineAction::EmitNewMessage(line(pid, "Bob", message))
+        PipelineAction::EmitNewMessage(line(pid, "Bob", message), Origin::Live)
     }
 
     #[test]
@@ -289,8 +289,8 @@ mod tests {
         dispatch(
             &mut sink,
             vec![
-                PipelineAction::EmitNewMessage(line(1, "たろう", "gg")),
-                PipelineAction::EmitNewMessage(line(2, "Bob", "gg")),
+                PipelineAction::EmitNewMessage(line(1, "たろう", "gg"), Origin::Live),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "gg"), Origin::Live),
             ],
         );
         let romaji = sink.history.get(1).unwrap().nickname_romaji.clone();
@@ -301,7 +301,10 @@ mod tests {
         sink.nicknames.insert("たろう".into(), "Taro".into());
         dispatch(
             &mut sink,
-            vec![PipelineAction::EmitNewMessage(line(3, "たろう", "gg"))],
+            vec![PipelineAction::EmitNewMessage(
+                line(3, "たろう", "gg"),
+                Origin::Live,
+            )],
         );
         assert_eq!(
             sink.history.get(3).unwrap().nickname_romaji.as_deref(),

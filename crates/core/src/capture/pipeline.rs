@@ -10,10 +10,21 @@ use std::collections::HashMap;
 
 pub enum PipelineAction {
     UpdateBlockedMessage(ChatMessage),
-    EmitNewMessage(ChatMessage),
+    EmitNewMessage(ChatMessage, Origin),
     /// Who is playing and in which guild, read from world state: sent when the
     /// first record arrives and again whenever it changes.
     OwnPlayer(OwnPlayer),
+}
+
+/// Where a new message came from. The guild relay sends only live lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// A live chat frame (`0x0002`).
+    Live,
+    /// The channel history the server sends at log-in or on a channel switch.
+    History,
+    /// Fed through `feed_chat` (`--replay-chat`), not captured.
+    Replay,
 }
 
 pub struct ChatPipeline {
@@ -99,9 +110,9 @@ impl ChatPipeline {
 
         // 4. Process the fully assembled frames
         for frame in frames {
-            let events = match frame.kind {
-                FrameKind::Live => parsing_pipeline(&frame.root),
-                FrameKind::History => history_pipeline(&frame.root),
+            let (events, origin) = match frame.kind {
+                FrameKind::Live => (parsing_pipeline(&frame.root), Origin::Live),
+                FrameKind::History => (history_pipeline(&frame.root), Origin::History),
                 FrameKind::State => {
                     if let Some(player) = own_player(&frame.root) {
                         if self.own_player != Some(player) {
@@ -115,7 +126,7 @@ impl ChatPipeline {
             for event in events {
                 // Guard clause for the event loop using let-else
                 let Port5003Event::Chat(chat) = event;
-                actions.extend(self.feed_chat(chat, &is_blocked, &mut assign_pid));
+                actions.extend(self.feed(chat, origin, &is_blocked, &mut assign_pid));
             }
         }
 
@@ -129,7 +140,17 @@ impl ChatPipeline {
     /// exactly like a captured one.
     pub fn feed_chat(
         &mut self,
+        chat: ChatMessage,
+        is_blocked: impl Fn(u64) -> bool,
+        assign_pid: impl FnMut() -> u64,
+    ) -> Option<PipelineAction> {
+        self.feed(chat, Origin::Replay, is_blocked, assign_pid)
+    }
+
+    fn feed(
+        &mut self,
         mut chat: ChatMessage,
+        origin: Origin,
         is_blocked: impl Fn(u64) -> bool,
         mut assign_pid: impl FnMut() -> u64,
     ) -> Option<PipelineAction> {
@@ -147,7 +168,7 @@ impl ChatPipeline {
             ProcessAction::EmitNewMessage => {
                 chat.pid = assign_pid();
                 self.processor.commit_new_message(&chat);
-                Some(PipelineAction::EmitNewMessage(chat))
+                Some(PipelineAction::EmitNewMessage(chat, origin))
             }
         }
     }
@@ -235,7 +256,7 @@ mod tests {
 
         // 4. Assert that the pipeline correctly extracted ALL fields!
         assert_eq!(actions.len(), 1);
-        if let PipelineAction::EmitNewMessage(chat) = &actions[0] {
+        if let PipelineAction::EmitNewMessage(chat, _) = &actions[0] {
             assert_eq!(chat.pid, 1, "Local UI PID should be 1");
             assert_eq!(
                 chat.sequence_id, 999,
@@ -287,7 +308,7 @@ mod tests {
                 || 1,
                 || {},
             ) {
-                if let PipelineAction::EmitNewMessage(chat) = action {
+                if let PipelineAction::EmitNewMessage(chat, _) = action {
                     got.push(chat.message);
                 }
             }
@@ -324,7 +345,7 @@ mod tests {
                 || {},
             );
             for action in actions {
-                if let PipelineAction::EmitNewMessage(chat) = action {
+                if let PipelineAction::EmitNewMessage(chat, _) = action {
                     out.push(chat);
                 }
             }
@@ -505,7 +526,7 @@ mod tests {
         );
         assert_eq!(lookups.get(), 1);
         match &actions[..] {
-            [PipelineAction::EmitNewMessage(chat)] => assert!(chat.is_blocked),
+            [PipelineAction::EmitNewMessage(chat, _)] => assert!(chat.is_blocked),
             _ => panic!("expected one new message"),
         }
     }
@@ -622,7 +643,7 @@ mod tests {
 
     fn emitted_chat(action: Option<PipelineAction>) -> ChatMessage {
         match action {
-            Some(PipelineAction::EmitNewMessage(chat)) => chat,
+            Some(PipelineAction::EmitNewMessage(chat, _)) => chat,
             Some(PipelineAction::UpdateBlockedMessage(_)) => {
                 panic!("expected a new message, got a block update")
             }

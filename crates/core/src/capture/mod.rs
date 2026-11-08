@@ -7,7 +7,7 @@ pub mod sanitise;
 mod stream_tracker;
 pub mod synth;
 
-pub use self::pipeline::{ChatPipeline, PipelineAction};
+pub use self::pipeline::{ChatPipeline, Origin, PipelineAction};
 pub use self::recorder::{
     decode_line, encode_line, is_capturable, replay, RawCaptureWriter, Recorded, DEFAULT_MAX_BYTES,
 };
