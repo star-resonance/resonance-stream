@@ -25,6 +25,11 @@ in `TRUSTED_UPDATE_KEYS` (`crates/core/src/update_signature.rs`) signed those by
 the feed's URL is not part of that. The private keys are never committed; the backup key stays offline.
 The prerelease's `latest.json` is the candidate-channel entry: try it with `--feed-url` on a test-env build.
 
+**Build-time settings come from repository variables.** `GUILD_RELAY_BROKER_URL` (the guild
+relay's default broker, `gh variable set`) is read with `option_env!` when the app compiles; `ci.yml`
+and `candidate.yml` pass it to every job. A build without it (`package.bat`, `cargo tauri dev`) has no
+default broker: set the variable in that shell to match a release.
+
 **Never publish a stable release by hand.** Every installed app reads
 `releases/latest/download/latest.json`; a hand-made release (no `latest.json`, another exe) or a
 candidate that is not a prerelease becomes "latest" and updates silently stop. `promote.yml` reads the
