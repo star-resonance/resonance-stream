@@ -64,8 +64,6 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
                 }
             }
             PipelineAction::EmitNewMessage(mut chat, origin) => {
-                // Before the romaji swap: the relay posts the name as the game shows it.
-                sink.relay_line(&chat, origin);
                 // Apply Romaji Swap
                 if contains_japanese(&chat.nickname) {
                     let nickname = chat.nickname.clone();
@@ -77,6 +75,8 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
                     });
                     chat.nickname_romaji = Some(romaji);
                 }
+                // After the romaji swap: the relay posts the name with its reading, as the app shows it.
+                sink.relay_line(&chat, origin);
 
                 // Dispatch Side Effects. (A duplicate never gets here: the pipeline
                 // dropped it, so it is neither translated nor archived.)

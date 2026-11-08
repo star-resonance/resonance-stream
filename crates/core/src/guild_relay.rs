@@ -37,6 +37,18 @@ pub const BACKOFF_START_MS: u64 = 2_000;
 /// The longest wait after errors, in ms.
 pub const BACKOFF_MAX_MS: u64 = 5 * 60 * 1_000;
 
+/// The name a line is posted under: `name(Reading)` as the app shows it when the name has a
+/// reading and both fit in `MAX_NICKNAME_CHARS`, else the name alone, cut to that length.
+fn relay_nickname(chat: &ChatMessage) -> String {
+    if let Some(reading) = &chat.nickname_romaji {
+        let with_reading = format!("{}({reading})", chat.nickname);
+        if with_reading.chars().count() <= MAX_NICKNAME_CHARS {
+            return with_reading;
+        }
+    }
+    chat.nickname.chars().take(MAX_NICKNAME_CHARS).collect()
+}
+
 /// One HTTP request for the relay service to send: `POST url` with a JSON `body`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayRequest {
@@ -173,7 +185,7 @@ impl GuildRelay {
         }
         self.queue.push_back(RelayLine {
             uid: chat.uid,
-            nickname: chat.nickname.chars().take(MAX_NICKNAME_CHARS).collect(),
+            nickname: relay_nickname(chat),
             text: chat.message.chars().take(MAX_TEXT_CHARS).collect(),
             timestamp: chat.timestamp,
         });
