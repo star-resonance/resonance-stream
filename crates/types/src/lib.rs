@@ -315,11 +315,10 @@ pub struct NetworkInterface {
     pub ip: String,
 }
 
-/// What the member sees in Settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the guild relay is doing, for Settings (`guild-relay-state`). On the wire it is the
+/// variant's name (`"Relaying"`); a name this enum does not know reads as `Off`.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum RelayStatus {
-    /// The switch is off.
-    Off,
     /// No broker URL, or one that is not `https://`.
     NoBroker,
     /// The player's guild is not known yet, or the player is in none.
@@ -334,6 +333,10 @@ pub enum RelayStatus {
     Rejected,
     /// The broker could not be reached or failed; waiting to try again.
     Retrying,
+    /// The switch is off. Also what any unknown status reads as.
+    #[default]
+    #[serde(other)]
+    Off,
 }
 
 // --- Settings with a fixed set of values ---

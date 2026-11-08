@@ -26,7 +26,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// Every backend -> UI event name the app emits (`resonance_types::ipc::event`). The bridge listens to each.
-pub const EVENT_NAMES: [&str; 13] = resonance_types::ipc::event::ALL;
+pub const EVENT_NAMES: [&str; 14] = resonance_types::ipc::event::ALL;
 
 /// Published by the app itself, not heard from the window: the update's state after every change
 /// (`{"state": "none" | "available:<version>" | "downloading" | "downloaded" | "error:<reason>"}`).
