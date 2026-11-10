@@ -4,6 +4,36 @@
 
 use resonance_types::ClickThroughHoldKey;
 
+/// Whether the window lets clicks through to the game: click-through is on
+/// and the hold key is not down.
+pub fn ignores_cursor(click_through: bool, hold_key_down: bool) -> bool {
+    click_through && !hold_key_down
+}
+
+/// The Windows virtual-key code of the hold key (either side's key counts);
+/// `None` for no key.
+pub fn virtual_key(key: ClickThroughHoldKey) -> Option<u16> {
+    match key {
+        ClickThroughHoldKey::Shift => Some(0x10), // VK_SHIFT
+        ClickThroughHoldKey::Ctrl => Some(0x11),  // VK_CONTROL
+        ClickThroughHoldKey::Alt => Some(0x12),   // VK_MENU
+        ClickThroughHoldKey::NoKey => None,
+    }
+}
+
+/// The tray's click-through item: on or off, and the key that lifts it
+/// while held.
+pub fn tray_label(click_through: bool, key: ClickThroughHoldKey) -> String {
+    let state = if click_through { "ON" } else { "OFF" };
+    match key {
+        ClickThroughHoldKey::NoKey => format!("클릭 관통 (Click-Through): {state}"),
+        key => format!(
+            "클릭 관통 (Click-Through): {state} · {} 누르는 동안 해제",
+            key.as_str()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
