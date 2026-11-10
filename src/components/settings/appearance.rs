@@ -1,6 +1,6 @@
 use crate::store::{AppActions, AppSignals};
 use crate::tauri_bridge::call;
-use crate::ui_types::{TabSwitchModifier, Theme};
+use crate::ui_types::{ClickThroughHoldKey, TabSwitchModifier, Theme};
 use leptos::prelude::*;
 use leptos::reactive::spawn_local;
 use resonance_types::ipc::{SetClickThrough, UpdateGlobalTabShortcut};
@@ -22,7 +22,12 @@ pub fn AppearanceSection() -> impl IntoView {
                 <label class="label cursor-pointer p-0 w-full justify-between gap-3">
                     <div class="flex flex-col">
                         <span class="label-text text-xs font-bold text-base-content/80">"클릭 관통 모드 (Click-Through)"</span>
-                        <span class="text-[9px] text-warning mt-1">"주의: 비활성화 하려면 시스템 트레이(우측 하단 아이콘)를 사용하세요."</span>
+                        <span class="text-[9px] text-warning mt-1">
+                            {move || match signals.config.click_through_hold_key.get() {
+                                ClickThroughHoldKey::NoKey => "주의: 비활성화 하려면 시스템 트레이(우측 하단 아이콘)를 사용하세요.".to_string(),
+                                key => format!("켜져 있는 동안 {} 키를 누르고 있으면 클릭할 수 있습니다. 끄기: 시스템 트레이(우측 하단 아이콘)", key.as_str()),
+                            }}
+                        </span>
                     </div>
                     <input type="checkbox" class="toggle toggle-success toggle-sm"
                         prop:checked=move || signals.ui.click_through.get()
@@ -38,6 +43,23 @@ pub fn AppearanceSection() -> impl IntoView {
                         }
                     />
                 </label>
+                // The key that, held, lifts click-through.
+                <div class="flex items-center justify-between gap-3 mt-2 pt-2 border-t border-base-content/5">
+                    <span class="text-[10px] font-bold text-base-content/70">"누르는 동안 클릭 관통 해제"</span>
+                    <select class="select select-xs select-bordered w-24 bg-base-100"
+                        on:change=move |ev| {
+                            signals.config.set_click_through_hold_key.set(ClickThroughHoldKey::from_name(&event_target_value(&ev)));
+                            actions.save_config.dispatch(());
+                        }
+                    >
+                        {ClickThroughHoldKey::ALL.iter().map(|&key| view! {
+                            <option value=key.as_str()
+                                selected=move || signals.config.click_through_hold_key.get() == key>
+                                {if key == ClickThroughHoldKey::NoKey { "사용 안 함" } else { key.as_str() }}
+                            </option>
+                        }).collect_view()}
+                    </select>
+                </div>
             </div>
 
             // --- DRAG TO SCROLL TOGGLE ---

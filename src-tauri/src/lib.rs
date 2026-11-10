@@ -7,6 +7,7 @@ use tauri::Manager;
 
 pub mod app_dirs;
 pub mod bridge;
+pub mod click_through;
 pub mod commands;
 pub mod config;
 pub mod events;
@@ -20,6 +21,7 @@ pub mod test_env;
 pub mod tray;
 pub mod window;
 
+pub use click_through::*;
 pub use commands::*;
 pub use config::*;
 pub use events::*;
@@ -50,6 +52,8 @@ pub fn run() {
         .build();
 
     let mut builder = tauri::Builder::default()
+        // Before the windows exist: `set_click_through` reads it.
+        .manage(click_through::ClickThroughState::default())
         .on_window_event(window::on_window_event)
         .setup(|app| {
             let handle = app.handle().clone();
@@ -161,6 +165,7 @@ pub fn run() {
                 Some(crate::io::start_data_factory_worker(handle.clone()));
 
             crate::tray::setup_tray(app)?;
+            crate::click_through::start_hold_key_poller(&handle);
 
             test_env::mark_ready(&handle);
             crate::services::sniffer::replay::start(handle.clone());
@@ -205,6 +210,7 @@ pub fn run() {
             open_browser,
             get_network_interfaces,
             set_click_through,
+            set_click_through_hold_key,
             grow_window,
             restore_window,
             update_tray_menu,

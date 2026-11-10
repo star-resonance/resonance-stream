@@ -14,7 +14,7 @@ pub fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let toggle_i = MenuItem::with_id(
         app,
         "toggle_click_through",
-        "클릭 관통 (Click-Through): OFF",
+        resonance_core::click_through::tray_label(false, Default::default()),
         true,
         None::<&str>,
     )?;
@@ -71,12 +71,9 @@ pub fn update_tray_menu(
     state: tauri::State<TrayMenuState>,
     click_through: bool,
     always_on_top: bool,
+    hold_key: resonance_types::ClickThroughHoldKey,
 ) {
-    let ct_text = if click_through {
-        "클릭 관통 (Click-Through): ON"
-    } else {
-        "클릭 관통 (Click-Through): OFF"
-    };
+    let ct_text = resonance_core::click_through::tray_label(click_through, hold_key);
     let _ = state.click_through.set_text(ct_text);
 
     let aot_text = if always_on_top {

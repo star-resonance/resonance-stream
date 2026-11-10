@@ -1,4 +1,6 @@
-use crate::chat_view::Tab;
+use crate::chat_view::{
+    active_shown, hidden_tabs, hide_tab, show_tab, shown_tabs, switch_shown, Tab,
+};
 use crate::components::icons::{self, icon};
 use crate::readability::{
     nav_bar_bg, tab_label_class, WINDOW_BUTTON, WINDOW_BUTTON_ACTIVE, WINDOW_BUTTON_CLOSE,
@@ -7,8 +9,8 @@ use crate::store::{AppActions, AppSignals};
 use crate::tauri_bridge::call;
 use crate::ui_types::{default_tab_limit, Channel, SystemLogLevel};
 use crate::utils::add_system_log;
-use leptos::ev::{click, keydown};
-use leptos::html::{Button, Div, Input};
+use leptos::ev::{click, keydown, mousedown};
+use leptos::html::{Button, Div, Input, Ul};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use resonance_types::ipc::{event, CloseWindow, OpenPopup, SetAlwaysOnTop};
@@ -53,6 +55,36 @@ pub fn NavBar() -> impl IntoView {
     let (is_search_open, set_is_search_open) = signal(false);
     let (is_controls_open, set_is_controls_open) = signal(false);
     let (context_menu_open, set_context_menu_open) = signal(None::<String>);
+    // The (+) button's list of hidden tabs.
+    let (add_menu_open, set_add_menu_open) = signal(false);
+
+    // Opens `tab` as `active_tab`, clearing what it had unread.
+    let open_tab = move |tab: Tab| {
+        signals.config.set_active_tab.set(tab.label().to_string());
+        signals.chat.set_unread_count.set(0);
+        let filters = signals.config.custom_tab_filters.get_untracked();
+        signals
+            .chat
+            .set_unread_counts
+            .update(|counts| tab.clear_unread(counts, &filters));
+        signals.chat.set_is_at_bottom.set(true);
+        signals.chat.set_is_system_at_bottom.set(true);
+        actions.save_config.dispatch(());
+    };
+
+    // A hidden active tab (hidden just now, or the system tab after debug
+    // mode goes off) gives way to the bar's first tab.
+    Effect::new(move |_| {
+        let active = signals.config.active_tab.get();
+        let shown = active_shown(
+            &active,
+            &signals.config.nav_tabs.get(),
+            signals.config.debug_mode.get(),
+        );
+        if shown.label() != active {
+            open_tab(shown);
+        }
+    });
 
     // The buttons both modes show -- cheat sheet, favorites, pin -- share their handlers.
     // Both open in a window of their own (`open_popup`).
@@ -80,6 +112,9 @@ pub fn NavBar() -> impl IntoView {
     let search_btn_ref = NodeRef::<Button>::new();
     let controls_container_ref = NodeRef::<Div>::new();
     let folder_btn_ref = NodeRef::<Button>::new();
+    // The open right-click menu (only one is open at a time).
+    let tab_menu_ref = NodeRef::<Ul>::new();
+    let add_menu_ref = NodeRef::<Div>::new();
 
     let toggle_search = move |_| {
         let new_state = !is_search_open.get_untracked();
@@ -113,7 +148,10 @@ pub fn NavBar() -> impl IntoView {
     Effect::new(move |_| {
         spawn_local(async move {
             let closure = Closure::wrap(Box::new(move |_: JsValue| {
-                let next_tab = Tab::switch_from(&signals.config.active_tab.get_untracked());
+                let next_tab = switch_shown(
+                    &signals.config.active_tab.get_untracked(),
+                    &signals.config.nav_tabs.get_untracked(),
+                );
 
                 signals
                     .config
@@ -139,15 +177,28 @@ pub fn NavBar() -> impl IntoView {
     // ==========================================
     // CLICK-OUTSIDE TO CLOSE LISTENERS
     // ==========================================
+    // The right-click menu closes on a press anywhere outside it. `mousedown`,
+    // not `click`: the tab bar and the title bar are drag regions, and a press
+    // there starts a window drag that never becomes a click.
+    // The (+) list closes the same way.
+    crate::utils::window_listener(mousedown, move |ev| {
+        let target = event_target::<Node>(&ev);
+        let outside =
+            |menu: Option<web_sys::Element>| !menu.is_some_and(|menu| menu.contains(Some(&target)));
+        if context_menu_open.get_untracked().is_some()
+            && outside(tab_menu_ref.get().map(Into::into))
+        {
+            set_context_menu_open.set(None);
+        }
+        if add_menu_open.get_untracked() && outside(add_menu_ref.get().map(Into::into)) {
+            set_add_menu_open.set(false);
+        }
+    });
+
     crate::utils::window_listener(click, move |ev| {
         let target = event_target::<Node>(&ev);
 
-        // 1. Close Right-Click Menu
-        if context_menu_open.get_untracked().is_some() {
-            set_context_menu_open.set(None);
-        }
-
-        // 2. Close Search
+        // 1. Close Search
         if is_search_open.get_untracked() {
             let container = search_container_ref.get();
             let btn = search_btn_ref.get();
@@ -160,7 +211,7 @@ pub fn NavBar() -> impl IntoView {
             }
         }
 
-        // 3. Close Controls
+        // 2. Close Controls
         if is_controls_open.get_untracked() {
             let container = controls_container_ref.get();
             let btn = folder_btn_ref.get();
@@ -182,7 +233,7 @@ pub fn NavBar() -> impl IntoView {
             // --- LEFT: DaisyUI Tabs ---
             <div class="flex items-center gap-0.5 bg-base-content/5 p-0.5 rounded-lg min-w-0">
                 {move || {
-                    Tab::nav(signals.config.debug_mode.get()).into_iter().map(|tab| {
+                    shown_tabs(&signals.config.nav_tabs.get(), signals.config.debug_mode.get()).into_iter().map(|tab| {
                         let full = tab.label();
                         let db_key = tab.key();
                                                 let has_archive_setting = tab.has_archive_setting();
@@ -210,18 +261,10 @@ pub fn NavBar() -> impl IntoView {
                                         "flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs whitespace-nowrap transition-colors {}",
                                         if is_active() { "bg-base-100 shadow-sm font-bold text-base-content" } else { "font-medium text-base-content/60 hover:text-base-content hover:bg-base-content/5" }
                                     )
-                                    on:click=move |_| {
-                                        signals.config.set_active_tab.set(full.to_string());
-                                        signals.chat.set_unread_count.set(0);
-                                        let filters = signals.config.custom_tab_filters.get_untracked();
-                                        signals.chat.set_unread_counts.update(|counts| tab.clear_unread(counts, &filters));
-                                        signals.chat.set_is_at_bottom.set(true);
-                                        signals.chat.set_is_system_at_bottom.set(true);
-                                        actions.save_config.dispatch(());
-                                    }
+                                    on:click=move |_| open_tab(tab)
                                     on:contextmenu=move |ev| {
                                         ev.prevent_default();
-                                        if !matches!(tab, Tab::System | Tab::All) {
+                                        if tab != Tab::System {
                                             set_context_menu_open.set(Some(db_key_click.clone()));
                                         }
                                     }
@@ -238,6 +281,7 @@ pub fn NavBar() -> impl IntoView {
                                 // 2. THE SETTINGS DROPDOWN MENU
                                 <Show when=move || context_menu_open.get() == Some(db_key_drop.clone())>
                                     <ul
+                                        node_ref=tab_menu_ref
                                         class="absolute top-full left-0 z-[100] menu p-3 shadow-2xl bg-base-300 rounded-box w-64 border border-base-content/10 mt-1 space-y-3 cursor-default animate-in fade-in slide-in-from-top-2 duration-100"
                                         on:click=move |ev| ev.stop_propagation() // Prevent clicks from closing the menu
                                     >
@@ -272,8 +316,8 @@ pub fn NavBar() -> impl IntoView {
                                             </div>
                                         </Show>
 
-                                        // --- MAX RAM LIMIT INPUT (Hidden for Custom since it aggregates dynamically) ---
-                                        <Show when=move || tab != Tab::Custom>
+                                        // --- MAX RAM LIMIT INPUT (Hidden for All and Custom since they aggregate dynamically) ---
+                                        <Show when=move || matches!(tab, Tab::Channel(_))>
                                             <div class="flex items-center justify-between">
                                                 <span class="text-xs font-bold text-base-content/80">"최대 메시지 유지:"</span>
                                                 <input type="number" class="input input-xs input-bordered w-16 text-right font-mono bg-base-200 focus:border-success"
@@ -311,12 +355,60 @@ pub fn NavBar() -> impl IntoView {
                                                 </label>
                                             </div>
                                         </Show>
+
+                                        // --- HIDE THE TAB (the (+) button brings it back) ---
+                                        <button
+                                            class="btn btn-ghost btn-xs w-full justify-start text-error disabled:text-base-content/30"
+                                            disabled=move || shown_tabs(&signals.config.nav_tabs.get(), false).len() <= 1
+                                            title=move || if shown_tabs(&signals.config.nav_tabs.get(), false).len() <= 1 { "마지막 탭은 숨길 수 없습니다" } else { "＋ 버튼으로 다시 추가할 수 있습니다" }
+                                            on:click=move |_| {
+                                                let mut hidden = false;
+                                                signals.config.set_nav_tabs.update(|list| hidden = hide_tab(list, tab));
+                                                if hidden {
+                                                    set_context_menu_open.set(None);
+                                                    actions.save_config.dispatch(());
+                                                }
+                                            }
+                                        >
+                                            "탭 숨기기"
+                                        </button>
                                     </ul>
                                 </Show>
                             </div>
                         }
                     }).collect_view()
                 }}
+
+                // --- (+): add a hidden tab back ---
+                <div class="relative flex items-center h-full" node_ref=add_menu_ref>
+                    <button
+                        class="h-7 w-7 rounded-md text-sm font-bold text-base-content/50 hover:text-base-content hover:bg-base-content/5 disabled:opacity-30 disabled:hover:bg-transparent"
+                        title=move || if hidden_tabs(&signals.config.nav_tabs.get()).is_empty() { "모든 탭이 표시되어 있습니다" } else { "탭 추가" }
+                        disabled=move || hidden_tabs(&signals.config.nav_tabs.get()).is_empty()
+                        on:click=move |_| set_add_menu_open.update(|open| *open = !*open)
+                    >
+                        "＋"
+                    </button>
+                    <Show when=move || add_menu_open.get()>
+                        <ul class="absolute top-full left-0 z-[100] menu menu-xs p-1.5 shadow-2xl bg-base-300 rounded-box w-36 border border-base-content/10 mt-1 animate-in fade-in slide-in-from-top-2 duration-100">
+                            <li class="menu-title text-[10px] px-2 py-1">"탭 추가"</li>
+                            {move || hidden_tabs(&signals.config.nav_tabs.get()).into_iter().map(|tab| view! {
+                                <li>
+                                    <button class="flex items-center gap-2 text-xs"
+                                        on:click=move |_| {
+                                            signals.config.set_nav_tabs.update(|list| show_tab(list, tab));
+                                            set_add_menu_open.set(false);
+                                            open_tab(tab);
+                                        }
+                                    >
+                                        <span class=format!("size-2 rounded-full shrink-0 {}", tab.dot_class())></span>
+                                        {tab.label()}
+                                    </button>
+                                </li>
+                            }).collect_view()}
+                        </ul>
+                    </Show>
+                </div>
             </div>
 
             // ==========================================

@@ -145,6 +145,97 @@ impl Tab {
     }
 }
 
+/// The tabs the user may show or hide, in the bar's order: every tab but
+/// the system tab (debug mode decides that one).
+const EDITABLE_TABS: [Tab; 7] = [
+    Tab::All,
+    Tab::Custom,
+    Tab::Channel(Channel::World),
+    Tab::Channel(Channel::Guild),
+    Tab::Channel(Channel::Party),
+    Tab::Channel(Channel::Local),
+    Tab::Channel(Channel::Beginner),
+];
+
+fn is_chosen(nav_tabs: &[String], tab: Tab) -> bool {
+    nav_tabs.iter().any(|label| label == tab.label())
+}
+
+/// The tabs the nav bar shows: the chosen ones (`nav_tabs`, by label) in the
+/// bar's order, then the system tab in debug mode. None chosen (a hand-edited
+/// file): every tab.
+pub fn shown_tabs(nav_tabs: &[String], debug_mode: bool) -> Vec<Tab> {
+    let mut tabs: Vec<Tab> = EDITABLE_TABS
+        .into_iter()
+        .filter(|&tab| is_chosen(nav_tabs, tab))
+        .collect();
+    if tabs.is_empty() {
+        tabs = EDITABLE_TABS.to_vec();
+    }
+    if debug_mode {
+        tabs.push(Tab::System);
+    }
+    tabs
+}
+
+/// The tabs the (+) button offers: the ones the bar does not show.
+pub fn hidden_tabs(nav_tabs: &[String]) -> Vec<Tab> {
+    let shown = shown_tabs(nav_tabs, false);
+    EDITABLE_TABS
+        .into_iter()
+        .filter(|tab| !shown.contains(tab))
+        .collect()
+}
+
+pub fn show_tab(nav_tabs: &mut Vec<String>, tab: Tab) {
+    if tab != Tab::System && !is_chosen(nav_tabs, tab) {
+        nav_tabs.push(tab.label().to_string());
+    }
+}
+
+/// Hides `tab`; false (and nothing changes) for the last shown tab or the
+/// system tab.
+pub fn hide_tab(nav_tabs: &mut Vec<String>, tab: Tab) -> bool {
+    let shown = shown_tabs(nav_tabs, false);
+    if tab == Tab::System || !shown.contains(&tab) || shown.len() <= 1 {
+        return false;
+    }
+    // Store what is shown, so an empty or odd list becomes a real one.
+    *nav_tabs = shown
+        .into_iter()
+        .filter(|&t| t != tab)
+        .map(|t| t.label().to_string())
+        .collect();
+    true
+}
+
+/// The tab to show for the stored active tab `active`: itself while the bar
+/// shows it, else the bar's first tab.
+pub fn active_shown(active: &str, nav_tabs: &[String], debug_mode: bool) -> Tab {
+    let shown = shown_tabs(nav_tabs, debug_mode);
+    Tab::parse(active)
+        .filter(|tab| shown.contains(tab))
+        .unwrap_or(shown[0])
+}
+
+/// The tab the tab-switch shortcut goes to from `current`: the next shown
+/// tab of [`Tab::SWITCH_ORDER`], its first one from a tab outside it; the
+/// bar's first tab when it shows none of them.
+pub fn switch_shown(current: &str, nav_tabs: &[String]) -> Tab {
+    let shown = shown_tabs(nav_tabs, false);
+    let cycle: Vec<Tab> = Tab::SWITCH_ORDER
+        .into_iter()
+        .filter(|tab| shown.contains(tab))
+        .collect();
+    if cycle.is_empty() {
+        return shown[0];
+    }
+    match cycle.iter().position(|tab| tab.label() == current) {
+        Some(i) => cycle[(i + 1) % cycle.len()],
+        None => cycle[0],
+    }
+}
+
 /// How many messages a tab keeps. Channel tabs have their own limit
 /// (right-click menu; unset: `default_tab_limit`). The all-tab and the
 /// custom tab have no input of their own: the all-tab holds as many as all
@@ -659,6 +750,98 @@ mod tests {
         for outside in ["전체", "시스템", "nonsense", ""] {
             assert_eq!(Tab::switch_from(outside), Tab::Custom, "{outside:?}");
         }
+    }
+
+    fn labels(tabs: &[Tab]) -> Vec<&'static str> {
+        tabs.iter().map(|t| t.label()).collect()
+    }
+
+    fn nav(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_bar_shows_the_chosen_tabs_in_the_bars_order() {
+        let defaults = resonance_types::default_nav_tabs();
+        assert_eq!(shown_tabs(&defaults, false), Tab::nav(false));
+        assert_eq!(shown_tabs(&defaults, true), Tab::nav(true));
+        // Stored order and unknown labels do not matter; the system tab is debug-only.
+        let chosen = nav(&["파티", "nonsense", "월드", "시스템"]);
+        assert_eq!(labels(&shown_tabs(&chosen, false)), ["월드", "파티"]);
+        assert_eq!(
+            labels(&shown_tabs(&chosen, true)),
+            ["월드", "파티", "시스템"]
+        );
+        // Nothing (a hand-edited file): every tab, never an empty bar.
+        assert_eq!(shown_tabs(&[], false), Tab::nav(false));
+    }
+
+    #[test]
+    fn the_plus_button_lists_the_hidden_tabs_and_adds_one_back() {
+        let mut chosen = nav(&["월드", "길드", "파티"]);
+        assert_eq!(
+            labels(&hidden_tabs(&chosen)),
+            ["전체", "커스텀", "로컬", "초보자"]
+        );
+        show_tab(&mut chosen, Tab::Channel(Channel::Local));
+        show_tab(&mut chosen, Tab::Channel(Channel::Local));
+        assert_eq!(
+            labels(&shown_tabs(&chosen, false)),
+            ["월드", "길드", "파티", "로컬"]
+        );
+        assert!(hidden_tabs(&resonance_types::default_nav_tabs()).is_empty());
+    }
+
+    #[test]
+    fn a_tab_hides_unless_it_is_the_last_one() {
+        let mut chosen = nav(&["전체", "길드"]);
+        assert!(hide_tab(&mut chosen, Tab::All));
+        assert_eq!(labels(&shown_tabs(&chosen, false)), ["길드"]);
+        assert!(!hide_tab(&mut chosen, Tab::Channel(Channel::Guild)));
+        assert_eq!(labels(&shown_tabs(&chosen, false)), ["길드"]);
+        // The system tab is not the user's to hide.
+        assert!(!hide_tab(&mut chosen, Tab::System));
+    }
+
+    #[test]
+    fn a_hidden_active_tab_gives_way_to_the_first_shown_one() {
+        let chosen = nav(&["길드", "파티"]);
+        assert_eq!(
+            active_shown("파티", &chosen, false),
+            Tab::Channel(Channel::Party)
+        );
+        assert_eq!(
+            active_shown("전체", &chosen, false),
+            Tab::Channel(Channel::Guild)
+        );
+        assert_eq!(
+            active_shown("시스템", &chosen, false),
+            Tab::Channel(Channel::Guild)
+        );
+        assert_eq!(active_shown("시스템", &chosen, true), Tab::System);
+    }
+
+    #[test]
+    fn the_tab_switch_shortcut_cycles_only_the_shown_tabs() {
+        let chosen = nav(&["전체", "길드", "파티", "커스텀"]);
+        assert_eq!(
+            switch_shown("커스텀", &chosen),
+            Tab::Channel(Channel::Guild)
+        );
+        assert_eq!(switch_shown("길드", &chosen), Tab::Channel(Channel::Party));
+        assert_eq!(switch_shown("파티", &chosen), Tab::Custom);
+        // From a tab outside the cycle (the all-tab, a hidden one): its first.
+        assert_eq!(switch_shown("전체", &chosen), Tab::Custom);
+        assert_eq!(switch_shown("월드", &chosen), Tab::Custom);
+        // Only the all-tab shown: it stays.
+        assert_eq!(switch_shown("전체", &nav(&["전체"])), Tab::All);
+        // The default bar cycles as it always did.
+        let defaults = resonance_types::default_nav_tabs();
+        assert_eq!(
+            switch_shown("초보자", &defaults),
+            Tab::switch_from("초보자")
+        );
+        assert_eq!(switch_shown("전체", &defaults), Tab::Custom);
     }
 
     #[test]

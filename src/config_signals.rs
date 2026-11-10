@@ -6,9 +6,9 @@
 
 use crate::favorites::{clean_tabs, normalize};
 use crate::ui_types::{
-    default_catch_up_limit, default_favorite_messages, AppConfig, Channel, ComputeMode,
-    FavoriteMessage, FavoriteTab, LogLevel, TabSwitchModifier, Theme, Tier, TranslationView,
-    ALL_TAB,
+    default_catch_up_limit, default_favorite_messages, AppConfig, Channel, ClickThroughHoldKey,
+    ComputeMode, FavoriteMessage, FavoriteTab, LogLevel, TabSwitchModifier, Theme, Tier,
+    TranslationView, ALL_TAB,
 };
 use leptos::prelude::{signal, GetUntracked, ReadSignal, Set, WriteSignal};
 use resonance_types::FavoritesState;
@@ -96,6 +96,10 @@ pub struct ConfigSignals {
     pub set_raw_capture: WriteSignal<bool>,
     pub guild_relay: ReadSignal<GuildRelayConfig>,
     pub set_guild_relay: WriteSignal<GuildRelayConfig>,
+    pub nav_tabs: ReadSignal<Vec<String>>,
+    pub set_nav_tabs: WriteSignal<Vec<String>>,
+    pub click_through_hold_key: ReadSignal<ClickThroughHoldKey>,
+    pub set_click_through_hold_key: WriteSignal<ClickThroughHoldKey>,
 }
 
 impl ConfigSignals {
@@ -144,6 +148,9 @@ impl ConfigSignals {
         let (chat_log_retention_days, set_chat_log_retention_days) = signal::<u32>(0);
         let (raw_capture, set_raw_capture) = signal::<bool>(false);
         let (guild_relay, set_guild_relay) = signal(GuildRelayConfig::default());
+        let (nav_tabs, set_nav_tabs) = signal::<Vec<String>>(resonance_types::default_nav_tabs());
+        let (click_through_hold_key, set_click_through_hold_key) =
+            signal::<ClickThroughHoldKey>(ClickThroughHoldKey::default());
         ConfigSignals {
             init_done,
             set_init_done,
@@ -217,6 +224,10 @@ impl ConfigSignals {
             set_raw_capture,
             guild_relay,
             set_guild_relay,
+            nav_tabs,
+            set_nav_tabs,
+            click_through_hold_key,
+            set_click_through_hold_key,
         }
     }
 
@@ -259,6 +270,8 @@ impl ConfigSignals {
             chat_log_retention_days: self.chat_log_retention_days.get_untracked(),
             raw_capture: self.raw_capture.get_untracked(),
             guild_relay: self.guild_relay.get_untracked(),
+            nav_tabs: self.nav_tabs.get_untracked(),
+            click_through_hold_key: self.click_through_hold_key.get_untracked(),
         }
     }
 
@@ -320,6 +333,8 @@ impl ConfigSignals {
             chat_log_retention_days,
             raw_capture,
             guild_relay,
+            nav_tabs,
+            click_through_hold_key,
         } = config;
         self.set_init_done.set(init_done);
         self.set_use_translation.set(use_translation);
@@ -374,6 +389,8 @@ impl ConfigSignals {
             .set(chat_log_retention_days);
         self.set_raw_capture.set(raw_capture);
         self.set_guild_relay.set(guild_relay);
+        self.set_nav_tabs.set(nav_tabs);
+        self.set_click_through_hold_key.set(click_through_hold_key);
     }
 }
 
@@ -428,6 +445,8 @@ mod tests {
                 enabled: true,
                 broker_url: "https://relay.example".into(),
             },
+            nav_tabs: vec!["길드".into(), "파티".into()],
+            click_through_hold_key: ClickThroughHoldKey::Shift,
         }
     }
 
