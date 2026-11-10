@@ -13,12 +13,12 @@
   "license": "MIT",
   "type": "commonjs",
   "devDependencies": {
-    "autoprefixer": "^10.6.1",
-    "daisyui": "^5.7.47",
-    "postcss": "^8.5.29",
+    "autoprefixer": "^10.6.2",
+    "daisyui": "^5.7.50",
+    "postcss": "^8.5.32",
     "tailwindcss": "^4.2.1"
   },
   "dependencies": {
-    "@tailwindcss/cli": "^4.3.3"
+    "@tailwindcss/cli": "^4.3.5"
   }
 }
