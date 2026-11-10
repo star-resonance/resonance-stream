@@ -7,8 +7,9 @@
 //! edit) takes its default instead of failing the whole file.
 
 use crate::{
-    default_catch_up_limit, default_favorite_messages, Channel, ComputeMode, FavoriteMessage,
-    FavoriteTab, LogLevel, TabSwitchModifier, Theme, Tier, TranslationView, ALL_TAB,
+    default_catch_up_limit, default_favorite_messages, default_nav_tabs, Channel,
+    ClickThroughHoldKey, ComputeMode, FavoriteMessage, FavoriteTab, LogLevel, TabSwitchModifier,
+    Theme, Tier, TranslationView, ALL_TAB,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -84,6 +85,13 @@ pub struct AppConfig {
     /// Sending guild chat to the guild's Discord channel through a broker (#367).
     #[serde(default)]
     pub guild_relay: GuildRelayConfig,
+    /// The tabs the nav bar shows, by label, in the bar's order; the (+)
+    /// button adds a hidden one back, the right-click menu hides one.
+    #[serde(default = "default_nav_tabs")]
+    pub nav_tabs: Vec<String>,
+    /// Held down while click-through is on, the overlay takes clicks.
+    #[serde(default)]
+    pub click_through_hold_key: ClickThroughHoldKey,
 }
 
 /// The guild relay's settings. Off until the member turns it on (decided in #367).
@@ -142,6 +150,8 @@ impl Default for AppConfig {
             chat_log_retention_days: 0,
             raw_capture: false,
             guild_relay: GuildRelayConfig::default(),
+            nav_tabs: default_nav_tabs(),
+            click_through_hold_key: ClickThroughHoldKey::default(),
         }
     }
 }

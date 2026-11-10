@@ -463,6 +463,13 @@ string_enum! {
     TabSwitchModifier { Ctrl => "Ctrl", Alt => "Alt", Shift => "Shift", NoModifier => "None" } default Ctrl
 }
 
+string_enum! {
+    /// The key that, held down, turns click-through off until it is let go
+    /// (the overlay takes clicks meanwhile). `NoKey` (stored as `"None"`):
+    /// no such key. Alt by default: the game shows the mouse cursor while it is held.
+    ClickThroughHoldKey { Alt => "Alt", Ctrl => "Ctrl", Shift => "Shift", NoKey => "None" } default Alt
+}
+
 impl SystemLogLevel {
     /// [`from_name`](Self::from_name), also taking `"warning"` (what the
     /// UI's `ui_system_message` command has always accepted).
@@ -818,6 +825,17 @@ pub fn default_tab_limit(key: &str) -> usize {
 
 /// `tab_limits` of a new config: every channel's default, and the all-tab and custom tab
 /// (which have no input of their own) at 1000.
+/// The tabs the nav bar shows when the user has not changed them, by the
+/// label `config.json` stores them under (as `active_tab`): every tab but
+/// the system tab, in the bar's order.
+pub fn default_nav_tabs() -> Vec<String> {
+    [ALL_TAB, CUSTOM_TAB]
+        .into_iter()
+        .chain(Channel::ALL.map(Channel::label))
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn default_tab_limits() -> HashMap<String, usize> {
     Channel::ALL
         .into_iter()
