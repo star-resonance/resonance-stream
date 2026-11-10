@@ -145,6 +145,97 @@ impl Tab {
     }
 }
 
+/// The tabs the user may show or hide, in the bar's order: every tab but
+/// the system tab (debug mode decides that one).
+const EDITABLE_TABS: [Tab; 7] = [
+    Tab::All,
+    Tab::Custom,
+    Tab::Channel(Channel::World),
+    Tab::Channel(Channel::Guild),
+    Tab::Channel(Channel::Party),
+    Tab::Channel(Channel::Local),
+    Tab::Channel(Channel::Beginner),
+];
+
+fn is_chosen(nav_tabs: &[String], tab: Tab) -> bool {
+    nav_tabs.iter().any(|label| label == tab.label())
+}
+
+/// The tabs the nav bar shows: the chosen ones (`nav_tabs`, by label) in the
+/// bar's order, then the system tab in debug mode. None chosen (a hand-edited
+/// file): every tab.
+pub fn shown_tabs(nav_tabs: &[String], debug_mode: bool) -> Vec<Tab> {
+    let mut tabs: Vec<Tab> = EDITABLE_TABS
+        .into_iter()
+        .filter(|&tab| is_chosen(nav_tabs, tab))
+        .collect();
+    if tabs.is_empty() {
+        tabs = EDITABLE_TABS.to_vec();
+    }
+    if debug_mode {
+        tabs.push(Tab::System);
+    }
+    tabs
+}
+
+/// The tabs the (+) button offers: the ones the bar does not show.
+pub fn hidden_tabs(nav_tabs: &[String]) -> Vec<Tab> {
+    let shown = shown_tabs(nav_tabs, false);
+    EDITABLE_TABS
+        .into_iter()
+        .filter(|tab| !shown.contains(tab))
+        .collect()
+}
+
+pub fn show_tab(nav_tabs: &mut Vec<String>, tab: Tab) {
+    if tab != Tab::System && !is_chosen(nav_tabs, tab) {
+        nav_tabs.push(tab.label().to_string());
+    }
+}
+
+/// Hides `tab`; false (and nothing changes) for the last shown tab or the
+/// system tab.
+pub fn hide_tab(nav_tabs: &mut Vec<String>, tab: Tab) -> bool {
+    let shown = shown_tabs(nav_tabs, false);
+    if tab == Tab::System || !shown.contains(&tab) || shown.len() <= 1 {
+        return false;
+    }
+    // Store what is shown, so an empty or odd list becomes a real one.
+    *nav_tabs = shown
+        .into_iter()
+        .filter(|&t| t != tab)
+        .map(|t| t.label().to_string())
+        .collect();
+    true
+}
+
+/// The tab to show for the stored active tab `active`: itself while the bar
+/// shows it, else the bar's first tab.
+pub fn active_shown(active: &str, nav_tabs: &[String], debug_mode: bool) -> Tab {
+    let shown = shown_tabs(nav_tabs, debug_mode);
+    Tab::parse(active)
+        .filter(|tab| shown.contains(tab))
+        .unwrap_or(shown[0])
+}
+
+/// The tab the tab-switch shortcut goes to from `current`: the next shown
+/// tab of [`Tab::SWITCH_ORDER`], its first one from a tab outside it; the
+/// bar's first tab when it shows none of them.
+pub fn switch_shown(current: &str, nav_tabs: &[String]) -> Tab {
+    let shown = shown_tabs(nav_tabs, false);
+    let cycle: Vec<Tab> = Tab::SWITCH_ORDER
+        .into_iter()
+        .filter(|tab| shown.contains(tab))
+        .collect();
+    if cycle.is_empty() {
+        return shown[0];
+    }
+    match cycle.iter().position(|tab| tab.label() == current) {
+        Some(i) => cycle[(i + 1) % cycle.len()],
+        None => cycle[0],
+    }
+}
+
 /// How many messages a tab keeps. Channel tabs have their own limit
 /// (right-click menu; unset: `default_tab_limit`). The all-tab and the
 /// custom tab have no input of their own: the all-tab holds as many as all
