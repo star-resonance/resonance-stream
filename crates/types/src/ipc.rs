@@ -196,9 +196,16 @@ mod tests {
         assert_eq!(
             wire(&UpdateTrayMenu {
                 click_through: true,
-                always_on_top: false
+                always_on_top: false,
+                hold_key: crate::ClickThroughHoldKey::Ctrl,
             }),
-            json!({ "clickThrough": true, "alwaysOnTop": false })
+            json!({ "clickThrough": true, "alwaysOnTop": false, "holdKey": "Ctrl" })
+        );
+        assert_eq!(
+            wire(&SetClickThroughHoldKey {
+                key: crate::ClickThroughHoldKey::NoKey
+            }),
+            json!({ "key": "None" })
         );
         assert_eq!(
             wire(&BlockUser {
@@ -310,7 +317,7 @@ mod tests {
     fn the_backend_registers_exactly_the_commands_listed_here() {
         let listed: BTreeSet<String> = COMMAND_NAMES.iter().map(|n| n.to_string()).collect();
         let registered = registered_commands();
-        assert_eq!(registered.len(), 45, "{registered:?}");
+        assert_eq!(registered.len(), 46, "{registered:?}");
         assert_eq!(listed, registered);
     }
 
