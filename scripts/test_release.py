@@ -152,6 +152,14 @@ class Pure(unittest.TestCase):
             with self.subTest(b=b), self.assertRaisesRegex(r.ReleaseError, r"not rc/<rc tag>"):
                 r.rc_of_branch(b)
 
+    # Git cannot hold a branch rc beside rc/...: the old flow's rc branch made Candidate run
+    # 42508857371 fail after it had tagged and released, so Candidate refuses it before building.
+    def test_rc_branches_can_be_made_refuses_a_branch_named_rc(self):
+        r.rc_branches_can_be_made(["main", "rc/v0.6.3-rc.1", "status", "claude/rc"])
+        r.rc_branches_can_be_made([])
+        with self.assertRaisesRegex(r.ReleaseError, r"a branch named rc .*rc/"):
+            r.rc_branches_can_be_made(["main", "rc"])
+
     def test_superseded_branches_are_the_same_versions_lower_rc_branches(self):
         branches = ["rc/v1.2.0-rc.1", "rc/v1.2.0-rc.2", "rc/v1.1.0-rc.4", "candidate/0123456789ab", "rc/v1.2.0-rc.3"]
         self.assertEqual(r.superseded_branches(branches, "v1.2.0-rc.3"), ["rc/v1.2.0-rc.1", "rc/v1.2.0-rc.2"])
@@ -306,6 +314,12 @@ class Repo(unittest.TestCase):
         self.assertEqual(self.ok("superseded", "v0.6.3-rc.2"), "rc/v0.6.3-rc.1")
         self.assertEqual(self.ok("released", "v0.6.3"), "rc/v0.6.2-rc.1 rc/v0.6.3-rc.1")
 
+    def test_rc_free_reads_the_origins_branches(self):
+        git(self.dev, "push", "-q", "origin", "HEAD:refs/heads/claude/rc")
+        self.ok("rc-free")
+        git(self.dev, "push", "-q", "origin", "HEAD:refs/heads/rc")
+        self.refuses(r"a branch named rc", "rc-free")
+
     def test_the_commands_of_the_old_flow_are_gone(self):
         for cmd in ["prepare", "tag"]:
             self.refuses(r"usage: release\.py next \| rc <tag> \| latest \|", cmd, "x")
@@ -323,6 +337,11 @@ class Workflows(unittest.TestCase):
         self.assertNotIn("refs/heads/candidate/", text)
         self.assertNotIn("check-candidate", text)
         self.assertNotIn("delete the candidate branch", text)
+
+    def test_candidate_refuses_a_branch_named_rc_before_it_builds(self):
+        text = self.text("candidate.yml")
+        check_job = text[text.index("\n  check:"):text.index("\n  build:")]
+        self.assertIn("python3 scripts/release.py rc-free", check_job)
 
     def test_candidate_stamps_the_final_version_and_builds_from_the_stamped_tree(self):
         text = self.text("candidate.yml")

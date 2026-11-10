@@ -22,6 +22,7 @@ agent-config's release.cjs, less its date tag and AGENTS.md stamp.
                     Cargo.toml has that version; prints the final tag
   rc-branch B       the rc tag of a branch rc/<rc tag>, which Candidate makes at the tag's
                     commit for Promote to run from (the GitHub app lists no tags)
+  rc-free           refuses when origin has a branch named rc: git cannot hold it beside rc/...
   superseded R      origin's rc branches of R's version below R, space-separated
   released T        origin's rc branches of version T and every older one, space-separated
 """
@@ -36,7 +37,7 @@ CANDIDATE = re.compile(r"^(v\d+\.\d+\.\d+)-rc\.(\d+)$")
 RC_BRANCH = re.compile(r"^rc/(v\d+\.\d+\.\d+-rc\.\d+)$")
 USAGE = (
     "usage: release.py next | rc <tag> | latest | main-only <ref> | stamp <tag> | "
-    "checks-passed <run id> | check-promote <rc tag> | rc-branch <branch> | superseded <rc tag> | released <tag>"
+    "checks-passed <run id> | check-promote <rc tag> | rc-branch <branch> | rc-free | superseded <rc tag> | released <tag>"
 )
 
 # The jobs of candidate.yml and candidate-guard.yml: their check runs on a main commit, from this
@@ -150,6 +151,11 @@ def rc_branches(branches):
     return [(b, CANDIDATE.match(m.group(1))) for b in branches if (m := RC_BRANCH.match(b))]
 
 
+def rc_branches_can_be_made(branches):
+    if "rc" in branches:
+        raise ReleaseError("origin has a branch named rc that keeps git from making rc/<rc tag>: delete it first")
+
+
 def superseded_branches(branches, rc):
     final, n = CANDIDATE.match(rc).groups()
     return [b for b, m in rc_branches(branches) if m.group(1) == final and int(m.group(2)) < int(n)]
@@ -257,6 +263,8 @@ def main(argv):
             print(check_promote(arg, release_tags(), version_of(git("show", f"{arg}^{{commit}}:Cargo.toml"))))
         elif cmd == "rc-branch":
             print(rc_of_branch(arg))
+        elif cmd == "rc-free":
+            rc_branches_can_be_made(origin_branches("rc"))
         elif cmd == "superseded":
             print(" ".join(superseded_branches(origin_branches("rc/*"), rc_of_branch(f"rc/{arg}"))))
         elif cmd == "released":
