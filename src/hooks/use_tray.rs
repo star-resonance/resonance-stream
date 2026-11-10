@@ -6,7 +6,9 @@ use crate::tauri_bridge::{call, listen};
 use crate::view_signals::UiSignals;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use resonance_types::ipc::{event, SetAlwaysOnTop, SetClickThrough, UpdateTrayMenu};
+use resonance_types::ipc::{
+    event, SetAlwaysOnTop, SetClickThrough, SetClickThroughHoldKey, UpdateTrayMenu,
+};
 use wasm_bindgen::prelude::*;
 
 /// Listens for the tray's click-through and always-on-top menu items.
@@ -53,11 +55,13 @@ pub fn setup_tray_listeners(signals: AppSignals, actions: AppActions) {
     });
 }
 
-/// Keeps the tray menu labels in sync with click-through / always-on-top.
-/// Runs on start-up and whenever either signal changes.
+/// Keeps the tray menu labels in sync with click-through / always-on-top /
+/// the hold key, and the backend's hold key with the setting. Runs on
+/// start-up and whenever one of them changes.
 pub fn sync_tray_menu(signals: AppSignals) {
     let ConfigSignals {
         always_on_top: is_pinned,
+        click_through_hold_key,
         ..
     } = signals.config;
     let UiSignals { click_through, .. } = signals.ui;
@@ -65,11 +69,14 @@ pub fn sync_tray_menu(signals: AppSignals) {
     Effect::new(move |_| {
         let ct = click_through.get();
         let aot = is_pinned.get();
+        let hold_key = click_through_hold_key.get();
 
         spawn_local(async move {
+            let _ = call(&SetClickThroughHoldKey { key: hold_key }).await;
             let _ = call(&UpdateTrayMenu {
                 click_through: ct,
                 always_on_top: aot,
+                hold_key,
             })
             .await;
         });

@@ -8,9 +8,9 @@
 //! field, a command or an event is a protocol change.
 
 use crate::{
-    AppConfig, ChatMessage, DictionaryStatus, FavoritesState, FolderStatus, GuildRelayStatePayload,
-    NetworkInterface, PopupKind, RubySpan, ServiceStates, SystemMessage, UpdateCheckResult,
-    UpdateTarget, WindowRect,
+    AppConfig, ChatMessage, ClickThroughHoldKey, DictionaryStatus, FavoritesState, FolderStatus,
+    GuildRelayStatePayload, NetworkInterface, PopupKind, RubySpan, ServiceStates, SystemMessage,
+    UpdateCheckResult, UpdateTarget, WindowRect,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -100,13 +100,15 @@ commands! {
     // Windows and the tray.
     SetAlwaysOnTop = "set_always_on_top" { on_top: bool } -> ();
     SetClickThrough = "set_click_through" { enabled: bool } -> ();
+    /// The key that, held down, lifts click-through until it is let go.
+    SetClickThroughHoldKey = "set_click_through_hold_key" { key: ClickThroughHoldKey } -> ();
     OpenPopup = "open_popup" { kind: PopupKind } -> ();
     MinimizeWindow = "minimize_window" {} -> ();
     CloseWindow = "close_window" {} -> ();
     /// Grows the window to at least this size; the answer is the size it had before, if it grew.
     GrowWindow = "grow_window" { min_width: f64, min_height: f64 } -> Option<WindowRect>;
     RestoreWindow = "restore_window" { rect: WindowRect } -> ();
-    UpdateTrayMenu = "update_tray_menu" { click_through: bool, always_on_top: bool } -> ();
+    UpdateTrayMenu = "update_tray_menu" { click_through: bool, always_on_top: bool, hold_key: ClickThroughHoldKey } -> ();
 }
 
 /// Every backend -> ui event, by name. The bridge listens to each ([`ALL`]).

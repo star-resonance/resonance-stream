@@ -205,7 +205,12 @@ pub fn close_window(window: tauri::Window) {
 }
 
 #[tauri::command]
-pub fn set_click_through(window: tauri::Window, enabled: bool) {
+pub fn set_click_through(
+    window: tauri::Window,
+    state: tauri::State<crate::click_through::ClickThroughState>,
+    enabled: bool,
+) {
+    state.set_enabled(enabled);
     let _ = window.set_ignore_cursor_events(enabled);
 }
 
