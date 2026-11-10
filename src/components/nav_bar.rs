@@ -7,8 +7,8 @@ use crate::store::{AppActions, AppSignals};
 use crate::tauri_bridge::call;
 use crate::ui_types::{default_tab_limit, Channel, SystemLogLevel};
 use crate::utils::add_system_log;
-use leptos::ev::{click, keydown};
-use leptos::html::{Button, Div, Input};
+use leptos::ev::{click, keydown, mousedown};
+use leptos::html::{Button, Div, Input, Ul};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use resonance_types::ipc::{event, CloseWindow, OpenPopup, SetAlwaysOnTop};
@@ -80,6 +80,8 @@ pub fn NavBar() -> impl IntoView {
     let search_btn_ref = NodeRef::<Button>::new();
     let controls_container_ref = NodeRef::<Div>::new();
     let folder_btn_ref = NodeRef::<Button>::new();
+    // The open right-click menu (only one is open at a time).
+    let tab_menu_ref = NodeRef::<Ul>::new();
 
     let toggle_search = move |_| {
         let new_state = !is_search_open.get_untracked();
@@ -139,15 +141,25 @@ pub fn NavBar() -> impl IntoView {
     // ==========================================
     // CLICK-OUTSIDE TO CLOSE LISTENERS
     // ==========================================
+    // The right-click menu closes on a press anywhere outside it. `mousedown`,
+    // not `click`: the tab bar and the title bar are drag regions, and a press
+    // there starts a window drag that never becomes a click.
+    crate::utils::window_listener(mousedown, move |ev| {
+        if context_menu_open.get_untracked().is_none() {
+            return;
+        }
+        let inside = tab_menu_ref
+            .get()
+            .is_some_and(|menu| menu.contains(Some(&event_target::<Node>(&ev))));
+        if !inside {
+            set_context_menu_open.set(None);
+        }
+    });
+
     crate::utils::window_listener(click, move |ev| {
         let target = event_target::<Node>(&ev);
 
-        // 1. Close Right-Click Menu
-        if context_menu_open.get_untracked().is_some() {
-            set_context_menu_open.set(None);
-        }
-
-        // 2. Close Search
+        // 1. Close Search
         if is_search_open.get_untracked() {
             let container = search_container_ref.get();
             let btn = search_btn_ref.get();
@@ -160,7 +172,7 @@ pub fn NavBar() -> impl IntoView {
             }
         }
 
-        // 3. Close Controls
+        // 2. Close Controls
         if is_controls_open.get_untracked() {
             let container = controls_container_ref.get();
             let btn = folder_btn_ref.get();
@@ -238,6 +250,7 @@ pub fn NavBar() -> impl IntoView {
                                 // 2. THE SETTINGS DROPDOWN MENU
                                 <Show when=move || context_menu_open.get() == Some(db_key_drop.clone())>
                                     <ul
+                                        node_ref=tab_menu_ref
                                         class="absolute top-full left-0 z-[100] menu p-3 shadow-2xl bg-base-300 rounded-box w-64 border border-base-content/10 mt-1 space-y-3 cursor-default animate-in fade-in slide-in-from-top-2 duration-100"
                                         on:click=move |ev| ev.stop_propagation() // Prevent clicks from closing the menu
                                     >
