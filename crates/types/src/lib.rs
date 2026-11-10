@@ -1437,6 +1437,34 @@ mod tests {
     }
 
     #[test]
+    fn the_click_through_hold_key_keeps_its_names_and_defaults_to_alt() {
+        use serde_json::{from_value, json, to_value};
+        for (value, name) in [
+            (ClickThroughHoldKey::Alt, "Alt"),
+            (ClickThroughHoldKey::Ctrl, "Ctrl"),
+            (ClickThroughHoldKey::Shift, "Shift"),
+            (ClickThroughHoldKey::NoKey, "None"),
+        ] {
+            assert_eq!(to_value(value).unwrap(), name);
+            assert_eq!(
+                from_value::<ClickThroughHoldKey>(json!(name)).unwrap(),
+                value
+            );
+        }
+        // Alt: the key the game already holds to show the mouse cursor.
+        assert_eq!(ClickThroughHoldKey::default(), ClickThroughHoldKey::Alt);
+        assert_eq!(ClickThroughHoldKey::from_name(""), ClickThroughHoldKey::Alt);
+    }
+
+    #[test]
+    fn the_default_nav_tabs_are_the_tabs_the_bar_always_had() {
+        assert_eq!(
+            default_nav_tabs(),
+            ["전체", "커스텀", "월드", "길드", "파티", "로컬", "초보자"]
+        );
+    }
+
+    #[test]
     fn the_theme_toggles() {
         assert_eq!(Theme::Dark.toggled(), Theme::Light);
         assert_eq!(Theme::Light.toggled(), Theme::Dark);

@@ -193,6 +193,13 @@ mod tests {
     }
 
     #[test]
+    fn a_config_from_before_editable_tabs_shows_every_tab_and_holds_alt() {
+        let config: AppConfig = serde_json::from_str(r#"{"init_done": true}"#).unwrap();
+        assert_eq!(config.nav_tabs, crate::default_nav_tabs());
+        assert_eq!(config.click_through_hold_key, ClickThroughHoldKey::Alt);
+    }
+
+    #[test]
     fn a_config_missing_fields_keeps_the_rest() {
         // Regression (N3): one missing field used to reset every setting.
         let config: AppConfig = serde_json::from_str(
