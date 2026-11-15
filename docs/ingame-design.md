@@ -409,3 +409,117 @@ The corpus has none, so the golden for M1 is a mix. Each kind proves something d
 
 `Recommended: 1 and 2` in the frame crate's first PR (R3 or R4), and 3(i) as part of Kade's M1
 in-game test. 3(ii) only if 3(i) leaves a doubt.
+
+## 5. The app <-> DLL pipe protocol
+
+This section proposes a specification rather than only options, because nothing like it exists
+yet. Options appear only where the choice is real.
+
+### Facts
+
+- **No pipe or IPC code exists in the app today.** The `windows-sys` features in use are only
+  `Win32_Networking_WinSock` and `Win32_UI_Input_KeyboardAndMouse` (`src-tauri/Cargo.toml:53`). A named
+  pipe needs `Win32_System_Pipes`, `Win32_Storage_FileSystem` (`CreateFileW`, file flags),
+  `Win32_Security` and `Win32_Security_Authorization` (security descriptor from SDDL), `Win32_System_IO`
+  (overlapped I/O for timeouts) and `Win32_System_Threading`. These names are the module paths of
+  windows-sys 0.61 (reported, from its documentation; the follow-up PR confirms each by compiling).
+  The DLL needs the same, plus `Win32_System_LibraryLoader` (`GetProcAddress`, `GetModuleHandleW`).
+- **The app is elevated, and the game probably is not.** The app has `requireAdministrator`
+  (`src-tauri/app.manifest:19`). The game's integrity level is NOT VERIFIED (a launcher may start it
+  elevated). A pipe created by an elevated process with the default security descriptor gives full
+  access only to SYSTEM, Administrators and the creator owner, and read access to Everyone (Windows'
+  documented default for named pipes, reported). The creator owner of an elevated token is usually
+  the Administrators group (estimated). A non-elevated game would then be unable to write to the pipe.
+- **The security model's rules apply.** Another process of the same user is "not trusted"
+  (`docs/security_model.md:27`). The test bridge is the model to copy: a fixed list of commands, an
+  unknown one refused, loopback only, a size cap (`docs/security_model.md:103-108`; `Command` at
+  `crates/core/src/bridge.rs:71`, `MAX_PACKET_BYTES` at `:45`).
+
+### Specification (proposed)
+
+- **Transport: a named pipe** `\\.\pipe\resonance-ingame-<game pid>`.
+- **The app creates the pipe, and the DLL connects.** The app is the elevated side, owns the
+  lifecycle, and knows which pid it loaded the DLL into. It creates the pipe **before** loading the
+  DLL, with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so if another process already holds the name, creation
+  fails and the app refuses to go on. After `ConnectNamedPipe`, the app calls
+  `GetNamedPipeClientProcessId` and drops any client whose pid is not the game's. The pid check is the
+  real authentication. The name only needs to be predictable for the DLL, which reads its own pid with
+  `GetCurrentProcessId`.
+- **Flags:** `PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE`,
+  `PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS`, one instance.
+- **DACL (SDDL):** `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;<current user SID>)S:(ML;;NW;;;ME)`.
+  - `D:P` is protected (no inherited entries).
+  - SYSTEM and Administrators get full access.
+  - The interactive user, whose SID is the same in the elevated and the filtered token, gets read
+    and write, so a non-elevated game can connect.
+  - The explicit Medium mandatory label (`ME`, no-write-up) makes sure a Medium-integrity game can
+    write even if the object would otherwise get the creator's High label (estimated; checked on
+    Kade's PC).
+  - The SID comes from `GetTokenInformation(TokenUser)`.
+- **What the ACL does not stop.** Any process of the same user can open the pipe. The pid check stops
+  it from being served, but a same-user process could also inject into the game itself. The pipe
+  carries no secret and grants nothing a same-user process does not already have: it can only ask the
+  DLL to post a chat line the user could post. That is stated in `docs/security_model.md` by R1
+  (tasks#14).
+- **Framing: JSON lines.** UTF-8 JSON objects, one per line, `\n`-terminated, at most **4096 bytes**
+  per line. 140 UTF-16 units are at most 840 bytes even with every unit escaped as `\uXXXX`. A longer
+  line is answered with `bad_request`, and the connection is closed.
+- **Who speaks.** Only the app sends requests, and the DLL only replies, one reply per request, in
+  order. Each request carries an `id` (u32), and the reply echoes it.
+- **Requests:**
+
+  | request | reply when it works |
+  |---|---|
+  | `{"op":"hello","id":1,"version":1}` | `{"id":1,"ok":true,"version":1,"dll":"0.7.0"}` |
+  | `{"op":"send","id":2,"channel":"world","text":"…"}` | `{"id":2,"ok":true,"call_id":17}` |
+  | `{"op":"ping","id":3}` | `{"id":3,"ok":true}` |
+  | `{"op":"bye","id":4}` | `{"id":4,"ok":true}`, then the DLL removes its hooks and unloads (section 6) |
+
+  An error is `{"id":N,"ok":false,"code":"<code>","detail":"<short English reason for the log>"}`.
+- **Version rule.** The protocol `version` is an integer, starting at 1. `hello` is the first request
+  on every connection. If the DLL's version differs, it replies with `version`, and the app refuses
+  to send, unloads that DLL and loads its own copy. In practice the DLL is embedded in the app
+  (section 6), so a mismatch means a stale DLL from an older app is still loaded.
+- **Timeouts.** The whole `send_chat` command must fit in **2 s**.
+  - `hello` runs at load time, not per send.
+  - Per send: the request write has 100 ms. The DLL holds the request for at most **1000 ms**
+    waiting for the main thread (section 2 A), then gives up with `expired`. The app waits up to
+    **1500 ms** for the reply, then treats the pipe as broken.
+  - The DLL decides "send" or "expired" atomically (the pump takes the slot only if it is not
+    expired). So `expired` always means **not sent**, and the app never has to guess.
+- **The DLL re-checks everything** (the second check): it knows the channel, the text is non-empty,
+  has no CR/LF, and is at most 140 UTF-16 units, using `crates/frame`'s check (section 4).
+- **Error codes.** Each has a cause in this design. The app maps each code to the Korean sentence
+  shown to the user by code, never by `detail`. Where R2's `prepare_text` errors cover the same case,
+  R2's sentences win.
+
+  | code | cause | sentence shown (ko) |
+  |---|---|---|
+  | `bad_request` | a line that is not JSON, too long, unknown `op`, missing field | 게임 내 전송 모듈과 통신하지 못했습니다. 앱을 다시 시작해 주세요. |
+  | `bad_channel` | `channel` is not one of `world`, `say`, `party`, `guild` | 이 채널로는 보낼 수 없습니다. |
+  | `empty` | text empty after the DLL's check | 보낼 내용이 없습니다. |
+  | `too_long` | more than 140 UTF-16 units, or a CR/LF the app should have removed | 메시지가 너무 깁니다. 140자 이하로 줄여 주세요. |
+  | `no_client` | `ZRpcCtrl` null (before login), `GetRpcByProxyId` null, UDP connection, `client_` null, `handle_` zero | 게임 채팅 서버에 연결되어 있지 않습니다. 로그인한 뒤 다시 시도해 주세요. |
+  | `not_sent` | `Send` raised a managed exception (returned in `runtime_invoke`'s `exc`) | 게임이 메시지를 보내지 못했습니다. |
+  | `busy` | a send is already waiting for the main thread (single slot) | 이전 메시지를 보내는 중입니다. 잠시 후 다시 시도해 주세요. |
+  | `expired` | the main thread did not tick within 1000 ms (loading screen) | 게임이 응답하지 않아 보내지 않았습니다. 로딩이 끝난 뒤 다시 시도해 주세요. |
+  | `unsupported` | a class, method, field or export the walk needs was not found: a game build the DLL does not know (section 7) | 이 게임 버전에서는 채팅 보내기를 지원하지 않습니다. 앱 업데이트를 기다려 주세요. |
+  | `version` | `hello` version mismatch | 게임 내 전송 모듈의 버전이 맞지 않습니다. 앱을 다시 시작해 주세요. |
+
+  The app has its own errors outside the pipe: the setting is off, the game is not running, loading
+  failed, the pipe broke, and the 1500 ms spacing. Their sentences belong to the `send_chat` command
+  (R6).
+- **"Sent" means handed to the game's socket.** It does not mean the server accepted the line. The
+  server answers our `call_id` with a ChitChat Return (Stellar records the call to read the reply,
+  `…/Game/PandaChatProbe.Send.cs:235-236`), which the sniffer could read later. That is out of M1.
+
+### Options where the choice is real
+
+- **Transport. A: named pipe** (above). **B: loopback TCP.** B needs a port, may raise a firewall
+  prompt for the game, and has no ACL or client-pid check (any local process can connect).
+  `Recommended: A`, because Windows ACLs and `GetNamedPipeClientProcessId` give real access control at
+  no cost.
+- **Framing. A: JSON lines** (above, needs `serde_json` in the DLL, already in the workspace through
+  `crates/core`). **B: length-prefixed binary**, no dependency, but every reader and log needs a decoder.
+  `Recommended: A`. It can be read in a log, matches the bridge's style, and its cost is one crate the
+  workspace already builds.
