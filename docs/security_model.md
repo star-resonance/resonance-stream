@@ -10,7 +10,7 @@ Nothing here was attacked or fuzzed against the real app; "mitigated" means a ch
 
 - It **asks for administrator rights** (`src-tauri/app.manifest:19`, `requireAdministrator`, confirmed). It needs them for a raw socket with `SIO_RCVALL` (the sniffer, port 5003) and for Windows Firewall rules.
 - It **downloads and runs executables**: its own updates and a `llama-server.exe`; it also downloads a model file that llama.cpp parses.
-- It **reads game traffic** from the network and shows other players' text. It does not hook or modify the game client (no injection).
+- It **reads game traffic** from the network and shows other players' text. It does not hook or modify the game client (no injection unless the user turns on chat sending (D-35)).
 - It **stores chat** (daily `.jsonl` logs) of other players in the app data folder: private data, not secrets.
 
 So a flaw that lets any of those inputs change what runs, runs as administrator.
@@ -120,6 +120,9 @@ The zip pin protects the download, not the files later on disk. A process of the
 | T-7 | A player writes control tokens or `[P<n>]` in chat | tokens are stripped; `[P<n>]` collides | W-11 |
 | T-8 | A page of the webview is hijacked | no CSP (S3c-2, waits on a Windows test); any URL can be opened and leftover shell permissions (both closed, S3c-1) | **W-9** |
 | T-9 | A hung remote host blocks start-up | no timeout on gist / dictionary fetches | W-8 |
+| T-10 | Another local process uses the pipe between the app and the DLL as an entry point (the app is Administrator and the DLL runs in the game) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: see docs/ingame-design.md (R0) |
+| T-11 | The `resonance_ingame.dll` file is replaced before it is loaded (code that would run inside the game, loaded by the elevated app; the same shape as T-2) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: see docs/ingame-design.md (R0) |
+| T-12 | A fault in the DLL crashes the game (the DLL runs in the game's process) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: see docs/ingame-design.md (R0) |
 
 ## 5. Rules for new code
 
