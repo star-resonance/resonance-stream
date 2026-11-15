@@ -724,3 +724,81 @@ patches that rename things.
 line each to `world`, `say`, `party` and `guild` (a party and a guild are needed for the last two),
 and check that each arrives once. Then read `ingame.log` for any `unsupported` line, and include its
 step name in the bug report. The same check is the M1 acceptance run.
+
+## Questions for Kade
+
+Four choices are truly his: a new dependency, a new crate layout, an unknown runtime risk, and how
+far the app reaches into the game. Each is answered by picking a letter.
+
+1. **Which thread sends (section 2)?**
+   - **A. Hook-and-pump on the game's main thread (Recommended).** It sends on the same thread as the
+     game's own chat, so no unknown locking is relied on. Costs one hook and one dependency (question 2).
+   - B. Attach the DLL's pipe thread to il2cpp and call `Send` from it. No hook and no new dependency,
+     but a data race with the game's net code is possible and cannot be ruled out by a test.
+2. **Which detour crate, if 1 is A (section 3)?**
+   - **A. `minhook` 0.9.0 (Recommended).** The standard tool for this job: MIT, the smallest
+     dependency tree, and it suspends threads while patching.
+   - B. `retour` 0.3.1. Pure Rust apart from the disassembler, but no stable release since 2023.
+   - C. Hand-rolled patch and trampoline. No dependency, but a few hundred lines of crash-critical
+     code that only we test.
+3. **Where do the frame builder and the DLL crate live (section 4)?**
+   - **A. Two new crates in the workspace (Recommended):** `crates/frame` (pure, no dependencies) and
+     `crates/ingame` (the DLL), with a custom `[profile.ingame]` that sets `panic = "unwind"`. One
+     lockfile, and every frame is checked against `core`'s parser.
+   - B. `crates/frame` in the workspace, and the DLL in its own workspace outside it, with its own
+     lockfile and `panic = "unwind"`.
+   - C. The DLL in the workspace with `panic = "abort"` and no panics allowed. Any panic, including
+     one in a dependency, kills the game.
+4. **How does the app load the DLL (section 6)?**
+   - **A. From the running app, by remote thread (`LoadLibraryW`) (Recommended).** Nothing is written
+     to the game's folder, and the DLL is loaded only while the setting is on. It works for the
+     `StarSEA*` and `StarASIA*` exes alike.
+   - B. A proxy DLL (`winhttp.dll` or `version.dll`) placed in the game's folder, loaded by the game at
+     start-up. No remote thread, but it changes the game's install and loads even when the setting is
+     off.
+
+## Summary
+
+| section | recommendation | rests on |
+|---|---|---|
+| 1. Live `ZTcpClient` | A: active walk, `il2cpp_runtime_invoke`, `il2cpp_field_get_offset`, no hook | - |
+| 2. Thread | A: hook-and-pump on the main thread | Question 1 |
+| 3. Detour crate | A: `minhook`, needed only if question 1 is A | Questions 1, 2 |
+| 4. Frame builder | A: `crates/frame`, no dependencies, `no_std` | Question 3 |
+| 4. DLL crate | A: in the workspace, custom `ingame` profile with `panic = "unwind"` | Question 3 |
+| 4. Goldens | derived bytes + round trip through `core` now, one observed frame in Kade's test | - |
+| 5. Pipe | named pipe created by the app, user-only DACL with Medium label, client-pid check, JSON lines, ten error codes | - |
+| 6. Loading | A: remote thread; pid by `StarSEA`/`StarASIA` prefix and the port-5003 owner; build-time SHA-256 pin | Question 4 |
+| 6. Unloading | `bye` -> hooks off -> drain -> `FreeLibraryAndExitThread`; self-unload on a broken pipe | Question 1 (hooks) |
+| 7. Resilience | resolve by name each build, report permanent failures once, no build allow-list | - |
+
+## Not verified
+
+Only a run in the game on Kade's PC can show these. No agent can run the game.
+
+- `GameAssembly.dll` of the current build exports each il2cpp function in section 1 by name.
+- The class, method and field names of section 1 still exist in the current build (they come from
+  Stellar's release_3.7 dump), and `ZRpcCtrl`'s parent is the inflated `ZSingleton<ZRpcCtrl>` with a
+  static `get_Instance`.
+- `GetRpcByProxyId(1321197368)` resolves at fresh login and after a reconnect.
+- The chat connection is TCP (not UDP/KCP) for every M1 channel, in particular World.
+- **The `ReadOnlySpan<byte>` ABI.** Through `il2cpp_runtime_invoke`, a value-type argument is passed
+  as a pointer to the struct. A `ReadOnlySpan<byte>` is a 16-byte struct (a pointer or by-ref field
+  and an `int` length). On Win64 a 16-byte struct is passed by reference to a caller-made copy
+  (Microsoft x64 calling convention, reported), which matches passing a pointer. Unverified: how this
+  il2cpp build lays out the span (field order, whether the reference is a raw pointer into a managed
+  `byte[]` that must stay pinned or alive across the call), and whether the bytes must live in a
+  managed array (`il2cpp_array_new`) rather than Rust memory.
+- What `ZTcpClient.Send` returns and whether it can fail without an exception.
+- Whether `ZTcpClient.Send` is safe from a foreign thread (only matters for question 1 B).
+- The name of a per-frame main-thread method for the pump, and that a native detour on it is not
+  bypassed by inlining.
+- The game's integrity level (elevated or not), and whether the pipe's DACL and Medium label let it
+  connect.
+- That the game has no anti-cheat that blocks `OpenProcess`, `CreateRemoteThread` or code patching
+  (Stellar's docs say none today: reported).
+- That the server accepts a frame whose `service_uuid` high half is zero and whose `call_id` comes
+  from our own counter, and that the game's UI does not react to the server's Return for our call.
+- The `windows-sys` 0.61 feature names in sections 5 and 6 (checked by compiling in the follow-up).
+- Every crate fact marked "reported" in section 3 (thread suspension, behaviour on non-relocatable
+  prologues), read from the crates' own documentation, not tested.
