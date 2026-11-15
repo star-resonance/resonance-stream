@@ -18,6 +18,10 @@ pub struct SendSpacing {
 impl SendSpacing {
     /// Ok when a send may go out at `now`; otherwise `TooSoon` with the whole
     /// milliseconds left (rounded up, at least 1). Never moves the window.
+    ///
+    /// Check and record are separate steps: a caller that can run twice at once
+    /// holds one lock across `allow`, the send and `record_success`, or two sends
+    /// can both pass.
     pub fn allow(&self, now: Instant) -> Result<(), SendTextError> {
         let Some(last) = self.last_ok else {
             return Ok(());
