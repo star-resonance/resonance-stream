@@ -1,3 +1,42 @@
+//! Spacing between chat sends. The text rules and the error type are in
+//! `resonance-types` (`prepare_text`, `SendTextError`) so the ui can use them.
+
+use resonance_types::SendTextError;
+use std::time::{Duration, Instant};
+
+/// A send less than this long after the last successful one is refused.
+pub const SEND_SPACING: Duration = Duration::from_millis(1500);
+
+/// Remembers when the last send succeeded. Unlike `paste::RepeatGuard`,
+/// [`SendSpacing::allow`] does not record: only a send that went through counts,
+/// so the caller calls [`SendSpacing::record_success`] after it.
+#[derive(Debug, Default)]
+pub struct SendSpacing {
+    last_ok: Option<Instant>,
+}
+
+impl SendSpacing {
+    /// Ok when a send may go out at `now`; otherwise `TooSoon` with the whole
+    /// milliseconds left (rounded up, at least 1). Never moves the window.
+    pub fn allow(&self, now: Instant) -> Result<(), SendTextError> {
+        let Some(last) = self.last_ok else {
+            return Ok(());
+        };
+        let elapsed = now.saturating_duration_since(last);
+        if elapsed >= SEND_SPACING {
+            return Ok(());
+        }
+        let left = SEND_SPACING - elapsed;
+        let wait_ms = left.as_micros().div_ceil(1000).max(1) as u64;
+        Err(SendTextError::TooSoon { wait_ms })
+    }
+
+    /// Records that a send succeeded at `now`.
+    pub fn record_success(&mut self, now: Instant) {
+        self.last_ok = Some(now);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,7 +96,7 @@ mod tests {
         gate.record_success(t0 + ms(2000));
         assert_eq!(
             gate.allow(t0 + ms(3000)),
-            Err(SendTextError::TooSoon { wait_ms: 1000 })
+            Err(SendTextError::TooSoon { wait_ms: 500 })
         );
     }
 
