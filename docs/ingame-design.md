@@ -188,3 +188,70 @@ Then: Questions for Kade, summary, Not verified.
 itself made primary. B is added only if Kade's in-game test shows A failing (for example,
 `GetRpcByProxyId` returning null after a reconnect). It is the long-term option too: fewer patched
 game bytes means fewer things for a game patch to break.
+
+## 2. The thread `Send` must run on
+
+### Facts
+
+- **Stellar sends from the Unity main thread.** Its `IChat` contract raises the not-sent result
+  "before this returns, when called on the main thread"
+  (`Stellar@60a7772:src/Stellar.Abstractions/Services/IChat.cs:18-21`). `ChatService.Send` calls
+  `TrySend` on the caller's thread (`src/Stellar.Application/Services/ChatService.cs:96-114`). The
+  framework's tick is a Unity MonoBehaviour driven by `InvokeRepeating`
+  (`…/Unity/StellarTicker.cs:7-8`, `:17`, `:41-45`). Confirmed.
+- **The game sends chat from the main thread too.** The `ZRpcImpl.SendBytes` prefix runs on the
+  thread that issued the RPC, which is the Unity main thread for Lua-issued chat
+  (`…/Game/PandaChatProbe.Send.Hooks.Rpc.cs:98-100`). Reported. `SendBytes` "may run on a net thread" in
+  general (`…/Game/PandaChatProbe.Send.Connection.cs:94-96`).
+- **Nothing in Stellar shows `Send` called from a foreign thread.** Whether `ZTcpClient.Send` (a
+  wrapper over a native handle) is safe to call while the main thread uses the same connection is
+  unknown. NOT VERIFIED.
+- **il2cpp needs an attached thread.** A thread that touches managed objects or calls
+  `il2cpp_runtime_invoke` must first call `il2cpp_thread_attach(il2cpp_domain_get())`, so the GC knows
+  it exists. Stellar does this for a pool thread (`…/Rendering/UnityFrameGrabber.Capture.cs:112`). A
+  pipe thread in the DLL is a foreign thread.
+- **A per-frame hook costs little only when it is native.** Stellar deliberately does not hook
+  `Game.Update`, because a per-frame Harmony postfix crosses into the managed runtime every frame,
+  which it measured as a "~12-18 fps tax" (`Stellar@60a7772:src/Stellar.Host/BootstrapPlugin.cs:42-45`).
+  A Rust detour is native code: per frame it costs one atomic load and a branch when the queue is
+  empty (estimated: nanoseconds). Stellar's own UI work hooks a game `Update` path the same way
+  (`…/Game/GamePressCheckShield.cs:7-19`). The `StellarTicker` idea itself (an injected MonoBehaviour)
+  is not open to a Rust DLL without a type injector.
+
+### Options
+
+- **A. Hook-and-pump on the main thread.** The pipe thread only parses and queues (a single-slot
+  queue: one send in flight). A detour on a method the game runs on the main thread every frame
+  drains the slot and runs section 1's walk and `Send` there, on the same thread the game sends its
+  own chat from. The candidate is the `Update` of the game's net loop owner (`ZRpcCtrl` runs "the net
+  echo/Update loop", `…/Game/PandaChatProbe.Send.LiveClient.cs:54-56`), or a Unity per-frame entry if that
+  method does not exist. The exact method is named from a dump of the current build: NOT VERIFIED.
+  It needs one hook, so it needs section 3's detour crate. During a loading screen the main thread
+  may not tick, so a send can wait. The pipe reply then has a deadline (section 5).
+- **B. Attach and call from the pipe thread.** The pipe thread calls `il2cpp_thread_attach` once and
+  runs the walk and `Send` itself. It needs no hook and no detour crate. The risk is a data race
+  inside the game's net client: two threads writing the same connection at once can interleave bytes,
+  which desyncs the stream (the server drops the connection) or corrupts native state (a crash). It
+  can also race with `ZRpcCtrl`'s own update loop, which Stellar has already seen stall the game
+  (reported).
+- **C. B now, A later.** Ship B for M1 behind the opt-in, and move to A if Kade's test shows a
+  problem. A data race may not show in a short test, so a clean test proves little.
+
+| | hooks | new dependency | race with the game's net thread | latency |
+|---|---|---|---|---|
+| A | 1 | detour crate | none: same thread as the game's own sends (reported) | up to one frame, more on a loading screen |
+| B | 0 | none | unknown (NOT VERIFIED) | immediate |
+| C | 0, then 1 | later | as B until moved | immediate |
+
+**What is evidence and what is unknown.** Evidence: the game and Stellar both send chat from the
+main thread (reported), and Stellar never sends from another thread. Unknown: whether the native
+client locks around `Send`. **The in-game test that settles it (Kade's step in M1):** with the DLL
+loaded and the main-thread option built, send 50 lines at the 1500 ms spacing while the game itself
+sends and receives chat. Repeat with a loading screen in between. Pass: every line arrives once,
+the game keeps its connection, and nothing crashes. The same run on B can only show that B did not
+fail this time.
+
+`Recommended: A`. It runs on the thread the game itself uses for chat, so no unknown locking is
+needed, and a native detour costs nothing measurable per frame. This is the standard practice for
+injected code that calls a game engine (marshal onto the engine's thread), and the long-term option
+Kade prefers, at the price of one hook and one dependency (section 3).
