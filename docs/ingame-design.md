@@ -85,3 +85,106 @@ These were decided in DS-0001 (tasks#1, comment 6898425349) and in the lane's sh
 7. Failure and patch resilience
 
 Then: Questions for Kade, summary, Not verified.
+
+## 1. Finding the live chat `ZTcpClient`
+
+### Facts
+
+- **Chat has no socket of its own.** The game multiplexes its RPC over transports owned by
+  `ZCode.ZRpc.ZRpcCtrl`. ChitChat is a Lua RPC proxy with id `1321197368`, the same number as the
+  service uuid (`Stellar@60a7772:…/Game/PandaChatProbe.Send.LiveClient.cs:18-28`, `:71`). Reported:
+  Stellar's comments describe the game.
+- **Active walk (Stellar's primary path since its 2.25.5 fix).** On every send, with no cache:
+  `ZSingleton<ZRpcCtrl>.Instance` -> `ZRpcCtrl.GetRpcByProxyId(ulong 1321197368)` -> `ZRpcImpl.GetTransfer()`
+  -> `ZRpcTransfer.GetTransport()` -> field `ZTransport.conn_` -> field `ZTcpConnection.client_`
+  (`…/Game/PandaChatProbe.Send.LiveClient.cs:30-37`, code `:115-190`). Stellar's comment gives the field
+  offsets as `conn_` at 0x10 and `client_` at 0x60 in its release_3.7 dump (`:35-36`). Offsets like these
+  change from build to build.
+- **`GetRpcByProxyId` works right after login.** It resolves by proxy-manager membership, which is
+  filled at login. A second lookup (`GetChannelTypeByProxyId`) stays empty until the game's first
+  native chat send (`…/Game/PandaChatProbe.Send.LiveClient.cs:21-28`). Reported.
+- **The interface-wrapper trap.** Il2CppInterop hands each hop back typed as its interface (`IRpc`,
+  `ITransfer`, `IConnection`). A member must be looked up on the concrete class, never on the
+  interface (`…/Game/PandaChatProbe.Send.LiveClient.cs:38-51`). `GetRpcByProxyId` is bound on the concrete
+  `ZRpcCtrl`, never through `IRpcCtrl` (`:59-62`). This trap belongs to Il2CppInterop's managed wrappers.
+  The native il2cpp API gives a raw `Il2CppObject*` whose class (`il2cpp_object_get_class`) is the
+  real one. The same rule still applies there: look methods up on the declaring concrete class
+  (estimated).
+- **TCP only.** If `conn_` is not a `ZTcpConnection`, the connection is UDP/KCP and there is no
+  `client_` (`…/Game/PandaChatProbe.Send.LiveClient.cs:172-176`). Reported: the World channel can run over
+  TCP or UDP/KCP (`…/Game/PandaChatProbe.Send.Hooks.Rpc.cs:28-31`).
+- **The game never calls the one-argument `Send` itself.** The game's own path is
+  `ZRpcImpl.ProxyCall` -> `ProxyCallInternal` -> `SendBytes(ulong uuid, uint stubId, uint callId, uint
+  methodId, byte[] pbData, uint pbSize, bool framePack)` -> transport. A prefix on
+  `ZTcpClient.Send(ReadOnlySpan<byte>)` fired 0 times for game traffic
+  (`…/Game/PandaChatProbe.Send.Hooks.Tcp.cs:18-24`, `…/Game/PandaChatProbe.Send.Hooks.Rpc.cs:17-37`). Reported. So
+  the fixed mechanism sends through a method that exists but that the game does not use itself.
+  It works only while chat runs over TCP (section 7).
+- **Finding `Send`.** `ZTcpConnection.OnData(ReadOnlySpan<byte>, ZTcpClient)` anchors the `ZTcpClient`
+  type, and `Send` is its one-argument method whose parameter is `ReadOnlySpan`1`
+  (`…/Game/PandaChatProbe.Send.Hooks.Tcp.cs:26-67`, `:94-152`).
+- **Liveness.** `ZTcpClient` is a `ZNativeObject` with a native `handle_`. Stellar refuses a client
+  whose handle is zero and fails closed when it cannot read the handle
+  (`…/Game/PandaChatProbe.Send.Connection.cs:176-201`, `…/Game/PandaChatProbe.Send.LiveClient.cs:182`). Sending through a freed
+  handle is a native access violation that kills the game (`…/Game/PandaChatProbe.Send.cs:131-134`). Reported.
+- **Passive cache (Stellar's fallback).** The client is also taken from inbound chat packets and from
+  the outbound `SendBytes` hook, and prefixes on `ZTcpClient.Close(Action<ZTcpClient>)` and
+  `ZNetExtensions.CloseAndDelayDispose(ZTcpClient)` drop it
+  (`…/Game/PandaChatProbe.Send.Connection.cs:69-130`, `:147-170`, `:225-290`). The outbound hook may run on a
+  net thread (`:94-96`).
+- **No per-frame polling.** Stellar resolves only inside a send, because reflecting into `ZRpcCtrl`
+  on a timer once stalled the game's `ZServerTime` singleton (`…/Game/PandaChatProbe.Send.LiveClient.cs:52-57`).
+  Reported.
+- **What the native il2cpp API offers.** `GameAssembly.dll` exports the il2cpp embedding API by name:
+  `il2cpp_domain_get`, `il2cpp_domain_get_assemblies`, `il2cpp_assembly_get_image`,
+  `il2cpp_class_from_name`, `il2cpp_class_get_parent`, `il2cpp_class_get_method_from_name`,
+  `il2cpp_class_get_field_from_name`, `il2cpp_field_get_offset`, `il2cpp_field_static_get_value`,
+  `il2cpp_runtime_invoke`, `il2cpp_object_get_class`, `il2cpp_thread_attach`. The ones Stellar's code
+  calls directly are `il2cpp_object_get_class`, `il2cpp_class_get_namespace` and `il2cpp_class_get_name`
+  (`Stellar@60a7772:…/Game/PandaChatProbe.Receive.Resolution.cs:53-57`), `il2cpp_class_value_size`
+  (`…/Hooks/Il2CppStructSizes.cs:29`), and `il2cpp_class_has_references`
+  (`…/Unity/Il2CppClassInitFix.cs:28`). `il2cpp_thread_attach` is named for a pool thread
+  (`…/Rendering/UnityFrameGrabber.Capture.cs:112`). The others are the public il2cpp API, which Il2CppInterop
+  itself builds on (reported, not read here). Whether this game build exports each one by name is
+  NOT VERIFIED. The DLL looks every export up with `GetProcAddress`, never with a signature scan:
+  some builds of this game defeat Il2CppInterop's scan for `Class::Init`, seen on `StarSEA_STEAM`
+  (`…/Unity/Il2CppClassInitFix.cs:8-14`, `…/Unity/UnityTickHost.cs:34-37`).
+
+### Options
+
+- **A. Active walk from Rust, no hook.** Inside each send, the DLL:
+  1. finds the classes with `il2cpp_class_from_name` (namespace `ZCode.ZRpc` / `ZCode.ZNet`, searched
+     over the domain's assemblies);
+  2. reads `Instance` from `ZRpcCtrl`'s parent (the inflated `ZSingleton<ZRpcCtrl>`, through
+     `il2cpp_class_get_parent`), calling `get_Instance` with a null `this`;
+  3. calls `GetRpcByProxyId`, `GetTransfer` and `GetTransport` with `il2cpp_runtime_invoke`, each method
+     taken from its concrete class;
+  4. reads `conn_` and `client_` at offsets from `il2cpp_field_get_offset`, never hard-coded 0x10/0x60;
+  5. checks `il2cpp_object_get_class(conn)` against `ZTcpConnection` (otherwise UDP: `no_client`);
+  6. reads `handle_` and refuses zero.
+
+  The classes, methods and field handles are resolved once and cached. The objects are not cached.
+  `il2cpp_runtime_invoke` returns a managed exception through its `exc` out-parameter instead of
+  throwing it. Calling `methodPointer` directly would let an il2cpp (C++) exception unwind through
+  Rust frames, which is undefined behaviour. So the walk uses `runtime_invoke` everywhere. It costs a
+  few boxed arguments on a cold, user-paced path (estimated: microseconds).
+- **B. Passive cache through a detour.** Detour a method the game calls with the live object, for
+  example `ZRpcImpl.SendBytes` (the game's own chat and history sends go through it; it runs at
+  login) or `ZTcpConnection.OnData`. Store the `client_` reached from `this` in an atomic, and drop it
+  through detours on `ZTcpClient.Close` and `CloseAndDelayDispose`. That is 1 to 3 hooks. A stale
+  pointer is the main risk: a missed close path leaves a pointer to a freed object. The handle check
+  narrows that window but does not close it, because reading `handle_` through a freed object is
+  itself a use-after-free.
+- **C. A first, B as fallback** (what Stellar does). This covers the most cases, but it has the most
+  code and every hook from B.
+
+| | hooks | stale pointer | works at fresh login | code |
+|---|---|---|---|---|
+| A | 0 | none: nothing cached across sends | yes (`GetRpcByProxyId`, reported) | small |
+| B | 1-3 | possible (missed close path) | only after the first chat or `SendBytes` | medium |
+| C | 1-3 | as B, fallback only | yes | largest |
+
+`Recommended: A`. It needs no hook, caches no object (so nothing goes stale), and is the path Stellar
+itself made primary. B is added only if Kade's in-game test shows A failing (for example,
+`GetRpcByProxyId` returning null after a reconnect). It is the long-term option too: fewer patched
+game bytes means fewer things for a game patch to break.
