@@ -195,7 +195,7 @@ game bytes means fewer things for a game patch to break.
 
 - **Stellar sends from the Unity main thread.** Its `IChat` contract raises the not-sent result
   "before this returns, when called on the main thread"
-  (`Stellar@60a7772:src/Stellar.Abstractions/Services/IChat.cs:18-21`). `ChatService.Send` calls
+  (`Stellar@60a7772:src/Stellar.Abstractions/Services/IChat.cs:19-22`). `ChatService.Send` calls
   `TrySend` on the caller's thread (`src/Stellar.Application/Services/ChatService.cs:96-114`). The
   framework's tick is a Unity MonoBehaviour driven by `InvokeRepeating`
   (`…/Unity/StellarTicker.cs:7-8`, `:17`, `:41-45`). Confirmed.
@@ -255,3 +255,58 @@ fail this time.
 needed, and a native detour costs nothing measurable per frame. This is the standard practice for
 injected code that calls a game engine (marshal onto the engine's thread), and the long-term option
 Kade prefers, at the price of one hook and one dependency (section 3).
+
+## 3. The detour crate
+
+A detour is a new dependency, so this is Kade's call (global rules). It is needed only for the
+hooks that sections 1 and 2 choose:
+
+| section 1 | section 2 | hooks | detour crate needed |
+|---|---|---|---|
+| A (walk) | A (pump) | 1 (the per-frame pump) | yes |
+| A (walk) | B (attach) | 0 | **no** |
+| B or C (cache) | A (pump) | 2-4 | yes |
+| B or C (cache) | B (attach) | 1-3 | yes |
+
+### Facts (crates.io API, read 2026-11-15)
+
+| | `minhook` 0.9.0 | `retour` 0.3.1 | `detour` 0.11.1 | hand-rolled |
+|---|---|---|---|---|
+| what | Rust bindings that vendor the C MinHook library (built by `cc`) | maintained fork of `detour`, pure Rust plus `libudis86-sys` (C) | the original `detour`, revived in 2026 | our own code |
+| last release | 2025-12-14 (0.8.0 2025-08, 0.7.x 2025-02/03) | stable 0.3.1 2023-07-18; only `0.4.0-alpha.4` since (2025-09-11) | 0.11.1 2026-11-09 (0.9.0 2026-09-23, 0.10.0 2026-09-30) | n/a |
+| license | MIT (MinHook itself: BSD-2-Clause, reported) | BSD-2-Clause | BSD-2-Clause | MIT (ours) |
+| normal deps | `tracing` (build: `cc`) | `cfg-if`, `generic-array`, `libc`, `libudis86-sys`, `mmap-fixed-fixed`, `once_cell`, `region`, `slice-pool2` | `iced-x86`, `libc`, `mach2`, `region`, `windows-sys` 0.61 | none (`windows-sys` already in the tree) |
+| x64 Windows | yes (MinHook's main target, reported) | yes (reported) | yes (reported) | as written |
+| other threads while patching | MinHook suspends the process's other threads and moves their instruction pointers out of the patched bytes (MinHook's documented behaviour, reported) | not documented (NOT VERIFIED) | not documented (NOT VERIFIED) | to be written: a suspend-all is about 100 lines |
+| first bytes not relocatable | refuses with an error code (`MH_ERROR_UNSUPPORTED_FUNCTION`, reported) | returns an error (reported) | returns an error (reported) | we would need an instruction decoder |
+| unhook | `MH_DisableHook` / `MH_RemoveHook` / `MH_Uninitialize` | drop or `disable()` | drop or `disable()` | to be written |
+
+The repository's own license is MIT (`LICENSE`), and all three crates' licenses are compatible with
+it. `windows-sys` 0.61.2 is already a dependency of the app (`src-tauri/Cargo.toml:53`).
+
+### Options
+
+- **A. `minhook`.** MinHook is the de facto standard in Windows game modding and has been used in
+  production for over a decade (reported). It has the smallest dependency tree and handles thread
+  suspension while patching. Trade-off: a C library compiled by `cc`, which works on the Windows CI
+  runner (MSVC) and with `gcc-mingw-w64-x86-64` for `just app-cross-check` (estimated), and Rust
+  bindings by one maintainer.
+- **B. `retour`.** Pure Rust apart from the disassembler. Trade-off: no stable release since 2023
+  (only alphas), a larger tree, and its `static_detour!` macro needs nightly Rust (reported). The
+  stable API is the generic/raw detour.
+- **C. Hand-rolled.** A 14-byte absolute `jmp` patch plus a trampoline. It adds no dependency, but
+  it needs an x64 instruction-length decoder to relocate the overwritten prologue (RIP-relative
+  operands), and a thread suspend while patching. That is a few hundred lines of the most
+  safety-critical code in the DLL, which nobody else tests. Not recommended.
+
+(`detour` 0.11.1 is listed for completeness. Its revival is two months old, so it has no track
+record yet.)
+
+**Upkeep, in words Kade can weigh.** Each option adds one crate that Dependabot will raise PRs for.
+A and B each add a C build step to the DLL crate only (not to the app or the ui). With A, a broken
+release means pinning the previous one; MinHook's C code has barely changed in years (reported). With
+C there is nothing to bump, but every bug is ours, and a bug here crashes the game.
+
+`Recommended: A (minhook)`, if section 2's A is chosen. It is the standard tool for exactly this job,
+has the smallest dependency tree, carries the license the repository already uses, and suspends
+threads while patching. If Kade picks section 2's B, no detour crate is needed at all.
