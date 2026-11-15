@@ -214,8 +214,9 @@ game bytes means fewer things for a game patch to break.
   `Game.Update`, because a per-frame Harmony postfix crosses into the managed runtime every frame,
   which it measured as costing roughly 12-18 fps (`Stellar@60a7772:src/Stellar.Host/BootstrapPlugin.cs:42-45`).
   A Rust detour is native code: per frame it costs one atomic load and a branch when the queue is
-  empty (estimated: nanoseconds). Stellar's own UI work hooks a game `Update` path the same way
-  (`…/Game/GamePressCheckShield.cs:7-19`). The `StellarTicker` idea itself (an injected MonoBehaviour)
+  empty (estimated: nanoseconds). Stellar does patch a method that a game `Update` calls, but
+  only on mouse-press frames and as a managed prefix (`…/Game/GamePressCheckShield.cs:7-19`), so it is
+  no proof of a per-frame native hook. The `StellarTicker` idea itself (an injected MonoBehaviour)
   is not open to a Rust DLL without a type injector.
 
 ### Options
