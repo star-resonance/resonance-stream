@@ -1,7 +1,7 @@
 # In-game sender: design options
 
-**Status:** options for Kade, nothing decided. Task R0, star-resonance/tasks#13 (lane chat-send,
-tasks#1, milestone M0). Written 2026-11-15. No code was written, and nothing was built or run in
+**Status:** options for Kade, nothing decided. Task R0 (lane chat-send,
+milestone M0). Written 2026-11-15. No code was written, and nothing was built or run in
 the game for this document.
 
 ## How to read this
@@ -23,13 +23,12 @@ StellarProtocol/StellarResonanceModSystem repository at commit
 `60a7772c8de86ec62016703ede89079955f63166`, and `…/` stands for `src/Stellar.Infrastructure/`.
 Stellar is AGPL, so this doc and the code that follows it take **facts** from it (names, numbers,
 signatures, call order) and copy no code or comment text. Stellar is a C# BepInEx plugin, and its
-own docs say it is read-only. The Rust DLL reimplements the one send path it needs (DS-0001: "Don't
-use Stellar plugin itself, just analyze feature").
+own docs say it is read-only. The Rust DLL reimplements the one send path it needs (DS-0001: no Stellar plugin;
+its features are analysed and reimplemented).
 
 ## Fixed decisions (not options)
 
-These were decided in DS-0001 (tasks#1, comment 6898425349) and in the lane's shared values (plan
-`plans/chat-send/R0.md`, tasks@ce0f6f4). This doc builds on them and does not reopen them.
+These were decided in DS-0001 and DS-0002 and in the lane's shared values. This doc builds on them and does not reopen them.
 
 - **Mechanism.** The app is already Administrator (`src-tauri/app.manifest:19`, `requireAdministrator`).
   It loads its own Rust DLL `resonance_ingame.dll` into the game process. The DLL calls the game's
@@ -460,8 +459,7 @@ yet. Options appear only where the choice is real.
 - **What the ACL does not stop.** Any process of the same user can open the pipe. The pid check stops
   it from being served, but a same-user process could also inject into the game itself. The pipe
   carries no secret and grants nothing a same-user process does not already have: it can only ask the
-  DLL to post a chat line the user could post. That is stated in `docs/security_model.md` by R1
-  (tasks#14).
+  DLL to post a chat line the user could post. That is stated in `docs/security_model.md` by task R1.
 - **Framing: JSON lines.** UTF-8 JSON objects, one per line, `\n`-terminated, at most **4096 bytes**
   per line. 140 UTF-16 units are at most 840 bytes even with every unit escaped as `\uXXXX`. A longer
   line is answered with `bad_request`, and the connection is closed.
