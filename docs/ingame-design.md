@@ -650,3 +650,77 @@ opt-in exactly (no setting, no DLL).
   it, but it is process-wide, sees every exception the game raises, and recovering means unwinding
   game frames by hand. Not worth the risk. The default is to **refuse to call** whenever the liveness
   check fails (`handle_` zero, any step null), which is what Stellar relies on too.
+
+## 7. Failure and patch resilience
+
+### Facts
+
+- **Every step can go missing after a patch.** Stellar's design note says the framework "targets one
+  game version at a time" and reruns recon after each patch
+  (`Stellar@60a7772:docs/architecture.md:168`). Reported. The names in section 1 come from Stellar's
+  release_3.7 dump (`…/Game/PandaChatProbe.Send.LiveClient.cs:30`).
+- **TCP only.** The fixed mechanism needs the chat connection to be TCP. The World channel can run
+  over UDP/KCP (`…/Game/PandaChatProbe.Send.Hooks.Rpc.cs:28-31`). `ZRpcImpl.SendBytes` sits above the
+  TCP/UDP split (`:31-33`) and is the transport-agnostic alternative. It takes the protobuf body and
+  frames it itself, but sending through it means calling a game method with a `byte[]` from Rust: a
+  possible M2 task, not M1.
+- **Two wire differences from the game's own sends** (risks, not known failures):
+  - The game's own ChitChat `service_uuid` has non-zero high 32 bits (a per-stub id), while Stellar's
+    frame sends the bare `1321197368` with a zero high half
+    (`…/Game/PandaChatProbe.Send.Hooks.Rpc.cs:10-14`, `…/Game/PandaChatProbe.Send.Builders.cs:154-155`).
+  - Stellar's `call_id` counter starts at 1 and is separate from the game's own counter
+    (`…/Game/PandaChatProbe.Send.cs:87-91`), so our call and one of the game's can carry the same id,
+    and the server's Return for ours may reach the game's pending-call table.
+
+  Stellar sends this way in its releases, which suggests the server accepts it (reported, not
+  observed here). Mitigation for the second: start the DLL's counter at a random value in the upper
+  half of `u32`, far from the game's own ids (a placeholder for R3/R4). Kade's M1 test watches for a
+  wrong reply in the game's chat UI.
+- **How the DLL learns the game build.** From the exe's file version (`GetFileVersionInfoW`) and the
+  size and timestamp of `GameAssembly.dll`, which both change with every patch. Stellar parses a
+  `release_<ver>` folder name, which the Steam build does not have
+  (`Stellar@60a7772:src/Stellar.Application/Services/GameEnvironmentService.cs:26-27`).
+
+### What fails, and what each layer does
+
+The DLL never crashes the game. Every step returns a typed result, nothing is called unless every
+earlier step resolved, and resolution failures are cached per game build.
+
+| what goes missing | DLL does | pipe reply | user sees (by code) | kind |
+|---|---|---|---|---|
+| game not running | (not loaded) | (app side) | 게임이 실행 중이 아닙니다 | self-healing: next send |
+| `GameAssembly.dll` export not found | stays loaded, sends refused | `unsupported` | `unsupported` sentence | permanent for this build |
+| class not found (`ZRpcCtrl`, `ZRpcImpl`, `ZRpcTransfer`, `ZTransport`, `ZTcpConnection`, `ZTcpClient`) | stops resolving | `unsupported` | `unsupported` sentence | permanent for this build |
+| method not found, or wrong parameter count (`GetRpcByProxyId(ulong)`, `GetTransfer()`, `GetTransport()`, one-argument `Send`) | stops resolving | `unsupported` | `unsupported` sentence | permanent for this build |
+| `Send`'s parameter is no longer `ReadOnlySpan<byte>` | stops resolving | `unsupported` | `unsupported` sentence | permanent for this build |
+| field not found (`conn_`, `client_`, `handle_`) | stops resolving | `unsupported` | `unsupported` sentence | permanent for this build |
+| field offsets moved | nothing: offsets come from `il2cpp_field_get_offset` every build | - | - | handled |
+| singleton `null` (before login) | no call | `no_client` | `no_client` sentence | self-healing: after login |
+| `GetRpcByProxyId` returns `null` | no call | `no_client` | `no_client` sentence | self-healing (if it persists after login: Kade's test, then section 1 B) |
+| `conn_` is not `ZTcpConnection` (UDP/KCP) | no call | `no_client` (`detail: "udp"`) | `no_client` sentence | self-healing if the game moves back to TCP; else M2 (`SendBytes`) |
+| `client_` `null` or `handle_` zero | no call | `no_client` | `no_client` sentence | self-healing: after reconnect |
+| `Send` raises a managed exception | caught by `runtime_invoke` | `not_sent` | `not_sent` sentence | retry allowed |
+| main thread does not tick in 1000 ms | send dropped, never made | `expired` | `expired` sentence | self-healing |
+| hook install fails (first bytes not relocatable) | feature off, nothing patched | `unsupported` | `unsupported` sentence | permanent for this build |
+| DLL already loaded (old copy) | (app side) waits for its self-unload, then loads | - | - | handled |
+| DLL loaded twice (same file) | `LoadLibraryW` returns the same module: refcount only | - | - | handled: the app checks the snapshot first and never loads twice |
+
+- **Permanent failures are reported once per game build.** The DLL logs the missing name and the
+  build key (exe file version plus `GameAssembly.dll` size and timestamp). Every later send gets
+  `unsupported` without walking again, until the build key changes.
+- **Logging.** The DLL writes `%LOCALAPPDATA%\<app data folder>\ingame\ingame.log`, capped at 1 MiB
+  (one rotated file). Each resolution failure gets one line with the step name. Chat text is never
+  logged, only its length and channel. The app logs each pipe error code with `detail`.
+- **No allow-list of game builds.** Refusing an unknown build would turn every patch day into an
+  outage for a feature that resolves everything by name anyway. The DLL logs the build key and relies
+  on structural resolution. This is a placeholder choice, open to Kade if he wants a stricter one.
+
+`Recommended: the table above`. Resolve everything by name each build, report permanent failures
+once with the step name, retry self-healing ones on the next send, and refuse to call on any doubt.
+It is the long-term option because it survives patches that move offsets, and it fails safely on
+patches that rename things.
+
+**Patch-day check (Kade's step).** After a game patch, with the setting on and logged in: send one
+line each to `world`, `say`, `party` and `guild` (a party and a guild are needed for the last two),
+and check that each arrives once. Then read `ingame.log` for any `unsupported` line, and include its
+step name in the bug report. The same check is the M1 acceptance run.
