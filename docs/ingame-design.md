@@ -193,16 +193,16 @@ game bytes means fewer things for a game patch to break.
 
 ### Facts
 
-- **Stellar sends from the Unity main thread.** Its `IChat` contract raises the not-sent result
-  "before this returns, when called on the main thread"
+- **Stellar sends from the Unity main thread.** Its `IChat` contract says the not-sent result is raised
+  before `Send` returns when the caller is on the main thread
   (`Stellar@60a7772:src/Stellar.Abstractions/Services/IChat.cs:19-22`). `ChatService.Send` calls
   `TrySend` on the caller's thread (`src/Stellar.Application/Services/ChatService.cs:96-114`). The
   framework's tick is a Unity MonoBehaviour driven by `InvokeRepeating`
   (`…/Unity/StellarTicker.cs:7-8`, `:17`, `:41-45`). Confirmed.
 - **The game sends chat from the main thread too.** The `ZRpcImpl.SendBytes` prefix runs on the
   thread that issued the RPC, which is the Unity main thread for Lua-issued chat
-  (`…/Game/PandaChatProbe.Send.Hooks.Rpc.cs:98-100`). Reported. `SendBytes` "may run on a net thread" in
-  general (`…/Game/PandaChatProbe.Send.Connection.cs:94-96`).
+  (`…/Game/PandaChatProbe.Send.Hooks.Rpc.cs:98-100`). Reported. Stellar's cache code allows for `SendBytes` running on a
+  net thread in general (`…/Game/PandaChatProbe.Send.Connection.cs:94-96`).
 - **Nothing in Stellar shows `Send` called from a foreign thread.** Whether `ZTcpClient.Send` (a
   wrapper over a native handle) is safe to call while the main thread uses the same connection is
   unknown. NOT VERIFIED.
@@ -212,7 +212,7 @@ game bytes means fewer things for a game patch to break.
   pipe thread in the DLL is a foreign thread.
 - **A per-frame hook costs little only when it is native.** Stellar deliberately does not hook
   `Game.Update`, because a per-frame Harmony postfix crosses into the managed runtime every frame,
-  which it measured as a "~12-18 fps tax" (`Stellar@60a7772:src/Stellar.Host/BootstrapPlugin.cs:42-45`).
+  which it measured as costing roughly 12-18 fps (`Stellar@60a7772:src/Stellar.Host/BootstrapPlugin.cs:42-45`).
   A Rust detour is native code: per frame it costs one atomic load and a branch when the queue is
   empty (estimated: nanoseconds). Stellar's own UI work hooks a game `Update` path the same way
   (`…/Game/GamePressCheckShield.cs:7-19`). The `StellarTicker` idea itself (an injected MonoBehaviour)
@@ -223,8 +223,8 @@ game bytes means fewer things for a game patch to break.
 - **A. Hook-and-pump on the main thread.** The pipe thread only parses and queues (a single-slot
   queue: one send in flight). A detour on a method the game runs on the main thread every frame
   drains the slot and runs section 1's walk and `Send` there, on the same thread the game sends its
-  own chat from. The candidate is the `Update` of the game's net loop owner (`ZRpcCtrl` runs "the net
-  echo/Update loop", `…/Game/PandaChatProbe.Send.LiveClient.cs:54-56`), or a Unity per-frame entry if that
+  own chat from. The candidate is the `Update` of the game's net loop owner (per Stellar, `ZRpcCtrl` drives the game's
+  network update loop, `…/Game/PandaChatProbe.Send.LiveClient.cs:54-56`), or a Unity per-frame entry if that
   method does not exist. The exact method is named from a dump of the current build: NOT VERIFIED.
   It needs one hook, so it needs section 3's detour crate. During a loading screen the main thread
   may not tick, so a send can wait. The pipe reply then has a deadline (section 5).
@@ -531,8 +531,8 @@ yet. Options appear only where the choice is real.
 - **The app is Administrator** (`src-tauri/app.manifest:19`). It can open the game with
   `PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION`
   unless the game is a protected process or an anti-cheat driver strips the handle's rights. Stellar's
-  docs say the game has no anti-cheat today: "If a future game patch adds anti-cheat, stop using it"
-  (`Stellar@60a7772:docs/getting-started.md:8-9`). Reported. NOT VERIFIED for the current build.
+  docs imply the game has no anti-cheat today: they tell users to stop using the framework if a future
+  patch adds one (`Stellar@60a7772:docs/getting-started.md:8-9`). Reported. NOT VERIFIED for the current build.
 - **The app does not find the game process today.** Capture works by adapter and port, not by
   process: `find_game_interface` picks the routed adapter
   (`src-tauri/src/services/sniffer/network.rs:203-213`, `route_source_ip` at `:176-184`), and the
@@ -655,8 +655,8 @@ opt-in exactly (no setting, no DLL).
 
 ### Facts
 
-- **Every step can go missing after a patch.** Stellar's design note says the framework "targets one
-  game version at a time" and reruns recon after each patch
+- **Every step can go missing after a patch.** Stellar's design note says the framework supports only one
+  game version at a time and reruns recon after each patch
   (`Stellar@60a7772:docs/architecture.md:168`). Reported. The names in section 1 come from Stellar's
   release_3.7 dump (`…/Game/PandaChatProbe.Send.LiveClient.cs:30`).
 - **TCP only.** The fixed mechanism needs the chat connection to be TCP. The World channel can run
