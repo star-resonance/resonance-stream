@@ -59,6 +59,66 @@ impl SendChatChannel {
     }
 }
 
+/// The longest message the game's chat takes, in UTF-16 code units.
+pub const MAX_TEXT_UTF16: usize = 140;
+
+/// Why a message is not sent. Its `Display` is the one Korean sentence the ui
+/// shows (the `send_chat` command's `Err(String)`). One type for the text rules
+/// here and the spacing rule in `resonance-core`, so a caller can use `?` on both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendTextError {
+    /// Nothing left after trimming.
+    Empty,
+    /// More than [`MAX_TEXT_UTF16`] units after preparation; `len` is the count.
+    TooLong { len: usize },
+    /// The last successful send was too recent; `wait_ms` is the time left.
+    TooSoon { wait_ms: u64 },
+}
+
+impl std::fmt::Display for SendTextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendTextError::Empty => write!(f, "보낼 내용이 없습니다."),
+            SendTextError::TooLong { len } => write!(
+                f,
+                "메시지가 너무 깁니다. {MAX_TEXT_UTF16}자 이하로 줄여 주세요 (현재 {len}자)."
+            ),
+            SendTextError::TooSoon { wait_ms } => {
+                let tenths = wait_ms.div_ceil(100);
+                write!(
+                    f,
+                    "너무 빨리 보내고 있습니다. {}.{}초 뒤에 다시 시도하세요.",
+                    tenths / 10,
+                    tenths % 10
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SendTextError {}
+
+/// Prepares `text` for sending: trims it (Unicode white space), turns each CR
+/// and each LF into one space (no collapsing, so `"a\r\nb"` gives `"a  b"`),
+/// and checks it. Empty after the trim is [`SendTextError::Empty`]; more than
+/// [`MAX_TEXT_UTF16`] UTF-16 units after the replacement is
+/// [`SendTextError::TooLong`].
+pub fn prepare_text(text: &str) -> Result<String, SendTextError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(SendTextError::Empty);
+    }
+    let prepared: String = trimmed
+        .chars()
+        .map(|c| if c == '\r' || c == '\n' { ' ' } else { c })
+        .collect();
+    let len = prepared.encode_utf16().count();
+    if len > MAX_TEXT_UTF16 {
+        return Err(SendTextError::TooLong { len });
+    }
+    Ok(prepared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
