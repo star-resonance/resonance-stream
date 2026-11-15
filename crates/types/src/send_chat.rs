@@ -1,3 +1,64 @@
+//! What the chat composer may send: the channel, and the rules for its text.
+//! Pure and std-only, so the ui compiles it to wasm for its live counter.
+
+use crate::Channel;
+use serde::{Deserialize, Serialize};
+
+/// A channel the app can send to. On the wire it is lower-case (`"say"`,
+/// `"world"`, `"party"`, `"guild"`), unlike [`Channel`]'s upper-case. There is
+/// no whisper and no beginner channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SendChatChannel {
+    /// The game's current (Local) channel.
+    Say,
+    World,
+    Party,
+    Guild,
+}
+
+impl SendChatChannel {
+    /// Every sendable channel, in the order the chat tabs list them.
+    pub const ALL: [SendChatChannel; 4] = [
+        SendChatChannel::World,
+        SendChatChannel::Guild,
+        SendChatChannel::Party,
+        SendChatChannel::Say,
+    ];
+
+    /// The wire string (lower-case).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SendChatChannel::Say => "say",
+            SendChatChannel::World => "world",
+            SendChatChannel::Party => "party",
+            SendChatChannel::Guild => "guild",
+        }
+    }
+
+    /// The chat tab's label (Korean); `Say` is the Local tab's.
+    pub fn label(self) -> &'static str {
+        match self {
+            SendChatChannel::Say => Channel::Local.label(),
+            SendChatChannel::World => Channel::World.label(),
+            SendChatChannel::Party => Channel::Party.label(),
+            SendChatChannel::Guild => Channel::Guild.label(),
+        }
+    }
+
+    /// The channel to send to when `channel`'s tab is open; `None` for the
+    /// beginner channel, which cannot be sent to.
+    pub fn from_channel(channel: Channel) -> Option<Self> {
+        match channel {
+            Channel::World => Some(SendChatChannel::World),
+            Channel::Guild => Some(SendChatChannel::Guild),
+            Channel::Party => Some(SendChatChannel::Party),
+            Channel::Local => Some(SendChatChannel::Say),
+            Channel::Beginner => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 mod app_config;
 mod send_chat;
+pub use send_chat::SendChatChannel;
 pub mod ipc;
 pub use app_config::{AppConfig, GuildRelayConfig};
 
