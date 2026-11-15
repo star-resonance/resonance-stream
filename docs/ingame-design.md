@@ -310,3 +310,102 @@ C there is nothing to bump, but every bug is ours, and a bug here crashes the ga
 `Recommended: A (minhook)`, if section 2's A is chosen. It is the standard tool for exactly this job,
 has the smallest dependency tree, carries the license the repository already uses, and suspends
 threads while patching. If Kade picks section 2's B, no detour crate is needed at all.
+
+## 4. Where the frame builder and the DLL crate live, and goldens
+
+### Facts
+
+- **The workspace aborts on panic in release.** The root `Cargo.toml` sets `[profile.release]
+  panic = "abort"`, `codegen-units = 1`, `lto = true`, `opt-level = "s"`, `strip = true`
+  (`Cargo.toml:35-40`). Profiles take effect only at the workspace root (comment at `:32-34`). The
+  workspace members are `src-tauri`, `crates/core`, `crates/llama` and `crates/types` (`Cargo.toml:25`).
+- **Cargo rules (reported, from the Cargo book "Profiles"):** a per-package override
+  (`[profile.release.package.<name>]`) cannot set `panic`, `lto` or `rpath`. A **custom profile**
+  (`[profile.<name>] inherits = "release"`) can set `panic`, and it is chosen with `--profile <name>`.
+  Under `panic = "abort"`, `std::panic::catch_unwind` catches nothing: a panic anywhere in a DLL built
+  that way aborts the whole game process. Since Rust 1.81, a panic that unwinds out of an
+  `extern "C"` function aborts as well (reported). So the DLL needs `panic = "unwind"` **and** a
+  `catch_unwind` at every FFI edge (section 6).
+- **`crates/core` is too heavy for the DLL.** It depends on `lindera` with embedded IPADIC (its build
+  script downloads the dictionary from Lindera.dev, `crates/core/Cargo.toml:15-17`; `CLAUDE.md`,
+  Guardrails: Trusted hosts), plus `kakasi`, `regex`, `ruzstd`, `etherparse`, `sha2`,
+  `minisign-verify` and others (`crates/core/Cargo.toml:9-25`).
+- **`crates/types` is light.** Only `serde` and `serde_with` (`crates/types/Cargo.toml`). It compiles
+  to wasm for the ui. DS-0002 puts `prepare_text` and its errors there, and the lane puts
+  `SendChatChannel` there.
+- **Gates name packages.** `just core-check` runs `cargo test -p resonance-core -p resonance-llama
+  -p resonance-types` (`justfile:21-22`), and `just coverage` names the same three (`justfile:48`). A new
+  crate needs a `justfile` line and a CI line to be gated. Those changes are a follow-up, not R0's.
+- **The corpus holds no outbound frames.** The recorder keeps only server-to-client data:
+  `is_capturable` is `tcp.source_port == 5003` with a non-empty payload
+  (`crates/core/src/capture/recorder.rs:18-29`). The pipeline drops anything else
+  (`crates/core/src/capture/pipeline.rs:83-85`). `sanitise` reads lines through the same filter
+  (`crates/core/src/capture/sanitise.rs:206-224`). The one fixture,
+  `crates/core/tests/fixtures/oct03.sanitised.capture.log` (2164 lines, generated, `.gitattributes`),
+  is inbound only. `crates/core/testdata/replay-sample.jsonl` is a hand-written chat sample for
+  `--replay-chat`. **No real outbound frame exists anywhere in the repository to use as a golden.**
+- **What the inbound parser can cross-check.** Every inbound frame is `[u32 length incl. header,
+  BE][u16 type][body]` (`crates/core/src/protocol/framing.rs:3-12`, `PREFIX_LEN` 6 at `:29`). The inner
+  header after the prefix is 16 bytes for type `0x0002` and 12 for the rest (`:187-193`). The outbound
+  Call shares only the 6-byte prefix (`size`, then `flags` = 1). Its next 20 bytes (uuid, stub, call,
+  method) are Stellar's layout, which the inbound parser never reads. So the parser can check the
+  prefix, and through the protobuf reader (`crates/core/src/protocol/decoder.rs:4`, `:41`, `:136`, `:146`) the
+  payload. It cannot check the 20 header bytes.
+
+### Options: the frame builder
+
+- **A. A new small crate, `crates/frame`** (package `resonance-frame`). It has no dependencies,
+  is `#![no_std]` with `alloc`, and is pure. It holds the channel's wire value, the protobuf payload,
+  the 26-byte header, and the DLL's second check of the text (empty, CR/LF, 140 UTF-16 units). Both
+  the DLL and `crates/core`'s tests depend on it. It is tested on any OS under `just core-check` once
+  that line names it.
+- **B. In `crates/types`.** No new crate, but the DLL then compiles `serde` and `serde_with` for
+  nothing, and wire details end up in a crate that exists for the Tauri boundary.
+- **C. Inside the DLL crate, not shared.** The golden tests live in the DLL crate, but `crates/core`
+  cannot round-trip the frame through its parser, and the DLL crate's tests run only where that
+  crate is built.
+
+`Recommended: A`. A pure, dependency-free crate is the easiest code in the lane to test, and the
+standard shape for a wire format. The DLL stays small, and `core` can check every frame it builds.
+
+### Options: the DLL crate (`crates/ingame`, package `resonance-ingame`, `cdylib` `resonance_ingame.dll`)
+
+- **A. In the workspace, built with a custom profile.** Add `[profile.ingame] inherits = "release"`,
+  `panic = "unwind"` at the root, and build the DLL with `cargo build -p resonance-ingame --profile
+  ingame --target x86_64-pc-windows-msvc`. One lockfile, one Dependabot config, and the same
+  `windows-sys` version as the app. Trade-off: a plain `cargo build --release` of the whole
+  workspace also builds the DLL with `abort`. That copy must never be shipped, so the packaging step
+  builds the DLL only through `--profile ingame` (a check in `package.bat` and Candidate: a follow-up).
+- **B. Outside the workspace** (`ingame/` with its own `[workspace]` table, `Cargo.lock` and
+  `[profile.release] panic = "unwind"`). The profile can never be wrong, but there are two lockfiles,
+  a second Dependabot entry, and `crates/frame` is used through a path dependency across workspaces.
+- **C. In the workspace with `abort`.** Remove every panic path instead (`#![deny(clippy::unwrap_used,
+  clippy::expect_used, clippy::indexing_slicing, …)]`). It is simple to build, but an allocation
+  failure or a panic in a dependency (MinHook's bindings, `serde_json`) still kills the game, and
+  `catch_unwind` cannot help. Not recommended.
+
+`Recommended: A`. It keeps one workspace and one lockfile, and the custom profile is Cargo's own
+answer to "this one artifact needs a different panic strategy". The packaging check removes A's one
+trap.
+
+### Goldens: how an outbound golden can be made
+
+The corpus has none, so the golden for M1 is a mix. Each kind proves something different:
+
+1. **Derived bytes (unit test in `crates/frame`).** Hand-derive the bytes for fixed inputs (for
+   example `world`, text `"hi"`, `call_id` 1) from the layout in the fixed decisions, and pin them as a
+   test. This proves the builder matches the layout as documented. It is **derived, not observed**,
+   and says nothing about whether the server accepts it.
+2. **Round trip through `core` (test in `crates/core`).** Parse the built frame's 6-byte prefix with
+   the framing constants, then decode the payload with `protocol/decoder.rs` (fields 1, 2, 4 and the
+   string at field 3). The channel and text must come back. This proves the payload is well-formed
+   protobuf with the right field numbers, read by the same code that reads real chat.
+3. **One real frame, observed (Kade's step, later).** Either (i) the DLL logs the exact bytes it
+   passed to `Send` in a debug build, and Kade's in-game test confirms the line appeared in chat, or
+   (ii) the recorder also keeps client-to-server packets (`destination_port == 5003`). Option (ii)
+   changes `is_capturable` and `sanitise` and needs a fresh capture: a later task, not R0's. A frame
+   the game itself sent would also show the high 32 bits of `service_uuid` that the game uses (section
+   7). Only this kind proves the server accepts the frame.
+
+`Recommended: 1 and 2` in the frame crate's first PR (R3 or R4), and 3(i) as part of Kade's M1
+in-game test. 3(ii) only if 3(i) leaves a doubt.
