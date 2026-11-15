@@ -523,3 +523,130 @@ yet. Options appear only where the choice is real.
   `crates/core`). **B: length-prefixed binary**, no dependency, but every reader and log needs a decoder.
   `Recommended: A`. It can be read in a log, matches the bridge's style, and its cost is one crate the
   workspace already builds.
+
+## 6. Loading and unloading
+
+### Facts
+
+- **The app is Administrator** (`src-tauri/app.manifest:19`). It can open the game with
+  `PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION`
+  unless the game is a protected process or an anti-cheat driver strips the handle's rights. Stellar's
+  docs say the game has no anti-cheat today: "If a future game patch adds anti-cheat, stop using it"
+  (`Stellar@60a7772:docs/getting-started.md:8-9`). Reported. NOT VERIFIED for the current build.
+- **The app does not find the game process today.** Capture works by adapter and port, not by
+  process: `find_game_interface` picks the routed adapter
+  (`src-tauri/src/services/sniffer/network.rs:203-213`, `route_source_ip` at `:176-184`), and the
+  pipeline keeps port 5003 (`crates/core/src/capture/pipeline.rs:83`). The only processes the app
+  starts are `netsh` (`network.rs:255`, `:299`, `:322`), `explorer` (`src-tauri/src/io/fs.rs:20`),
+  `llama-server.exe`, and its own updated exe (`src-tauri/src/services/downloader/app_updater.rs:145`).
+  The repository contains no game exe name.
+- **There is more than one game exe name.** Stellar matches the exe name by **prefix**: `StarSEA`
+  is the SEA client (`StarSEA.exe` from the launcher, `StarSEA_STEAM.exe` on Steam) and `StarASIA` is
+  the JP client (`Stellar@60a7772:src/Stellar.Application/Services/GameEnvironmentService.cs:19-32`,
+  `src/Stellar.Abstractions/Domain/GameRegion.cs:8`, `FrameworkVersion.cs:374-375`). Reported. This
+  app translates Japanese chat, so many of its users may run `StarASIA.exe`. The app must not
+  hard-code `StarSEA.exe`.
+- **New `windows-sys` features** (reported module paths in 0.61; the follow-up confirms each by
+  compiling):
+
+  | feature | for |
+  |---|---|
+  | `Win32_System_Diagnostics_ToolHelp` | process and module snapshots |
+  | `Win32_System_Threading` | `OpenProcess`, `CreateRemoteThread`, `WaitForSingleObject`, `IsWow64Process2` |
+  | `Win32_System_Memory` | `VirtualAllocEx`, `VirtualFreeEx` |
+  | `Win32_System_Diagnostics_Debug` | `WriteProcessMemory` |
+  | `Win32_System_LibraryLoader` | `GetModuleHandleW`, `GetProcAddress` for `LoadLibraryW` |
+  | `Win32_NetworkManagement_IpHelper` | `GetExtendedTcpTable` |
+
+  Each is a `src-tauri/Cargo.toml` change, which is not R0's to make.
+- **Rule 1 of the security model:** "What runs elevated is verified when it is run" (hash or signature
+  of the file about to be run, `docs/security_model.md:126`). `resonance_core::server_pins` does this
+  for the AI server just before starting it (`src-tauri/src/services/translator/server_manager.rs:139-145`).
+  The security model already names the gap between that check and the start: a same-user process can
+  replace a file in a user-writable folder (`docs/security_model.md:66`).
+- **A remote thread's exit code is 32 bits.** `GetExitCodeThread` returns a `DWORD`, so the `HMODULE`
+  that `LoadLibraryW` returns in the game is truncated on x64 (documented Win32 behaviour, reported).
+  The module base must be read from a module snapshot (`TH32CS_SNAPMODULE`).
+
+### Options: loading
+
+- **A. Remote thread (`LoadLibraryW`).** `OpenProcess` -> `VirtualAllocEx` + `WriteProcessMemory` (the
+  DLL path as UTF-16) -> `CreateRemoteThread(LoadLibraryW, path)` -> `WaitForSingleObject` (5 s) ->
+  check the module snapshot for `resonance_ingame-*.dll` -> `VirtualFreeEx`. This is the standard,
+  documented way. It writes nothing into the game's folder, and loading happens only while the app
+  runs and the setting is on.
+- **B. Proxy DLL in the game folder** (the Stellar way: BepInEx IL2CPP through a doorstop
+  `winhttp.dll`, `GameEnvironmentService.cs:21-22`). The game loads it at start-up, so no remote
+  thread is needed. But it changes the game's install folder, loads before the app runs (and even
+  when the setting is off), must be removed by hand or by the app, and a launcher repair may delete
+  or flag it.
+- **C. Manual map** (write the PE image and resolve imports by hand). It leaves no loader entry, which
+  is what anti-cheat looks for, and it breaks Rust's TLS and unwinding tables unless all of that is
+  redone by hand. Not recommended.
+
+`Recommended: A`. It is the standard, it leaves the game's folder untouched, and it follows the
+opt-in exactly (no setting, no DLL).
+
+### Specification for A (proposed)
+
+- **Finding the pid.** A process snapshot (`CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS)`) keeps exe
+  names that start with `StarSEA` or `StarASIA` and end in `.exe`, case-insensitive.
+  - One match: use it.
+  - More than one: keep the one that owns a TCP connection to remote port 5003
+    (`GetExtendedTcpTable`, `TCP_TABLE_OWNER_PID_CONNECTIONS`). This also confirms that the process is
+    the one the sniffer hears.
+  - Still more than one, or none: refuse, with "게임이 실행 중이 아닙니다" or "게임이 둘 이상 실행 중입니다".
+  - A 32-bit process (`IsWow64Process2`) is refused.
+  - A game that is running but not logged in is fine to load into. Sends answer `no_client` until
+    login.
+- **When to load.** When the setting is on and the game process is found (on enable, and at the
+  first send if it is not loaded yet). The DLL stays loaded until the setting is turned off, the app
+  exits, or the game exits.
+- **Checking the DLL is ours.** The DLL ships with the app (a bundle resource). Its SHA-256 is
+  computed at build time and built into the app as a pin, the way `server_pins` works. Before each
+  load, the app copies it to
+  `%LOCALAPPDATA%\<app data folder>\ingame\resonance_ingame-<version>-<sha8>.dll` (inside the app's
+  own data folder, never the game's), hashes the copy, and loads only on a match. The check-to-load
+  gap is the one the security model already names. A same-user process that could use it could
+  inject into the game itself anyway, so the gap adds no new reach (estimated). Having the DLL check
+  which module loaded it is not worth it: nothing in the DLL is privileged.
+- **No overwrite while loaded.** A loaded DLL file cannot be replaced, so each version gets its own
+  file name (above). The app deletes old copies that no process has loaded.
+- **`DllMain` does almost nothing.** On `DLL_PROCESS_ATTACH` it calls `DisableThreadLibraryCalls` and
+  `CreateThread(worker)`, and returns. The worker starts after the loader lock is released, then
+  attaches to il2cpp, resolves exports, and connects the pipe. No il2cpp call ever runs inside
+  `DllMain`.
+
+### Unloading
+
+- **On request (`bye`: setting off, app exit, app update).** The DLL:
+  1. stops accepting sends (and answers a queued one `expired`);
+  2. disables and removes every hook (`MH_DisableHook(MH_ALL_HOOKS)`, `MH_Uninitialize`);
+  3. waits until an in-detour counter is zero and one more frame has passed, so no thread is inside
+     the DLL's code;
+  4. closes the pipe;
+  5. calls `FreeLibraryAndExitThread` from its own worker thread.
+
+  The app waits for the module to leave the module snapshot (2 s).
+- **The app is killed first.** The pipe breaks. The DLL runs the same sequence and unloads itself. A
+  fresh app loads a fresh copy. This avoids a DLL left behind that no app can talk to.
+- **The game is closed first.** The pipe breaks and the game's process handle is signalled. The app
+  marks the DLL unloaded, and the next send finds no game.
+- **An app update.** The old app sends `bye` on exit. The new app loads its own version under its
+  own file name, so two versions are never loaded at once. If an old copy is found in the module
+  snapshot (the old app crashed during the exchange), the app waits for its self-unload (it sees the
+  broken pipe) before loading.
+
+### Crash safety
+
+- **`panic = "unwind"` for the DLL** (section 4) and `catch_unwind` at every FFI edge: `DllMain`, the
+  worker thread's procedure, every detour callback, and any exported function. A caught panic in the
+  worker turns into an error reply. A caught panic in a detour calls the original and disables the
+  feature. No panic ever crosses `extern "C"`: since Rust 1.81 that aborts anyway (reported).
+- **The detour's hot path** (the per-frame pump) does one atomic load when idle. It never allocates,
+  never takes a lock, and never logs on that path.
+- **Faults in game code are not panics.** An access violation from reading a freed game object is a
+  structured exception, and `catch_unwind` does not catch it. `AddVectoredExceptionHandler` could see
+  it, but it is process-wide, sees every exception the game raises, and recovering means unwinding
+  game frames by hand. Not worth the risk. The default is to **refuse to call** whenever the liveness
+  check fails (`handle_` zero, any step null), which is what Stellar relies on too.
