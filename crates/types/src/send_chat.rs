@@ -133,4 +133,71 @@ mod tests {
             .collect();
         assert_eq!(none, [Channel::Beginner]);
     }
+
+    #[test]
+    fn max_is_140() {
+        assert_eq!(MAX_TEXT_UTF16, 140);
+    }
+
+    #[test]
+    fn prepare_trims_and_replaces_line_breaks() {
+        assert_eq!(prepare_text("  hi  "), Ok("hi".to_string()));
+        assert_eq!(prepare_text("a\r\nb"), Ok("a  b".to_string()));
+        assert_eq!(prepare_text("a\nb"), Ok("a b".to_string()));
+        assert_eq!(prepare_text("\u{3000}hi\u{3000}"), Ok("hi".to_string()));
+    }
+
+    #[test]
+    fn prepare_refuses_empty() {
+        for t in ["", "   ", "\n\r  "] {
+            assert_eq!(prepare_text(t), Err(SendTextError::Empty));
+        }
+    }
+
+    #[test]
+    fn prepare_counts_utf16_units_after_preparation() {
+        assert!(prepare_text(&"a".repeat(140)).is_ok());
+        assert_eq!(
+            prepare_text(&"a".repeat(141)),
+            Err(SendTextError::TooLong { len: 141 })
+        );
+        assert!(prepare_text(&"あ".repeat(140)).is_ok());
+        assert!(prepare_text(&"😀".repeat(70)).is_ok());
+        assert_eq!(
+            prepare_text(&"😀".repeat(71)),
+            Err(SendTextError::TooLong { len: 142 })
+        );
+        assert!(prepare_text(&format!("{}\n", "a".repeat(140))).is_ok());
+        assert_eq!(
+            prepare_text(&format!("{}\n{}", "a".repeat(70), "a".repeat(70))),
+            Err(SendTextError::TooLong { len: 141 })
+        );
+    }
+
+    #[test]
+    fn errors_display_one_korean_sentence() {
+        assert_eq!(SendTextError::Empty.to_string(), "보낼 내용이 없습니다.");
+        assert_eq!(
+            SendTextError::TooLong { len: 141 }.to_string(),
+            "메시지가 너무 깁니다. 140자 이하로 줄여 주세요 (현재 141자)."
+        );
+        assert_eq!(
+            SendTextError::TooSoon { wait_ms: 1200 }.to_string(),
+            "너무 빨리 보내고 있습니다. 1.2초 뒤에 다시 시도하세요."
+        );
+        assert!(SendTextError::TooSoon { wait_ms: 1 }
+            .to_string()
+            .contains("0.1초"));
+        assert!(SendTextError::TooSoon { wait_ms: 1500 }
+            .to_string()
+            .contains("1.5초"));
+        for e in [
+            SendTextError::Empty,
+            SendTextError::TooLong { len: 141 },
+            SendTextError::TooSoon { wait_ms: 1500 },
+        ] {
+            assert!(!e.to_string().contains('\n'));
+            let _: &dyn std::error::Error = &e;
+        }
+    }
 }
