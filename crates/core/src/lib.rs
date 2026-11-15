@@ -18,6 +18,7 @@ pub mod log_throttle;
 pub mod paste;
 pub mod protocol;
 pub mod replay;
+pub mod send_text;
 pub mod server_pins;
 pub mod signed_metadata;
 pub mod sniffer_net;
