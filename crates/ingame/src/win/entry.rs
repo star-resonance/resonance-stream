@@ -62,11 +62,11 @@ impl UnloadSteps for Worker {
     fn stop_accepting(&mut self) {
         GlobalLog.info("unload: stop accepting");
     }
-    fn disable_hooks(&mut self) {
-        // R5: remove the pump hook here. There is none yet.
+    fn disable_hooks(&mut self) -> Result<(), String> {
+        Ok(())
     }
-    fn drain(&mut self) {
-        // R5: wait for a send in flight. There is none yet.
+    fn drain(&mut self) -> Result<(), String> {
+        Ok(())
     }
     fn close_pipe(&mut self) {
         self.pipe = None;
