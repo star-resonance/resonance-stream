@@ -179,6 +179,13 @@ impl<O: Il2cppOps> Walker<O> {
     /// The first of [`HOOK_CANDIDATES`] that resolves and has native code. Makes no invoke
     /// and patches nothing; resolution only.
     pub fn resolve_pump(&mut self, log: &mut dyn LogSink) -> Result<PumpTarget, StepError> {
+        self.resolve_pumps(log).map(|mut all| all.remove(0))
+    }
+
+    /// Every candidate that resolves and has native code, in order (never empty): the
+    /// hook tries the next one when ilhook refuses a prologue.
+    pub fn resolve_pumps(&mut self, log: &mut dyn LogSink) -> Result<Vec<PumpTarget>, StepError> {
+        let mut found = Vec::new();
         let mut no_code = false;
         for candidate in HOOK_CANDIDATES {
             let label = candidate.label();
@@ -201,17 +208,20 @@ impl<O: Il2cppOps> Walker<O> {
                 continue;
             }
             log.info(&format!("hook candidate {label}: code at {address:#x}"));
-            return Ok(PumpTarget {
+            found.push(PumpTarget {
                 name: label,
                 method,
                 address,
             });
         }
-        Err(StepError::method(if no_code {
-            "pump.code"
-        } else {
-            "pump"
-        }))
+        if found.is_empty() {
+            return Err(StepError::method(if no_code {
+                "pump.code"
+            } else {
+                "pump"
+            }));
+        }
+        Ok(found)
     }
 
     fn resolve(&mut self, log: &mut dyn LogSink) -> Result<Resolved, StepError> {
