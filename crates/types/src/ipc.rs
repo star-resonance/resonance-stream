@@ -15,6 +15,16 @@ use crate::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// A connected game client as the ui lists it. `target` goes back unchanged as `send_chat`'s
+/// `client`; the ui never shows or interprets it. `name` is the character's nickname, or a
+/// placeholder while it is not known: never a pid, an address or an exe name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameClient {
+    pub target: u32,
+    pub name: String,
+}
+
 /// A Tauri command: its registered name and what it answers. A command that returns
 /// `Result<T, String>` answers `T`; its error arrives as the call's error.
 pub trait Command: Serialize {
@@ -62,6 +72,7 @@ commands! {
 
     // Chat sending (through the in-game module). The error is one Korean sentence.
     SendChat = "send_chat" { channel: SendChatChannel, text: String } -> ();
+    GameClients = "game_clients" {} -> Vec<GameClient>;
 
     // Translator.
     LaunchTranslator = "launch_translator" {} -> ();
@@ -332,10 +343,24 @@ mod tests {
     }
 
     #[test]
+    fn game_clients_answers_a_target_and_a_name() {
+        assert_eq!(GameClients::NAME, "game_clients");
+        assert!(COMMAND_NAMES.contains(&"game_clients"));
+        assert_eq!(
+            serde_json::to_value(GameClient {
+                target: 7,
+                name: "Aria".into()
+            })
+            .unwrap(),
+            json!({ "target": 7, "name": "Aria" })
+        );
+    }
+
+    #[test]
     fn the_backend_registers_exactly_the_commands_listed_here() {
         let listed: BTreeSet<String> = COMMAND_NAMES.iter().map(|n| n.to_string()).collect();
         let registered = registered_commands();
-        assert_eq!(registered.len(), 47, "{registered:?}");
+        assert_eq!(registered.len(), 48, "{registered:?}");
         assert_eq!(listed, registered);
     }
 

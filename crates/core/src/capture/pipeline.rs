@@ -1,5 +1,6 @@
 use crate::capture::message_processor::{MessageProcessor, ProcessAction, DEFAULT_DEDUP_CAPACITY};
 use crate::capture::stream_tracker::{StreamKey, StreamTracker};
+use crate::game_clients::{ClientFact, Endpoint, Roster};
 use crate::protocol::framing::FrameKind;
 use crate::protocol::own_player::{own_player, OwnPlayer};
 use crate::protocol::parser::{history_pipeline, parsing_pipeline, Port5003Event};
@@ -7,6 +8,7 @@ use crate::text::normalize_emotes;
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
 use resonance_types::ChatMessage;
 use std::collections::HashMap;
+use std::time::Instant;
 
 pub enum PipelineAction {
     UpdateBlockedMessage(ChatMessage),
@@ -33,6 +35,8 @@ pub struct ChatPipeline {
     keep_unknown_fields: bool,
     /// The last own-player record reported, so an unchanged one is not sent again.
     own_player: Option<OwnPlayer>,
+    /// Which connection is which character (read before the duplicate check).
+    roster: Roster,
 }
 
 impl ChatPipeline {
@@ -42,6 +46,7 @@ impl ChatPipeline {
             processor: MessageProcessor::new(),
             keep_unknown_fields: false,
             own_player: None,
+            roster: Roster::new(),
         }
     }
 
@@ -61,6 +66,11 @@ impl ChatPipeline {
         for message in messages {
             self.processor.commit_new_message(message);
         }
+    }
+
+    /// The connections and their characters' nicknames, when they changed since the last call.
+    pub fn take_clients(&mut self) -> Option<Vec<ClientFact>> {
+        self.roster.take_changed(Instant::now())
     }
 
     /// 100% Pure Logic: Takes raw network bytes and returns UI Actions.
@@ -103,6 +113,12 @@ impl ChatPipeline {
         stream_key[6..10].copy_from_slice(&ipv4.destination);
         stream_key[10..12].copy_from_slice(&tcp.destination_port.to_be_bytes());
 
+        let local = Endpoint {
+            addr: ipv4.destination,
+            port: tcp.destination_port,
+        };
+        self.roster.see_connection(local, Instant::now());
+
         // 3. Assemble fragmented bytes into complete frames (retransmits dropped)
         let frames = self
             .tracker
@@ -115,6 +131,8 @@ impl ChatPipeline {
                 FrameKind::History => (history_pipeline(&frame.root), Origin::History),
                 FrameKind::State => {
                     if let Some(player) = own_player(&frame.root) {
+                        // Per connection, before the (single) own-player slot below.
+                        self.roster.own_uid(local, player.uid, Instant::now());
                         if self.own_player != Some(player) {
                             self.own_player = Some(player);
                             actions.push(PipelineAction::OwnPlayer(player));
@@ -154,6 +172,8 @@ impl ChatPipeline {
         is_blocked: impl Fn(u64) -> bool,
         mut assign_pid: impl FnMut() -> u64,
     ) -> Option<PipelineAction> {
+        // Before the duplicate check: a line dropped as a duplicate still names its sender.
+        self.roster.see_line(chat.uid, &chat.nickname);
         if !self.keep_unknown_fields {
             chat.unknown_fields = HashMap::new();
         }
@@ -843,5 +863,98 @@ mod tests {
                 guild_id: None
             }]
         );
+    }
+
+    // ---- the roster of game clients (F-MC-2) ----
+
+    /// A live chat frame from sender `uid` named `nick`: { 1: seq, 2: { 1: uid, 2: nick }, 4: text }.
+    fn chat_segment_by(uid: u64, nick: &str, seq: u8, text: &str) -> Vec<u8> {
+        let mut msg = vec![0x1A, text.len() as u8];
+        msg.extend_from_slice(text.as_bytes());
+        let sender = [pb_int(1, uid), pb_msg(2, nick.as_bytes())].concat();
+        let mut payload = vec![0x08, seq];
+        payload.extend(pb_msg(2, &sender));
+        payload.extend([0x22, msg.len() as u8]);
+        payload.extend(msg);
+        let root = pb_msg(1, &pb_msg(2, &payload));
+        frame(&root)
+    }
+
+    /// Feeds `frame` as sent to `client`:`port`; `seqs` keeps each connection's sequence number.
+    fn feed_to(
+        pipeline: &mut ChatPipeline,
+        seqs: &mut HashMap<u16, u32>,
+        port: u16,
+        frame: &[u8],
+    ) -> Vec<PipelineAction> {
+        let seq = seqs.entry(port).or_insert(1);
+        let packet = tcp_from_5003_to([10, 0, 0, 5], port, *seq, frame);
+        *seq += frame.len() as u32;
+        pipeline.feed_network_packet(&packet, |_| false, || 1, || {})
+    }
+
+    fn named(port: u16, nick: Option<&str>) -> crate::game_clients::ClientFact {
+        crate::game_clients::ClientFact {
+            local: crate::game_clients::Endpoint {
+                addr: [10, 0, 0, 5],
+                port,
+            },
+            nickname: nick.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_line_dropped_as_a_duplicate_still_names_the_client() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seqs = HashMap::new();
+        // The history from disk already holds Bob's line (uid 9, sequence 5).
+        pipeline.remember(&[chat_from(9, 0, 5, "hello")]);
+        feed_to(&mut pipeline, &mut seqs, 51001, &own_record_frame(9, None));
+        let actions = feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51001,
+            &chat_segment_by(9, "Bob", 5, "hello"),
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, PipelineAction::EmitNewMessage(..))),
+            "the line is a duplicate"
+        );
+        assert_eq!(
+            pipeline.take_clients(),
+            Some(vec![named(51001, Some("Bob"))])
+        );
+    }
+
+    #[test]
+    fn two_clients_are_named_each_by_its_own_character() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seqs = HashMap::new();
+        for _ in 0..2 {
+            feed_to(&mut pipeline, &mut seqs, 51000, &own_record_frame(7, None));
+            feed_to(&mut pipeline, &mut seqs, 51001, &own_record_frame(9, None));
+        }
+        feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51000,
+            &chat_segment_by(7, "Aria", 1, "a"),
+        );
+        feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51001,
+            &chat_segment_by(9, "Bob", 2, "b"),
+        );
+        assert_eq!(
+            pipeline.take_clients(),
+            Some(vec![named(51000, Some("Aria")), named(51001, Some("Bob"))])
+        );
+        // The same state frames again, alternating (the own-player slot flaps): nothing changes.
+        feed_to(&mut pipeline, &mut seqs, 51000, &own_record_frame(7, None));
+        feed_to(&mut pipeline, &mut seqs, 51001, &own_record_frame(9, None));
+        assert_eq!(pipeline.take_clients(), None);
     }
 }

@@ -1,5 +1,6 @@
 //! Which processes hold a connection to the game's chat port.
 
+use resonance_core::game_clients::{is_established, row_endpoint, Endpoint};
 use resonance_core::ingame_send::{remote_port, CHAT_PORT};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL,
@@ -8,8 +9,17 @@ use windows_sys::Win32::Networking::WinSock::AF_INET;
 
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 
-/// The pids that own an IPv4 TCP connection whose remote port is [`CHAT_PORT`].
-pub fn chat_port_owners() -> Vec<u32> {
+/// One row of the IPv4 TCP table.
+struct Row {
+    pid: u32,
+    state: u32,
+    local_addr: u32,
+    local_port: u32,
+    remote_port: u32,
+}
+
+/// The whole IPv4 TCP table, read once (empty when the call fails).
+fn table_rows() -> Vec<Row> {
     // 8-byte aligned storage for the table.
     let mut storage: Vec<u64> = vec![0; 1024];
     for _ in 0..4 {
@@ -41,15 +51,39 @@ pub fn chat_port_owners() -> Vec<u32> {
                 std::ptr::addr_of!((*table).table).cast::<MIB_TCPROW_OWNER_PID>(),
             )
         };
-        let mut owners = Vec::new();
+        let mut out = Vec::with_capacity(count);
         for i in 0..count {
             // SAFETY: `i < dwNumEntries`, so the row is inside the buffer.
             let row = unsafe { &*rows.add(i) };
-            if remote_port(row.dwRemotePort) == CHAT_PORT && !owners.contains(&row.dwOwningPid) {
-                owners.push(row.dwOwningPid);
-            }
+            out.push(Row {
+                pid: row.dwOwningPid,
+                state: row.dwState,
+                local_addr: row.dwLocalAddr,
+                local_port: row.dwLocalPort,
+                remote_port: row.dwRemotePort,
+            });
         }
-        return owners;
+        return out;
     }
     Vec::new()
+}
+
+/// The pids that own an IPv4 TCP connection whose remote port is [`CHAT_PORT`].
+pub fn chat_port_owners() -> Vec<u32> {
+    let mut owners = Vec::new();
+    for row in table_rows() {
+        if remote_port(row.remote_port) == CHAT_PORT && !owners.contains(&row.pid) {
+            owners.push(row.pid);
+        }
+    }
+    owners
+}
+
+/// The established connections to [`CHAT_PORT`]: the owning pid and the local end of each.
+pub fn chat_connections() -> Vec<(u32, Endpoint)> {
+    table_rows()
+        .into_iter()
+        .filter(|r| remote_port(r.remote_port) == CHAT_PORT && is_established(r.state))
+        .map(|r| (r.pid, row_endpoint(r.local_addr, r.local_port)))
+        .collect()
 }

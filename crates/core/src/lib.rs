@@ -11,6 +11,7 @@ pub mod download;
 pub mod favorites_migration;
 pub mod flow;
 pub mod furigana;
+pub mod game_clients;
 pub mod guild_relay;
 pub mod history;
 pub mod ingame_fetch;

@@ -226,6 +226,7 @@ pub fn run() {
             ensure_firewall_rule_command,
             restart_sniffer_command,
             send_chat,
+            game_clients,
         ]));
     // `--no-window-state`: neither restore nor save the windows' size and place.
     if !test_env::no_window_state() {
