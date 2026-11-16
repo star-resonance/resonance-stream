@@ -720,4 +720,21 @@ pub(crate) mod tests {
         let mut w = walker(ops);
         assert_eq!(pump(&mut w).unwrap().name, "Game.Update");
     }
+
+    #[test]
+    fn every_usable_candidate_is_listed_in_order() {
+        let mut w = walker(with_pump_candidates());
+        let names: Vec<String> = w
+            .resolve_pumps(&mut RotatingLog::inert())
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["ZRpcCtrl.Update", "Game.Update"]);
+        let mut w = walker(FakeOps::world());
+        assert_eq!(
+            w.resolve_pumps(&mut RotatingLog::inert()),
+            Err(StepError::method("pump"))
+        );
+    }
 }
