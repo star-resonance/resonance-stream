@@ -294,6 +294,10 @@ fn apply_config(
         crate::services::sniffer::set_raw_capture(config.raw_capture);
     }
 
+    if old_config.ingame_send != config.ingame_send {
+        crate::ingame::apply_setting(config.ingame_send);
+    }
+
     if old_config.chat_log_retention_days != config.chat_log_retention_days {
         crate::io::prune_chat_logs(&app);
     }

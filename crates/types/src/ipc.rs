@@ -9,8 +9,8 @@
 
 use crate::{
     AppConfig, ChatMessage, ClickThroughHoldKey, DictionaryStatus, FavoritesState, FolderStatus,
-    GuildRelayStatePayload, NetworkInterface, PopupKind, RubySpan, ServiceStates, SystemMessage,
-    UpdateCheckResult, UpdateTarget, WindowRect,
+    GuildRelayStatePayload, NetworkInterface, PopupKind, RubySpan, SendChatChannel, ServiceStates,
+    SystemMessage, UpdateCheckResult, UpdateTarget, WindowRect,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,9 @@ commands! {
     OpenCapturesFolder = "open_captures_folder" {} -> ();
     BlockUser = "block_user_command" { uid: u64, nickname: String } -> ();
     UnblockUser = "unblock_user_command" { uid: u64 } -> ();
+
+    // Chat sending (through the in-game module). The error is one Korean sentence.
+    SendChat = "send_chat" { channel: SendChatChannel, text: String } -> ();
 
     // Translator.
     LaunchTranslator = "launch_translator" {} -> ();
@@ -316,10 +319,23 @@ mod tests {
     }
 
     #[test]
+    fn send_chat_takes_a_channel_and_text() {
+        assert_eq!(SendChat::NAME, "send_chat");
+        assert!(COMMAND_NAMES.contains(&"send_chat"));
+        assert_eq!(
+            wire(&SendChat {
+                channel: crate::SendChatChannel::World,
+                text: "hi".into()
+            }),
+            json!({ "channel": "world", "text": "hi" })
+        );
+    }
+
+    #[test]
     fn the_backend_registers_exactly_the_commands_listed_here() {
         let listed: BTreeSet<String> = COMMAND_NAMES.iter().map(|n| n.to_string()).collect();
         let registered = registered_commands();
-        assert_eq!(registered.len(), 46, "{registered:?}");
+        assert_eq!(registered.len(), 47, "{registered:?}");
         assert_eq!(listed, registered);
     }
 

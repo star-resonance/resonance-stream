@@ -24,6 +24,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Hashes the in-game DLL for the pin (build.rs); already in the lock through resonance-core.
+sha2 = "0.11"
 
 [dependencies]
 resonance-core = { path = "../crates/core" }
@@ -50,7 +52,22 @@ local-ip-address = "0.6.10"
 lazy_static = "1.5.0"
 # Features are also switched on by other crates (socket2: WinSock); the
 # ones this crate calls directly are listed.
-windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_Networking_WinSock",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
 socket2 = "0.6.2"
 log = "0.4.29"
 env_logger = "0.11"

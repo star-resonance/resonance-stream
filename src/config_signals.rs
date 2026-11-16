@@ -94,6 +94,8 @@ pub struct ConfigSignals {
     pub set_chat_log_retention_days: WriteSignal<u32>,
     pub raw_capture: ReadSignal<bool>,
     pub set_raw_capture: WriteSignal<bool>,
+    pub ingame_send: ReadSignal<bool>,
+    pub set_ingame_send: WriteSignal<bool>,
     pub guild_relay: ReadSignal<GuildRelayConfig>,
     pub set_guild_relay: WriteSignal<GuildRelayConfig>,
     pub nav_tabs: ReadSignal<Vec<String>>,
@@ -147,6 +149,7 @@ impl ConfigSignals {
         let (favorite_tabs, set_favorite_tabs) = signal::<Vec<FavoriteTab>>(Vec::new());
         let (chat_log_retention_days, set_chat_log_retention_days) = signal::<u32>(0);
         let (raw_capture, set_raw_capture) = signal::<bool>(false);
+        let (ingame_send, set_ingame_send) = signal::<bool>(false);
         let (guild_relay, set_guild_relay) = signal(GuildRelayConfig::default());
         let (nav_tabs, set_nav_tabs) = signal::<Vec<String>>(resonance_types::default_nav_tabs());
         let (click_through_hold_key, set_click_through_hold_key) =
@@ -222,6 +225,8 @@ impl ConfigSignals {
             set_chat_log_retention_days,
             raw_capture,
             set_raw_capture,
+            ingame_send,
+            set_ingame_send,
             guild_relay,
             set_guild_relay,
             nav_tabs,
@@ -269,6 +274,7 @@ impl ConfigSignals {
             favorite_tabs: self.favorite_tabs.get_untracked(),
             chat_log_retention_days: self.chat_log_retention_days.get_untracked(),
             raw_capture: self.raw_capture.get_untracked(),
+            ingame_send: self.ingame_send.get_untracked(),
             guild_relay: self.guild_relay.get_untracked(),
             nav_tabs: self.nav_tabs.get_untracked(),
             click_through_hold_key: self.click_through_hold_key.get_untracked(),
@@ -332,6 +338,7 @@ impl ConfigSignals {
             favorite_tabs,
             chat_log_retention_days,
             raw_capture,
+            ingame_send,
             guild_relay,
             nav_tabs,
             click_through_hold_key,
@@ -388,6 +395,7 @@ impl ConfigSignals {
         self.set_chat_log_retention_days
             .set(chat_log_retention_days);
         self.set_raw_capture.set(raw_capture);
+        self.set_ingame_send.set(ingame_send);
         self.set_guild_relay.set(guild_relay);
         self.set_nav_tabs.set(nav_tabs);
         self.set_click_through_hold_key.set(click_through_hold_key);
@@ -441,6 +449,7 @@ mod tests {
             favorite_tabs: vec![tab(2, "레이드"), tab(5, "던전")],
             chat_log_retention_days: 5,
             raw_capture: true,
+            ingame_send: true,
             guild_relay: GuildRelayConfig {
                 enabled: true,
                 broker_url: "https://relay.example".into(),

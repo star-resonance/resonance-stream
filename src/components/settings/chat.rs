@@ -89,6 +89,23 @@ pub fn ChatSection() -> impl IntoView {
                 </label>
             </div>
 
+            // In-game chat sending (opt-in)
+            <div class="form-control bg-base-200 p-3 rounded-lg border border-base-content/5">
+                <label class="label cursor-pointer p-0 w-full justify-between gap-3">
+                    <div class="flex flex-col">
+                        <span class="label-text text-xs font-bold text-base-content/80">"게임 내 채팅 보내기"</span>
+                        <span class="text-[9px] text-base-content/60 mt-1">"게임 프로세스에 전송 모듈을 불러와 채팅을 보냅니다. 게임 이용약관에 어긋날 수 있으며, 사용에 따른 책임은 사용자에게 있습니다."</span>
+                    </div>
+                    <input type="checkbox" class="toggle toggle-success toggle-sm"
+                        prop:checked=move || signals.config.ingame_send.get()
+                        on:change=move |ev| {
+                            signals.config.set_ingame_send.set(event_target_checked(&ev));
+                            actions.save_config.dispatch(());
+                        }
+                    />
+                </label>
+            </div>
+
             // Minimum Sender Level Filter (Spam Prevention)
             <div class="space-y-2 mt-4 pt-4 border-t border-base-content/10">
                 <div class="flex justify-between text-[11px] font-bold">
