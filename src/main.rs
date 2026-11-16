@@ -2,6 +2,7 @@ mod app;
 pub mod chat_view;
 pub mod cheatsheet;
 pub mod components;
+pub mod composer_view;
 pub mod config_signals;
 pub mod dictionary_edit;
 pub mod dictionary_status;
