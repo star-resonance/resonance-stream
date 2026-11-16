@@ -5,7 +5,8 @@
 # its own version's DLL, so nothing bundles it. This proves, after the app build and before signing, that:
 #   1. <built dll> came from the ingame profile (target/x86_64-pc-windows-msvc/ingame/),
 #   2. it still hashes to <sha256> (nothing touched it after it was hashed),
-#   3. no resonance_ingame.dll sits under <target dir>/release/ingame/ or beside the exe in <target dir>/release/,
+#   3. no resonance_ingame.dll sits under <target dir>/release/ingame/ or beside the exe in <target dir>/release/
+#      (loose copies only: Candidate builds with --no-bundle; tauri.conf.json carries no DLL resource, pinned by release-lib.test.sh),
 #   4. the exe embeds <sha256> (lowercase hex, an ordinary string literal),
 #   5. no other resonance_ingame.dll under <target dir> differs (a release-profile abort DLL, a rebuild).
 # One ::error:: line per failure; exit 1 on any, 2 on bad arguments.
@@ -37,7 +38,7 @@ fi
 
 for bundled in "$target/release/ingame/resonance_ingame.dll" "$target/release/resonance_ingame.dll"; do
   if [ -e "$bundled" ]; then
-    fail "the DLL is bundled beside the exe ($bundled): the app downloads it, the installer and exe resources must not carry it"
+    fail "the DLL is bundled beside the exe ($bundled): the app downloads it, nothing may carry it beside the exe"
   fi
 done
 
