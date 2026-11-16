@@ -208,6 +208,61 @@ mod tests {
     }
 
     #[test]
+    fn prepare_replaces_each_control_character_with_one_space() {
+        for c in [
+            '\t', '\u{0}', '\u{2028}', '\u{2029}', '\u{1}', '\u{1f}', '\u{7f}', '\u{85}', '\u{9f}',
+            '\u{b}', '\u{c}',
+        ] {
+            assert_eq!(
+                prepare_text(&format!("a{c}b")),
+                Ok("a b".to_string()),
+                "{c:?}"
+            );
+        }
+        assert_eq!(prepare_text("a\t\u{0}b"), Ok("a  b".to_string()));
+        assert_eq!(prepare_text("a\r\n\tb"), Ok("a   b".to_string()));
+    }
+
+    #[test]
+    fn prepare_replaces_before_trimming() {
+        assert_eq!(prepare_text("\u{0}hi\u{1f}"), Ok("hi".to_string()));
+        for t in ["\u{0}", "\t\u{0}\u{2028}", "\u{7f}\n"] {
+            assert_eq!(prepare_text(t), Err(SendTextError::Empty), "{t:?}");
+        }
+    }
+
+    #[test]
+    fn prepare_counts_replaced_control_characters() {
+        let a = |n: usize| "a".repeat(n);
+        assert_eq!(
+            prepare_text(&format!("{}\t{}", a(70), a(70))),
+            Err(SendTextError::TooLong { len: 141 })
+        );
+        assert_eq!(
+            prepare_text(&(a(139) + "\u{0}a")),
+            Err(SendTextError::TooLong { len: 141 })
+        );
+        assert!(prepare_text(&(a(140) + "\u{0}")).is_ok());
+        assert!(prepare_text(&(a(70) + "\u{2028}" + &a(69))).is_ok());
+    }
+
+    #[test]
+    fn prepare_leaves_no_control_character() {
+        for c in ('\u{0}'..='\u{9f}').chain(['\u{2028}', '\u{2029}']) {
+            let p = prepare_text(&format!("a{c}b")).unwrap();
+            assert_eq!(p, "a b", "{c:?}");
+            assert!(!p
+                .chars()
+                .any(|x| x.is_control() || x == '\u{2028}' || x == '\u{2029}'));
+        }
+    }
+
+    #[test]
+    fn prepare_keeps_format_characters() {
+        assert_eq!(prepare_text("a\u{200b}b"), Ok("a\u{200b}b".to_string()));
+    }
+
+    #[test]
     fn prepare_refuses_empty() {
         for t in ["", "   ", "\n\r  "] {
             assert_eq!(prepare_text(t), Err(SendTextError::Empty));
