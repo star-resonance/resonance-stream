@@ -45,7 +45,7 @@ tauri-plugin-fs = "2.4.5" # For handling the download stream
 # Network & Parsing
 is_elevated = "0.1"
 crossbeam-channel = "0.5"    # Blazing fast thread queues
-parking_lot = "0.12"         # Mutex/RwLock without poisoning
+parking_lot = "0.13"         # Mutex/RwLock without poisoning
 
 chrono = "0.4.43"
 local-ip-address = "0.6.10"
