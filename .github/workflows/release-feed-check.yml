@@ -8,6 +8,9 @@ name: Release feed
 # What breaks it: a release made by hand (no latest.json, or a different exe), a
 # candidate that is not a prerelease, deleting the newest stable release. Stable
 # releases are made by promote.yml only (.claude/rules/release.md).
+# A latest release with exactly one of the in-game DLL files (the DLL and its .sig), or a feed whose
+# ingame_url / ingame_signature disagree with the release's assets, is red too; a release with
+# neither is accepted here (promote.yml's own run requires both).
 #
 # Runs when a person publishes, edits or deletes a release (releases made by a
 # workflow with GITHUB_TOKEN start no workflows; promote.yml checks its own),

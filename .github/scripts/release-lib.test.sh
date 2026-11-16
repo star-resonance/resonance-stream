@@ -38,12 +38,39 @@ eq "only the five fields" "notes pub_date signature url version" "$(jq -r 'keys 
 # The signature file is one line; a trailing newline must not end up in the feed.
 eq "signature trimmed" "abc" "$(printf '' | release_manifest 0.6.1 2026-10-02T09:00:00Z https://x/y.exe $'abc\n' | jq -r .signature)"
 
+# --- the in-game DLL as a release asset (F-R8a-1): name, url, the two optional feed fields, the pin ---
+eq "dll asset name" "Resonance-Stream-v0.6.1-ingame.dll" "$(release_dll_asset v0.6.1)"
+eq "dll url" "https://github.com/o/r/releases/download/v0.6.1/Resonance-Stream-v0.6.1-ingame.dll" "$(release_dll_url o/r v0.6.1)"
+eq "dll url on a candidate tag, file named by the final version" "https://github.com/o/r/releases/download/v0.6.1-rc.2/Resonance-Stream-v0.6.1-ingame.dll" "$(release_dll_url o/r v0.6.1-rc.2 v0.6.1)"
+djson=$(printf 'n' | release_manifest 0.6.1 2026-10-02T09:00:00Z https://x/y.exe c2ln "$(release_dll_url o/r v0.6.1)" $'ZGxs\r\n')
+eq "dll fields: seven keys" "ingame_signature ingame_url notes pub_date signature url version" "$(jq -r 'keys | join(" ")' <<<"$djson")"
+eq "dll fields: ingame_url" "$(release_dll_url o/r v0.6.1)" "$(jq -r .ingame_url <<<"$djson")"
+eq "dll fields: ingame_signature, CR/LF trimmed" "ZGxs" "$(jq -r .ingame_signature <<<"$djson")"
+eq "dll fields: two empty strings -> the five keys" "notes pub_date signature url version" "$(printf '' | release_manifest 0.6.1 2026-10-02T09:00:00Z https://x/y.exe c2ln '' '' | jq -r 'keys | join(" ")')"
+eq "dll fields: url without signature: refused" "1" "$(printf '' | release_manifest 0.6.1 2026-10-02T09:00:00Z https://x/y.exe c2ln https://x/y.dll '' >/dev/null 2>&1; echo $?)"
+eq "dll fields: signature without url: refused" "1" "$(printf '' | release_manifest 0.6.1 2026-10-02T09:00:00Z https://x/y.exe c2ln '' ZGxs >/dev/null 2>&1; echo $?)"
+eq "dll fields: ... with a message on stderr" "yes" "$([ -n "$(printf '' | release_manifest 0.6.1 2026-10-02T09:00:00Z https://x/y.exe c2ln '' ZGxs 2>&1 >/dev/null)" ] && echo yes || echo no)"
+
+pin_dir=$(mktemp -d)
+printf 'MZ-dll-bytes' > "$pin_dir/a.dll"
+printf 'other-dll' > "$pin_dir/b.dll"
+dll_hex=$(sha256sum "$pin_dir/a.dll" | cut -d' ' -f1)
+printf 'xx%sxx' "$dll_hex" > "$pin_dir/pinned.exe"
+printf 'xx%sxx' "${dll_hex^^}" > "$pin_dir/upper.exe"
+eq  "pin: the exe holds the dll's hash" "0|" "$(out=$(release_pin_problem "$pin_dir/pinned.exe" "$pin_dir/a.dll" 2>&1); printf '%s|%s' "$?" "$out")"
+eq  "pin: upper-case hex only: refused" "1" "$(release_pin_problem "$pin_dir/upper.exe" "$pin_dir/a.dll" >/dev/null 2>&1; echo $?)"
+eq  "pin: a different dll: refused" "1" "$(release_pin_problem "$pin_dir/pinned.exe" "$pin_dir/b.dll" >/dev/null 2>&1; echo $?)"
+res=$(release_pin_problem "$pin_dir/pinned.exe" "$pin_dir/missing.dll" 2>&1; echo "rc=$?")
+has "pin: a missing file: refused" "$res" "rc=1"
+has "pin: ... naming the path" "$res" "missing.dll"
+rm -rf "$pin_dir"
+
 # --- release_feed_problem: would the app update from this release? (feed on stdin) ---
 assets=$'latest.json\nResonance-Stream-v0.6.1.exe\nResonance-Stream-v0.6.1.exe.sig\nSHA256SUMS.txt'
 good_feed() { printf '' | release_manifest 0.6.1 2026-10-02T09:00:00Z "$(release_download_url o/r v0.6.1)" c2ln; }
-problem() { # problem <tag> <assets> <feed>  -> "rc|reason"
+problem() { # problem <tag> <assets> <feed> [strict] -> "rc|reason"
   local out rc
-  out=$(release_feed_problem "$1" "$2" o/r <<<"$3" 2>&1); rc=$?
+  out=$(release_feed_problem "$1" "$2" o/r ${4:+"$4"} <<<"$3" 2>&1); rc=$?
   printf '%s|%s' "$rc" "$out"
 }
 has() { # has <name> <text> <needle>
@@ -83,6 +110,34 @@ has "feed that is not JSON: named"   "$res" "JSON"
 eq  "empty feed: refused" "1" "$(problem v0.6.1 "$assets" "" | cut -d'|' -f1)"
 eq  "a candidate tag is never a stable release" "1" "$(problem v0.6.1-rc.x "$assets" "$(good_feed)" | cut -d'|' -f1)"
 
+# The DLL assets and the feed's ingame_* fields (F-R8a-1): both present or both absent; strict requires them.
+dll_assets=$assets$'\nResonance-Stream-v0.6.1-ingame.dll\nResonance-Stream-v0.6.1-ingame.dll.sig'
+dll_feed() { printf '' | release_manifest 0.6.1 2026-10-02T09:00:00Z "$(release_download_url o/r v0.6.1)" c2ln "${1-$(release_dll_url o/r v0.6.1)}" "${2-ZGxs}"; }
+eq  "dll: a healthy release with the DLL has no problem" "0|" "$(problem v0.6.1 "$dll_assets" "$(dll_feed)")"
+eq  "dll: a healthy release with the DLL passes strict" "0|" "$(problem v0.6.1 "$dll_assets" "$(dll_feed)" strict)"
+eq  "dll: no DLL files and a five-field feed: no problem" "0|" "$(problem v0.6.1 "$assets" "$(good_feed)")"
+res=$(problem v0.6.1 "$assets" "$(good_feed)" strict)
+eq  "dll: strict wants the DLL" "1" "${res%%|*}"
+has "dll: strict names it" "$res" "Resonance-Stream-v0.6.1-ingame.dll"
+res=$(problem v0.6.1 "${dll_assets%.sig}" "$(dll_feed)")
+eq  "dll: the DLL without its .sig: refused" "1" "${res%%|*}"
+has "dll: ... naming the .sig" "$res" "Resonance-Stream-v0.6.1-ingame.dll.sig"
+res=$(problem v0.6.1 "${assets}"$'\nResonance-Stream-v0.6.1-ingame.dll.sig' "$(good_feed)")
+eq  "dll: the .sig without its DLL: refused" "1" "${res%%|*}"
+has "dll: ... naming the DLL" "$res" "Resonance-Stream-v0.6.1-ingame.dll"
+res=$(problem v0.6.1 "$dll_assets" "$(good_feed)")
+eq  "dll: assets but a five-field feed: refused" "1" "${res%%|*}"
+has "dll: ... naming ingame_url" "$res" "ingame_url"
+res=$(problem v0.6.1 "$dll_assets" "$(dll_feed https://example.com/x.dll)")
+eq  "dll: ingame_url elsewhere: refused" "1" "${res%%|*}"
+has "dll: ... naming ingame_url (elsewhere)" "$res" "ingame_url"
+res=$(problem v0.6.1 "$dll_assets" "$(jq '.ingame_signature = ""' <<<"$(dll_feed)")")
+eq  "dll: empty ingame_signature: refused" "1" "${res%%|*}"
+has "dll: ... naming ingame_signature" "$res" "ingame_signature"
+res=$(problem v0.6.1 "$assets" "$(dll_feed)")
+eq  "dll: feed fields but no DLL in the release: refused" "1" "${res%%|*}"
+has "dll: ... naming the field" "$res" "ingame_"
+
 # --- check-release-feed.sh: the live check, with gh and curl faked ---
 fake=$(mktemp -d)
 cat > "$fake/gh" <<'FAKE'
@@ -99,9 +154,10 @@ if [ -n "${FAKE_CURL_FAIL:-}" ] || [ "$n" -lt "${FAKE_CURL_FAILS:-0}" ]; then ex
 printf '%s\n' "$FAKE_FEED"
 FAKE
 chmod +x "$fake/gh" "$fake/curl"
-release_json() { # release_json <tag> -> what GET releases/latest returns
-  jq -n --arg tag "$1" --arg exe "$(release_asset "$1")" \
-    '{tag_name: $tag, assets: [{name: "latest.json"}, {name: $exe}, {name: ($exe + ".sig")}]}'
+release_json() { # release_json <tag> [dll] -> what GET releases/latest returns; "dll" adds the DLL and its .sig
+  jq -n --arg tag "$1" --arg exe "$(release_asset "$1")" --arg dll "$(release_dll_asset "$1")" --arg withdll "${2:-}" \
+    '{tag_name: $tag, assets: ([{name: "latest.json"}, {name: $exe}, {name: ($exe + ".sig")}]
+      + (if $withdll == "dll" then [{name: $dll}, {name: ($dll + ".sig")}] else [] end))}'
 }
 live() { # live <repo> [tag] [ENV=value ...] -> "rc|output" of check-release-feed.sh
   local out rc
@@ -114,7 +170,8 @@ live() { # live <repo> [tag] [ENV=value ...] -> "rc|output" of check-release-fee
 
 res=$(live o/r)
 eq "live: a healthy latest release passes" "0" "${res%%|*}"
-eq "live: ... with the expected tag" "0" "$(live o/r v0.6.1 | cut -d'|' -f1)"
+eq "live: ... with the expected tag and no DLL files: fails (strict)" "1" "$(live o/r v0.6.1 | cut -d'|' -f1)"
+eq "live: ... with the expected tag, the DLL files and a matching feed: passes" "0" "$(live o/r v0.6.1 "FAKE_RELEASE_JSON=$(release_json v0.6.1 dll)" "FAKE_FEED=$(dll_feed)" | cut -d'|' -f1)"
 res=$(live o/r v0.7.0)
 eq  "live: latest is not the release just published: fails" "1" "${res%%|*}"
 has "live: ... naming both tags" "$res" "v0.6.1"
@@ -125,7 +182,7 @@ has "live: ... says why" "$res" "정식 릴리스(latest)가 없습니다"
 res=$(live o/r "" FAKE_CURL_FAIL=1)
 eq  "live: feed that cannot be fetched (the app's 404): fails" "1" "${res%%|*}"
 has "live: ... names the feed" "$res" "latest.json"
-eq  "live: a feed that is not up yet is waited for" "0" "$(live o/r v0.6.1 FAKE_CURL_FAILS=2 | cut -d'|' -f1)"
+eq  "live: a feed that is not up yet is waited for" "0" "$(live o/r v0.6.1 FAKE_CURL_FAILS=2 "FAKE_RELEASE_JSON=$(release_json v0.6.1 dll)" "FAKE_FEED=$(dll_feed)" | cut -d'|' -f1)"
 eq  "live: ... but not forever" "1" "$(live o/r v0.6.1 FAKE_CURL_FAILS=3 | cut -d'|' -f1)"
 rm -rf "$fake"
 
@@ -273,7 +330,7 @@ eq "candidate builds one test-env exe" "1" "$(grep -c 'tauri-apps/cli@2 build .*
 eq "promote never builds or mentions test-env" "0" "$(grep -c 'test-env\|tauri-apps/cli' "$workflows/promote.yml")"
 eq "only candidate signs the exe" "1" "$(grep -l 'signer sign .*resonance-stream\.exe' "$workflows"/*.yml | wc -l | tr -d ' ')"
 eq "promote holds no signing secret" "0" "$(grep -c 'secrets\.' "$workflows/promote.yml")"
-eq "candidate signs with the final version" "1" "$(grep -c 'signer sign --app-version "\$VERSION"' "$workflows/candidate.yml")"
+eq "candidate signs the exe and the DLL with the final version" "2" "$(grep -c 'signer sign --app-version "$VERSION"' "$workflows/candidate.yml")"
 eq "promote never promotes the test-env exe" "0" "$(grep -c -- '-test' "$workflows/promote.yml")"
 # The real-app smoke test is slow: no pull request and no push starts it; Candidate calls it once and the tag waits for it.
 eq "smoke test has no pull_request trigger" "0" "$(grep -c '^  pull_request' "$workflows/bridge-smoke.yml")"
@@ -320,13 +377,27 @@ eq "overlay: maps the DLL to ingame/resonance_ingame.dll once" "1" "$(grep -c '"
 eq "overlay: its source is the ingame profile's DLL" "1" "$(grep -c '"../target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll"' "$overlay")"
 eq "tauri.conf.json has no static DLL mapping" "0" "$(grep -c 'resonance_ingame' ../../src-tauri/tauri.conf.json)"
 eq "the test-env build has no --config" "1" "$(grep -c 'build --no-bundle --features test-env$' "$workflows/candidate.yml")"
-eq "SHA256SUMS stays the exe and its signature" "1" "$(grep -c 'sha256sum "\$exe" "\$exe.sig" > SHA256SUMS' "$workflows/candidate.yml")"
-eq "no workflow builds the DLL outside the recipe, signs a dll, or uses signtool" "0" "$(cat "$workflows"/*.yml | grep -c 'cargo build.*resonance-ingame\|signtool\|signer sign .*\.dll')"
-eq "promote never mentions the DLL" "0" "$(grep -c 'ingame' "$workflows/promote.yml")"
-# The DLL is a prerelease-only asset (decision DS-0004 Q1 = B): outside SHA256SUMS, which Promote requires to list exactly the exe and its .sig.
-eq "the prerelease carries the DLL as an extra asset" "1" "$(grep -c 'gh release create "\$RC" "\$exe" "\$exe.sig" SHA256SUMS latest.json "\$dll"' "$workflows/candidate.yml")"
-eq "the DLL asset is named in the files and tag jobs only" "2" "$(grep -c '^ *dll="Resonance-Stream-\$FINAL-ingame.dll"$' "$workflows/candidate.yml")"
-eq "-ingame.dll appears on those two lines only" "2" "$(grep -c -- '-ingame\.dll' "$workflows/candidate.yml")"
+# --- the DLL on the stable path (F-R8a-1): signed like the exe in Candidate, listed in SHA256SUMS, carried and re-checked by Promote ---
+sha_line='sha256sum "$exe" "$exe.sig" "$dll" "$dll.sig" > SHA256SUMS'
+eq "SHA256SUMS lists the exe, the DLL and their signatures" "1" "$(grep -cF -- "$sha_line" "$workflows/candidate.yml")"
+eq "no workflow builds the DLL outside the recipe, or uses signtool" "0" "$(cat "$workflows"/*.yml | grep -c 'cargo build.*resonance-ingame\|signtool')"
+eq "the DLL is signed once, in candidate.yml only" "1" "$(cat "$workflows"/*.yml | grep -c 'signer sign .*resonance_ingame\.dll')"
+eq "... and that is candidate.yml" "1" "$(grep -c 'signer sign .*resonance_ingame\.dll' "$workflows/candidate.yml")"
+eq "promote never builds or signs" "0" "$(grep -c 'cargo build\|signer sign' "$workflows/promote.yml")"
+eq "promote names the DLL file only on the dll= line of publish" "1" "$(grep -c -- '-ingame\.dll' "$workflows/promote.yml")"
+eq "candidate names the DLL file only on the dll= line of tag (comments aside)" "1" "$(grep -v '^ *#' "$workflows/candidate.yml" | grep -c -- '-ingame\.dll')"
+eq "the prerelease carries the DLL and its signature" "1" "$(grep -cF 'gh release create "$RC" "$exe" "$exe.sig" "$dll" "$dll.sig" SHA256SUMS latest.json' "$workflows/candidate.yml")"
+eq "the stable release carries the DLL and its signature" "1" "$(grep -cF 'gh release create "$FINAL" "$exe" "$exe.sig" "$dll" "$dll.sig" SHA256SUMS latest.json' "$workflows/promote.yml")"
+eq "candidate: the hard-coded DLL asset name appears once (tag)" "1" "$(grep -c '^ *dll="Resonance-Stream-\$FINAL-ingame.dll"$' "$workflows/candidate.yml")"
+eq "promote: the hard-coded DLL asset name appears once (publish)" "1" "$(grep -c '^ *dll="Resonance-Stream-\$FINAL-ingame.dll"$' "$workflows/promote.yml")"
+eq "candidate and promote take the name from release_dll_asset in files" "1 2" "$(grep -c 'dll=\$(release_dll_asset "\$FINAL")' "$workflows/candidate.yml") $(grep -c 'dll=\$(release_dll_asset "\$FINAL")' "$workflows/promote.yml")"
+eq "candidate verifies the exe and the DLL the way the app will" "2" "$(grep -c 'example verify_update' "$workflows/candidate.yml")"
+eq "promote verifies the exe and the DLL" "2" "$(grep -c 'example verify_update' "$workflows/promote.yml")"
+eq "promote re-proves the exe's pin on the files it publishes" "1" "$(grep -c 'release_pin_problem' "$workflows/promote.yml")"
+eq "candidate proves the pin on the files it publishes" "1" "$(grep -c 'release_pin_problem' "$workflows/candidate.yml")"
+eq "promote downloads four patterns and SHA256SUMS" "5" "$(grep -o -- '--pattern' "$workflows/promote.yml" | wc -l | tr -d ' ')"
+eq "latest.json gets the DLL url in both" "2" "$(cat "$workflows/candidate.yml" "$workflows/promote.yml" | grep -c 'release_dll_url')"
+eq "the ingame-dll artifact lists the DLL signature" "1" "$(grep -c '^ *target/release/ingame/resonance_ingame.dll.sig$' "$workflows/candidate.yml")"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi

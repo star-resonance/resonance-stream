@@ -29,8 +29,8 @@ has read the options doc.
 Opt-in setting (off by default, terms-of-service warning); the app loads `resonance_ingame.dll`; the composer
 sends to World, Guild, Party and Local (`say`), at most 140 UTF-16 units, 1.5 s apart; the DLL builds the frame
 (ChitChat service `1321197368`, `SendChitChatMsg` method `1`) and calls `ZTcpClient.Send`. The Candidate run
-builds the DLL first, the app pins its SHA-256, and the prerelease holds the DLL as an asset (outside
-`SHA256SUMS`); the app loads it in place from `<exe dir>/ingame/`.
+builds the DLL first, the app pins its SHA-256, and the DLL is signed like the exe and listed in
+`SHA256SUMS`, and the prerelease and the stable release carry it; the app loads it in place from `<exe dir>/ingame/`.
 
 **Wave 2 tasks:**
 - R3 frame builder
@@ -48,8 +48,9 @@ the Candidate run builds the DLL, the app pins it, and the prerelease holds the 
 ## M2. Server verdict
 
 Hook `ZRpcImpl.SendBytes` and correlate `call_id` with the Return; the composer shows sent / too frequent /
-cooldown. The stable-release path for the DLL (fetched by the updater, signed and listed) is a later task with
-no id yet.
+cooldown. The stable-release path for the DLL is split: the release path (signed, listed, carried by Promote,
+announced in `latest.json`) is F-R8a-1; the updater fetching it is F-R8a-2; the opt-in download for an exe without it is
+F-R8a-3.
 
 **Done when:** a send during the cooldown shows it.
 
