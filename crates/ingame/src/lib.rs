@@ -18,6 +18,7 @@ pub mod names;
 pub mod patch_safety;
 pub mod pump;
 pub mod send;
+pub mod send_ops;
 pub mod session;
 pub mod slot;
 pub mod unload;

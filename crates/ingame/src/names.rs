@@ -120,4 +120,20 @@ mod tests {
         assert_eq!(FIELD_CLIENT, "client_");
         assert_eq!(FIELD_HANDLE, "handle_");
     }
+
+    #[test]
+    fn hook_candidates() {
+        assert_eq!(HOOK_CANDIDATES.len(), 2);
+        let [first, second] = HOOK_CANDIDATES;
+        assert_eq!(
+            (first.class, first.namespaces, first.method, first.argc),
+            ("ZRpcCtrl", &["ZCode.ZRpc", "ZCode.ZNet"][..], "Update", 0)
+        );
+        assert_eq!(
+            (second.class, second.namespaces, second.method, second.argc),
+            ("Game", &["Panda.Core"][..], "Update", 0)
+        );
+        assert_eq!(first.label(), "ZRpcCtrl.Update");
+        assert_eq!(second.label(), "Game.Update");
+    }
 }
