@@ -18,3 +18,6 @@ pub mod names;
 pub mod session;
 pub mod unload;
 pub mod walk;
+
+#[cfg(windows)]
+mod win;
