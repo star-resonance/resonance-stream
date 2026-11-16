@@ -1,0 +1,25 @@
+[package]
+name = "resonance-ingame"
+version.workspace = true
+authors = ["Enjay27 <kdkm2002@gmail.com>"]
+description = "In-game DLL for Resonance Stream: loaded into the game, answers the app's pipe"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+resonance-types = { path = "../types" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
