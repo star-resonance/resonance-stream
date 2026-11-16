@@ -9,6 +9,9 @@ paths:
   `pub use <module>::*`.** A new command module needs both. A private `use` of the same
   name in a module shadows its glob re-export (rustc warns) — the item then silently
   stops being exported; call it by path instead.
+  47 commands (`commands!` in `crates/types/src/ipc.rs`; the test
+  `the_backend_registers_exactly_the_commands_listed_here` fails when that list and
+  `generate_handler!` differ).
 
 - **The test bridge (`bridge/live.rs`) never calls a `#[tauri::command]`.** A command the
   bridge also runs keeps its body in a plain function beside it that takes `&AppHandle`
@@ -44,8 +47,20 @@ src-tauri/            app crate (resonance-stream, lib resonance_stream_lib)
   src/protocol/types.rs AppState and backend-only types; re-exports resonance-types
   src/services/         owner.rs (Services: who runs, the one start/stop/restart) sniffer/ (sockets, workers)
                           translator/ (llama server) downloader/
+  src/ingame/           chat sending: mod.rs (send_chat, apply_setting, shutdown), pin.rs (the DLL's SHA-256 from build.rs), win/ (loader, pipe server, WinHost; Windows only)
   src/config/ src/io/   config + metadata persistence, archive writer
 ```
+
+## Chat sending and the in-game DLL
+
+- **Only the pinned DLL:** `<exe dir>/ingame/resonance_ingame.dll`, hashed through the handle the app
+  holds open and compared with the build's pin before the load; no pin or a mismatch means no load.
+  The debug-build path override (`pin::dll_path_override`) is a dev convenience.
+- **Only with `ingame_send` on** (off by default), **only into the game's process**: `pick_game`, and
+  the pipe accepts only the game's pid. The pipe exists before the load. No chat text in logs.
+- `send_chat` is `#[tauri::command(async)]` (it blocks for seconds). Pure logic goes in
+  `crates/core/src/ingame_send.rs`; `ingame/win/` holds only Win32 calls. `pin` and `win` stay
+  private, so `pub use ingame::*` exports only the command.
 
 ## Capture and translator
 
