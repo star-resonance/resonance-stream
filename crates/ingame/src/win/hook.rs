@@ -130,7 +130,7 @@ impl PumpHook {
                 main_tid,
             }),
             Err(HookError::PreHook) => {
-                if state.take_refused() {
+                if state.take_refused().is_some() {
                     log.info("hook: a thread was inside the 14 bytes; retrying");
                 }
                 Err(InstallError::Transient)
@@ -185,7 +185,7 @@ impl PumpHook {
                 restored = true;
                 break;
             }
-            if self.state.take_refused() {
+            if self.state.take_refused().is_some() {
                 log.info(&format!("unhook: a thread was in the way (try {attempt})"));
             }
             // SAFETY: plain sleep, outside any suspension.
