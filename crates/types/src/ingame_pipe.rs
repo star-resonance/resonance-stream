@@ -1,3 +1,339 @@
+//! The wire format between the app and the in-game DLL (`resonance_ingame.dll`) on the
+//! named pipe, and the pure rules both ends share. JSON lines, UTF-8, `\n`-terminated,
+//! at most [`MAX_LINE_BYTES`] bytes each; the app sends requests, the DLL answers each
+//! with one reply that echoes the request's `id`. Korean sentences are not here: the app
+//! maps each [`ErrorCode`] to its own.
+
+use crate::SendChatChannel;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// The pipe protocol's version, sent in `hello`.
+pub const PIPE_PROTOCOL_VERSION: u32 = 1;
+/// The longest line, not counting its `\n`.
+pub const MAX_LINE_BYTES: usize = 4096;
+/// The longest `detail` of an error reply, in bytes.
+pub const MAX_DETAIL_BYTES: usize = 256;
+/// How long the app waits for a request write to the pipe.
+pub const WRITE_TIMEOUT_MS: u32 = 100;
+/// How long the DLL holds a send request before it expires.
+pub const DLL_HOLD_MS: u32 = 1000;
+/// How long the app waits for a reply.
+pub const APP_WAIT_MS: u32 = 1500;
+
+/// The pipe the app creates for the game process `pid`.
+pub fn pipe_name(pid: u32) -> String {
+    format!(r"\\.\pipe\resonance-ingame-{pid}")
+}
+
+/// Why a request failed; the app picks the user's sentence by this, never by `detail`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    BadRequest,
+    BadChannel,
+    Empty,
+    TooLong,
+    NoClient,
+    NotSent,
+    Busy,
+    Expired,
+    Unsupported,
+    Version,
+}
+
+impl ErrorCode {
+    pub const ALL: [ErrorCode; 10] = [
+        ErrorCode::BadRequest,
+        ErrorCode::BadChannel,
+        ErrorCode::Empty,
+        ErrorCode::TooLong,
+        ErrorCode::NoClient,
+        ErrorCode::NotSent,
+        ErrorCode::Busy,
+        ErrorCode::Expired,
+        ErrorCode::Unsupported,
+        ErrorCode::Version,
+    ];
+
+    /// The wire string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorCode::BadRequest => "bad_request",
+            ErrorCode::BadChannel => "bad_channel",
+            ErrorCode::Empty => "empty",
+            ErrorCode::TooLong => "too_long",
+            ErrorCode::NoClient => "no_client",
+            ErrorCode::NotSent => "not_sent",
+            ErrorCode::Busy => "busy",
+            ErrorCode::Expired => "expired",
+            ErrorCode::Unsupported => "unsupported",
+            ErrorCode::Version => "version",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<ErrorCode> {
+        ErrorCode::ALL.into_iter().find(|c| c.as_str() == s)
+    }
+}
+
+/// A request, app to DLL.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum Request {
+    Hello {
+        id: u32,
+        version: u32,
+    },
+    /// `channel` stays a string so an unknown channel is `bad_channel`, not `bad_request`.
+    Send {
+        id: u32,
+        channel: String,
+        text: String,
+    },
+    Ping {
+        id: u32,
+    },
+    Bye {
+        id: u32,
+    },
+}
+
+impl Request {
+    pub fn id(&self) -> u32 {
+        match self {
+            Request::Hello { id, .. }
+            | Request::Send { id, .. }
+            | Request::Ping { id }
+            | Request::Bye { id } => *id,
+        }
+    }
+
+    /// The channel of a `Send`; `BadChannel` if it is not one of [`SendChatChannel::ALL`].
+    pub fn send_channel(&self) -> Result<SendChatChannel, ErrorCode> {
+        match self {
+            Request::Send { channel, .. } => SendChatChannel::ALL
+                .into_iter()
+                .find(|c| c.as_str() == channel)
+                .ok_or(ErrorCode::BadChannel),
+            _ => Err(ErrorCode::BadRequest),
+        }
+    }
+}
+
+// Chat text is never logged: Debug prints its length only.
+impl fmt::Debug for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Request::Hello { id, version } => f
+                .debug_struct("Hello")
+                .field("id", id)
+                .field("version", version)
+                .finish(),
+            Request::Send { id, channel, text } => f
+                .debug_struct("Send")
+                .field("id", id)
+                .field("channel", channel)
+                .field("text_len", &text.len())
+                .finish(),
+            Request::Ping { id } => f.debug_struct("Ping").field("id", id).finish(),
+            Request::Bye { id } => f.debug_struct("Bye").field("id", id).finish(),
+        }
+    }
+}
+
+/// A reply, DLL to app.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reply {
+    Hello {
+        id: u32,
+        version: u32,
+        dll: String,
+    },
+    Send {
+        id: u32,
+        call_id: u32,
+    },
+    Ack {
+        id: u32,
+    },
+    Error {
+        id: u32,
+        code: ErrorCode,
+        detail: String,
+    },
+}
+
+/// A line that is not a valid request or reply. `id` is the line's id when it had a
+/// valid one, else 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodeError {
+    pub id: u32,
+    pub code: ErrorCode,
+}
+
+/// The flat JSON shape of every reply; the fields that do not apply are skipped, so the
+/// JSON is exactly the protocol's.
+#[derive(Serialize, Deserialize)]
+struct WireReply {
+    id: u32,
+    ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dll: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    call_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    code: Option<ErrorCode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+fn line_id(value: &serde_json::Value) -> u32 {
+    value
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
+}
+
+fn bad(id: u32) -> DecodeError {
+    DecodeError {
+        id,
+        code: ErrorCode::BadRequest,
+    }
+}
+
+fn to_line<T: Serialize>(value: &T) -> String {
+    let mut line = serde_json::to_string(value).expect("plain data serializes");
+    line.push('\n');
+    line
+}
+
+/// Decodes one request line (without its `\n`).
+pub fn decode_request(line: &[u8]) -> Result<Request, DecodeError> {
+    let value: serde_json::Value = serde_json::from_slice(line).map_err(|_| bad(0))?;
+    let id = line_id(&value);
+    serde_json::from_value(value).map_err(|_| bad(id))
+}
+
+/// The request as one line, `\n` included.
+pub fn encode_request(request: &Request) -> String {
+    to_line(request)
+}
+
+/// Decodes one reply line (without its `\n`).
+pub fn decode_reply(line: &[u8]) -> Result<Reply, DecodeError> {
+    let wire: WireReply = serde_json::from_slice(line).map_err(|_| {
+        let id = serde_json::from_slice::<serde_json::Value>(line)
+            .map(|v| line_id(&v))
+            .unwrap_or(0);
+        bad(id)
+    })?;
+    let id = wire.id;
+    if !wire.ok {
+        return match wire.code {
+            Some(code) => Ok(Reply::Error {
+                id,
+                code,
+                detail: wire.detail.unwrap_or_default(),
+            }),
+            None => Err(bad(id)),
+        };
+    }
+    Ok(match (wire.version, wire.dll, wire.call_id) {
+        (Some(version), Some(dll), _) => Reply::Hello { id, version, dll },
+        (_, _, Some(call_id)) => Reply::Send { id, call_id },
+        _ => Reply::Ack { id },
+    })
+}
+
+/// The reply as one line, `\n` included; an error's `detail` is cut at a char boundary
+/// to [`MAX_DETAIL_BYTES`], so a reply always fits [`MAX_LINE_BYTES`].
+pub fn encode_reply(reply: &Reply) -> String {
+    let mut wire = WireReply {
+        id: 0,
+        ok: true,
+        version: None,
+        dll: None,
+        call_id: None,
+        code: None,
+        detail: None,
+    };
+    match reply {
+        Reply::Hello { id, version, dll } => {
+            wire.id = *id;
+            wire.version = Some(*version);
+            wire.dll = Some(dll.clone());
+        }
+        Reply::Send { id, call_id } => {
+            wire.id = *id;
+            wire.call_id = Some(*call_id);
+        }
+        Reply::Ack { id } => wire.id = *id,
+        Reply::Error { id, code, detail } => {
+            wire.id = *id;
+            wire.ok = false;
+            wire.code = Some(*code);
+            let mut end = detail.len().min(MAX_DETAIL_BYTES);
+            while !detail.is_char_boundary(end) {
+                end -= 1;
+            }
+            wire.detail = Some(detail[..end].to_string());
+        }
+    }
+    to_line(&wire)
+}
+
+/// A line passed [`MAX_LINE_BYTES`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineTooLong;
+
+/// Splits a byte stream into lines under the cap. Once a line is too long the buffer
+/// stays failed: the connection is to be closed.
+#[derive(Debug, Default)]
+pub struct LineBuffer {
+    buf: Vec<u8>,
+    failed: bool,
+}
+
+impl LineBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds `bytes`; returns the lines they completed (without `\n`), in order.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, LineTooLong> {
+        if self.failed {
+            return Err(LineTooLong);
+        }
+        self.buf.extend_from_slice(bytes);
+        let mut lines = Vec::new();
+        let mut start = 0;
+        while let Some(pos) = self.buf[start..].iter().position(|&b| b == b'\n') {
+            let end = start + pos;
+            if end - start > MAX_LINE_BYTES {
+                return self.fail();
+            }
+            lines.push(self.buf[start..end].to_vec());
+            start = end + 1;
+        }
+        self.buf.drain(..start);
+        if self.buf.len() > MAX_LINE_BYTES {
+            return self.fail();
+        }
+        Ok(lines)
+    }
+
+    fn fail(&mut self) -> Result<Vec<Vec<u8>>, LineTooLong> {
+        self.failed = true;
+        self.buf = Vec::new();
+        Err(LineTooLong)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
