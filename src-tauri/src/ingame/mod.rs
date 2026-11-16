@@ -7,6 +7,8 @@ mod pin;
 mod win;
 
 use crate::AppState;
+#[cfg(windows)]
+use resonance_core::ingame_send::Resident;
 use resonance_core::ingame_send::{send_chat_flow, SendBackend, SendError};
 use resonance_core::send_text::SendSpacing;
 use resonance_types::SendChatChannel;
@@ -21,6 +23,11 @@ static SPACING: LazyLock<Mutex<SendSpacing>> = LazyLock::new(|| Mutex::new(SendS
 #[cfg(windows)]
 static SESSION: parking_lot::Mutex<Option<win::Session>> = parking_lot::Mutex::new(None);
 
+/// The game whose module stayed loaded after an unload. Locked after `SESSION`,
+/// never the other way round.
+#[cfg(windows)]
+static RESIDENT: parking_lot::Mutex<Resident> = parking_lot::Mutex::new(Resident::new());
+
 /// What the setting last said; checked under the session lock, so a load that
 /// was queued by "on" does not run after "off".
 static WANTED: AtomicBool = AtomicBool::new(false);
@@ -32,7 +39,7 @@ impl SendBackend for AppBackend {
     fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError> {
         let mut slot = SESSION.lock();
         if slot.is_none() {
-            *slot = Some(win::Session::connect()?);
+            *slot = Some(win::Session::connect(&mut RESIDENT.lock())?);
         }
         let session = slot.as_mut().expect("the session was just set");
         let (result, dropped) = session.send(channel, text);
@@ -76,7 +83,7 @@ pub(crate) fn apply_setting(on: bool) {
         {
             let mut slot = SESSION.lock();
             if slot.is_none() && WANTED.load(Ordering::SeqCst) {
-                match win::Session::connect() {
+                match win::Session::connect(&mut RESIDENT.lock()) {
                     Ok(session) => *slot = Some(session),
                     Err(e) => log::info!("in-game module not loaded yet: {e}"),
                 }
@@ -89,6 +96,8 @@ pub(crate) fn apply_setting(on: bool) {
 pub(crate) fn shutdown() {
     #[cfg(windows)]
     if let Some(session) = SESSION.lock().take() {
-        session.unload();
+        if let Some(pid) = session.unload() {
+            RESIDENT.lock().note(pid);
+        }
     }
 }

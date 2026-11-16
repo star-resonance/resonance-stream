@@ -8,7 +8,7 @@ pub mod process;
 pub mod tcp;
 
 use resonance_core::ingame_send::{
-    connect, exchange, map_send_reply, Listener, SendError, UNLOAD_WAIT,
+    connect, exchange, map_send_reply, Listener, Resident, SendError, UNLOAD_WAIT,
 };
 use resonance_types::ingame_pipe::{Request, APP_WAIT_MS};
 use resonance_types::SendChatChannel;
@@ -53,9 +53,9 @@ pub struct Session {
 
 impl Session {
     /// Finds the game, loads the DLL and says `hello` ([`connect`]).
-    pub fn connect() -> Result<Session, SendError> {
+    pub fn connect(resident: &mut Resident) -> Result<Session, SendError> {
         let mut host = host::WinHost::new();
-        let pid = connect(&mut host)?;
+        let pid = connect(&mut host, resident)?;
         let pipe = host.pipe.take().ok_or(SendError::PipeCreate)?;
         Ok(Session {
             pid,
@@ -85,8 +85,9 @@ impl Session {
     }
 
     /// `bye`, then waits for the module to leave the game; the pipe closes whatever
-    /// happened. A module that stays is logged, not an error for the user.
-    pub fn unload(mut self) {
+    /// happened. A module that stays is logged and its game pid returned, so the
+    /// caller can remember it ([`Resident`]); it is not an error for the user.
+    pub fn unload(mut self) -> Option<u32> {
         let id = self.id();
         let wait = Duration::from_millis(u64::from(APP_WAIT_MS));
         if exchange(&mut self.pipe, &Request::Bye { id }, wait).is_err() {
@@ -94,9 +95,11 @@ impl Session {
             // close it before waiting rather than after.
             self.pipe.disconnect();
         }
-        if !loader::wait_module_gone(self.pid, UNLOAD_WAIT) {
+        let stayed = !loader::wait_module_gone(self.pid, UNLOAD_WAIT);
+        if stayed {
             log::warn!("the in-game module is still loaded after bye");
         }
         self.pipe.disconnect();
+        stayed.then_some(self.pid)
     }
 }
