@@ -127,7 +127,7 @@ impl Host for WinHost {
         )
     }
 
-    fn bye_and_wait(&mut self, pid: u32) {
+    fn bye_and_wait(&mut self, pid: u32) -> bool {
         let id = self.id();
         if let Some(pipe) = self.pipe.as_mut() {
             let _ = exchange(
@@ -138,8 +138,10 @@ impl Host for WinHost {
             // The DLL closed its end; the next client needs a fresh connect.
             resonance_core::ingame_send::Listener::disconnect(pipe);
         }
-        if !loader::wait_module_gone(pid, UNLOAD_WAIT) {
+        let gone = loader::wait_module_gone(pid, UNLOAD_WAIT);
+        if !gone {
             log::warn!("the in-game module is still loaded after bye");
         }
+        gone
     }
 }
