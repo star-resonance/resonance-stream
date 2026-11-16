@@ -261,6 +261,17 @@ mod tests {
     }
 
     #[test]
+    fn ingame_send_is_off_by_default_and_round_trips() {
+        assert!(!AppConfig::default().ingame_send);
+        let old: AppConfig = serde_json::from_str(r#"{"init_done": true}"#).unwrap();
+        assert!(!old.ingame_send);
+        let config: AppConfig = serde_json::from_str(r#"{"ingame_send": true}"#).unwrap();
+        assert!(config.ingame_send);
+        let saved = serde_json::to_value(&config).unwrap();
+        assert_eq!(saved["ingame_send"], true);
+    }
+
+    #[test]
     fn favorite_tabs_are_empty_when_missing_and_round_trip() {
         assert!(AppConfig::default().favorite_tabs.is_empty());
         let old: AppConfig = serde_json::from_str(r#"{"init_done": true}"#).unwrap();
