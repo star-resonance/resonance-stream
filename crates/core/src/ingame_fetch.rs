@@ -1,3 +1,209 @@
+//! Where the in-game module (`resonance_ingame.dll`) comes from and lives: the release
+//! it is fetched from (own tag, else the newest rc whose `SHA256SUMS` line matches the
+//! exe's pin), its folder under the app's data dir, and the Korean lines of the fetch.
+//!
+//! Pure: the downloads, the signature check and the folder swap are in
+//! `src-tauri/src/services/downloader/ingame_module.rs`. `SHA256SUMS` only picks the
+//! release; trust is the signature and the pin, checked by the caller.
+
+use crate::ingame_send::DLL_NAME;
+use std::path::{Path, PathBuf};
+
+/// The repository whose releases carry the module.
+pub const RELEASE_REPO: &str = "star-resonance/resonance-stream";
+
+/// The `download-progress` label of the module download (the composer matches
+/// [`MODULE_LABEL_PREFIX`]).
+pub const MODULE_LABEL: &str = "게임 내 전송 모듈 내려받는 중...";
+/// What every progress label of the module starts with.
+pub const MODULE_LABEL_PREFIX: &str = "게임 내 전송 모듈";
+
+/// Chat system line when the module has been downloaded and is ready.
+pub const SUCCESS_LINE: &str = "게임 내 전송 모듈을 내려받았습니다. 이제 채팅을 보낼 수 있습니다.";
+
+/// Why a fetch of the module did not end in a file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FetchError {
+    /// The release could not be reached.
+    Network,
+    /// No release holds a module with this exe's pin.
+    NotPublished,
+    /// The signature or the hash was wrong.
+    Rejected,
+    /// The file could not be written or moved.
+    Disk,
+    /// The setting was turned off during the download.
+    Cancelled,
+}
+
+impl FetchError {
+    /// The chat system line for this failure; a cancel says nothing.
+    pub fn chat_line(&self) -> Option<&'static str> {
+        match self {
+            FetchError::Network => Some(
+                "게임 내 전송 모듈을 내려받지 못했습니다. 인터넷 연결을 확인한 뒤 설정에서 껐다 켜 주세요.",
+            ),
+            FetchError::NotPublished => Some(
+                "이 앱 버전에 맞는 전송 모듈이 아직 올라와 있지 않습니다. 잠시 뒤 설정에서 껐다 켜 주세요.",
+            ),
+            FetchError::Rejected => Some(
+                "내려받은 전송 모듈을 확인하지 못해 사용하지 않습니다. 설정에서 껐다 켜 주세요. 계속되면 앱을 다시 설치해 주세요.",
+            ),
+            FetchError::Disk => Some(
+                "전송 모듈을 저장하지 못했습니다. 저장 공간을 확인한 뒤 설정에서 껐다 켜 주세요.",
+            ),
+            FetchError::Cancelled => None,
+        }
+    }
+}
+
+/// The composer's progress sentence for `label` at `percent`.
+pub fn progress_line(_label: &str, percent: u32) -> String {
+    format!("게임 내 전송 모듈을 내려받는 중... {percent}%")
+}
+
+/// The release tag of `version` (`0.6.5` -> `v0.6.5`).
+pub fn own_tag(version: &str) -> String {
+    format!("v{version}")
+}
+
+/// The module's asset name. Every asset of a release, rc included, carries the final
+/// version in its name.
+pub fn dll_asset(version: &str) -> String {
+    format!("Resonance-Stream-v{version}-ingame.dll")
+}
+
+/// The module's signature asset.
+pub fn sig_asset(version: &str) -> String {
+    format!("{}.sig", dll_asset(version))
+}
+
+/// The download url of `asset` in release `tag` of `repo`.
+pub fn asset_url(repo: &str, tag: &str, asset: &str) -> String {
+    format!("https://github.com/{repo}/releases/download/{tag}/{asset}")
+}
+
+/// The release list of `repo` (newest first, 100 at most).
+pub fn releases_api_url(repo: &str) -> String {
+    format!("https://api.github.com/repos/{repo}/releases?per_page=100")
+}
+
+/// The tags of the published prereleases `v<version>-rc.<N>` in the release list `json`,
+/// highest N first. `Err` when the text is not a list of releases.
+pub fn rc_tags(version: &str, json: &str) -> Result<Vec<String>, String> {
+    let list: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let list = list.as_array().ok_or("the release list is not an array")?;
+    let prefix = format!("v{version}-rc.");
+    let mut found: Vec<(u64, String)> = Vec::new();
+    for release in list {
+        let flag = |name: &str| release.get(name).and_then(|v| v.as_bool()).unwrap_or(false);
+        if flag("draft") || !flag("prerelease") {
+            continue;
+        }
+        let Some(tag) = release.get("tag_name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(n) = tag.strip_prefix(&prefix) else {
+            continue;
+        };
+        if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(n) = n.parse::<u64>() {
+            found.push((n, tag.to_string()));
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(found.into_iter().map(|(_, tag)| tag).collect())
+}
+
+/// The SHA-256 (lower-case hex) `sums` (`sha256sum` output) lists for `name`.
+pub fn sums_hash(sums: &str, name: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let (hash, file) = line.trim().split_once(char::is_whitespace)?;
+        let file = file.trim_start().trim_start_matches('*');
+        if file != name || hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        Some(hash.to_ascii_lowercase())
+    })
+}
+
+/// The release to download the module of `version` from: its own tag when that
+/// release's `SHA256SUMS` lists the module with `pin`, else the newest rc that does.
+///
+/// `fetch_sums(tag)`: the `SHA256SUMS` text of a release, `Ok(None)` when it has none
+/// (404). `list_releases()`: the release list JSON, asked at most once. An error of
+/// either is [`FetchError::Network`]; no match is [`FetchError::NotPublished`].
+pub fn resolve_tag(
+    pin: &str,
+    version: &str,
+    mut fetch_sums: impl FnMut(&str) -> Result<Option<String>, String>,
+    list_releases: impl FnOnce() -> Result<String, String>,
+) -> Result<String, FetchError> {
+    let name = dll_asset(version);
+    let mut holds_pin = |tag: &str| -> Result<bool, FetchError> {
+        let sums = fetch_sums(tag).map_err(|_| FetchError::Network)?;
+        Ok(sums
+            .and_then(|text| sums_hash(&text, &name))
+            .is_some_and(|hash| hash.eq_ignore_ascii_case(pin)))
+    };
+    let own = own_tag(version);
+    if holds_pin(&own)? {
+        return Ok(own);
+    }
+    let list = list_releases().map_err(|_| FetchError::Network)?;
+    for tag in rc_tags(version, &list).map_err(|_| FetchError::Network)? {
+        if holds_pin(&tag)? {
+            return Ok(tag);
+        }
+    }
+    Err(FetchError::NotPublished)
+}
+
+/// `<data>\bin\ingame\<version>`: the folder of the module of one version.
+pub fn module_dir(data: &Path, version: &str) -> PathBuf {
+    data.join("bin").join("ingame").join(version)
+}
+
+/// The module's file in [`module_dir`].
+pub fn module_file(data: &Path, version: &str) -> PathBuf {
+    module_dir(data, version).join(DLL_NAME)
+}
+
+/// The file the app loads: the debug override when there is one, else the downloaded
+/// module of `version`.
+pub fn dll_to_load(override_path: Option<&str>, data: &Path, version: &str) -> PathBuf {
+    match override_path {
+        Some(path) => PathBuf::from(path),
+        None => module_file(data, version),
+    }
+}
+
+/// Of the entry names under `<data>\bin\ingame`, the ones to remove: a plain
+/// `X.Y.Z` folder that is not `own`, and any `X.Y.Z.part` staging folder. Anything else stays.
+pub fn stale_entries(names: &[&str], own: &str) -> Vec<String> {
+    let plain = |s: &str| {
+        let mut parts = s.split('.');
+        let mut count = 0;
+        for part in parts.by_ref() {
+            if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+                return false;
+            }
+            count += 1;
+        }
+        count == 3
+    };
+    names
+        .iter()
+        .filter(|name| match name.strip_suffix(".part") {
+            Some(base) => plain(base),
+            None => plain(name) && **name != own,
+        })
+        .map(|name| name.to_string())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

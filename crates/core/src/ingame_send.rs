@@ -189,6 +189,8 @@ pub enum SendError {
     /// The named client is no longer running.
     ClientGone,
     NoPin,
+    /// The module of this version is being downloaded; it can be used when that ends.
+    DllDownloading,
     DllMissing,
     PinMismatch,
     OpenFailed,
@@ -214,11 +216,14 @@ impl fmt::Display for SendError {
             SendError::ChooseClient => "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요.",
             SendError::ClientGone => "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.",
             SendError::NoPin => "이 앱에는 게임 내 전송 모듈이 들어 있지 않습니다.",
+            SendError::DllDownloading => {
+                "게임 내 전송 모듈을 내려받는 중입니다. 끝나면 보낼 수 있습니다."
+            }
             SendError::DllMissing => {
-                "게임 내 전송 모듈 파일을 찾을 수 없습니다. 앱을 다시 설치해 주세요."
+                "게임 내 전송 모듈 파일이 없습니다. 설정에서 껐다 켜면 다시 내려받습니다."
             }
             SendError::PinMismatch => {
-                "게임 내 전송 모듈 파일이 변경되어 불러오지 않았습니다. 앱을 다시 설치해 주세요."
+                "게임 내 전송 모듈 파일이 변경되어 불러오지 않았습니다. 설정에서 껐다 켜면 다시 내려받습니다."
             }
             SendError::OpenFailed => "게임 프로세스에 접근하지 못했습니다.",
             SendError::LoadFailed => "게임에 전송 모듈을 불러오지 못했습니다.",
@@ -778,6 +783,7 @@ mod tests {
         for (err, sentence) in table {
             assert_eq!(err.to_string(), sentence);
             assert!(!sentence.contains('\n'));
+            assert!(!sentence.contains("다시 설치"), "{sentence}");
         }
         assert_eq!(
             SendError::Text(SendTextError::Empty).to_string(),
