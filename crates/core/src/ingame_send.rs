@@ -448,4 +448,495 @@ mod tests {
             SendTextError::Empty.to_string()
         );
     }
+
+    // ---- flows -------------------------------------------------------------
+
+    use resonance_types::ingame_pipe::{
+        decode_request, encode_request, Reply, Request, PIPE_PROTOCOL_VERSION, WRITE_TIMEOUT_MS,
+    };
+    use resonance_types::SendChatChannel;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use crate::send_text::SendSpacing;
+
+    struct FakeWire {
+        writes: Vec<(Vec<u8>, Duration)>,
+        write_result: Result<(), WireError>,
+        chunks: VecDeque<Result<Vec<u8>, WireError>>,
+    }
+
+    impl FakeWire {
+        fn replying(chunks: Vec<Result<Vec<u8>, WireError>>) -> Self {
+            FakeWire {
+                writes: Vec::new(),
+                write_result: Ok(()),
+                chunks: chunks.into(),
+            }
+        }
+        fn line(s: &str) -> Self {
+            Self::replying(vec![Ok(s.as_bytes().to_vec())])
+        }
+    }
+
+    impl Wire for FakeWire {
+        fn write_line(&mut self, line: &[u8], timeout: Duration) -> Result<(), WireError> {
+            self.writes.push((line.to_vec(), timeout));
+            self.write_result
+        }
+        fn read(&mut self, buf: &mut [u8], _wait: Duration) -> Result<usize, WireError> {
+            match self.chunks.pop_front() {
+                None => Err(WireError::Timeout),
+                Some(Err(e)) => Err(e),
+                Some(Ok(mut bytes)) => {
+                    let n = bytes.len().min(buf.len());
+                    buf[..n].copy_from_slice(&bytes[..n]);
+                    if n < bytes.len() {
+                        self.chunks.push_front(Ok(bytes.split_off(n)));
+                    }
+                    Ok(n)
+                }
+            }
+        }
+    }
+
+    fn ping(id: u32) -> Request {
+        Request::Ping { id }
+    }
+
+    const WAIT: Duration = Duration::from_millis(1500);
+
+    #[test]
+    fn exchange_writes_the_encoded_request_with_the_write_deadline() {
+        let mut wire = FakeWire::line("{\"id\":7,\"ok\":true}\n");
+        let reply = exchange(&mut wire, &ping(7), WAIT).unwrap();
+        assert_eq!(reply, Reply::Ack { id: 7 });
+        assert_eq!(wire.writes.len(), 1);
+        assert_eq!(wire.writes[0].0, encode_request(&ping(7)).into_bytes());
+        assert_eq!(
+            wire.writes[0].1,
+            Duration::from_millis(WRITE_TIMEOUT_MS as u64)
+        );
+        assert_eq!(
+            decode_request(&wire.writes[0].0[..wire.writes[0].0.len() - 1]),
+            Ok(ping(7))
+        );
+    }
+
+    #[test]
+    fn exchange_joins_a_reply_split_across_reads() {
+        let mut wire = FakeWire::replying(vec![
+            Ok(b"{\"id\":7,".to_vec()),
+            Ok(b"\"ok\":true}\n".to_vec()),
+        ]);
+        assert_eq!(
+            exchange(&mut wire, &ping(7), WAIT),
+            Ok(Reply::Ack { id: 7 })
+        );
+    }
+
+    #[test]
+    fn exchange_breaks_on_another_id_a_timeout_or_a_failed_write() {
+        let mut wire = FakeWire::line("{\"id\":8,\"ok\":true}\n");
+        assert_eq!(exchange(&mut wire, &ping(7), WAIT), Err(SendError::Broken));
+        let mut wire = FakeWire::replying(vec![Err(WireError::Timeout)]);
+        assert_eq!(exchange(&mut wire, &ping(7), WAIT), Err(SendError::Broken));
+        let mut wire = FakeWire::line("{\"id\":7,\"ok\":true}\n");
+        wire.write_result = Err(WireError::Broken);
+        assert_eq!(exchange(&mut wire, &ping(7), WAIT), Err(SendError::Broken));
+        assert!(
+            wire.chunks.len() == 1,
+            "nothing is read after a failed write"
+        );
+    }
+
+    #[test]
+    fn exchange_breaks_on_an_overlong_reply_line() {
+        let mut line = vec![b'a'; 4097];
+        line.push(b'\n');
+        let mut wire = FakeWire::replying(vec![Ok(line)]);
+        assert_eq!(exchange(&mut wire, &ping(7), WAIT), Err(SendError::Broken));
+    }
+
+    #[test]
+    fn exchange_returns_a_dll_error_reply_for_the_caller_to_map() {
+        let mut wire =
+            FakeWire::line("{\"id\":7,\"ok\":false,\"code\":\"no_client\",\"detail\":\"x\"}\n");
+        assert_eq!(
+            exchange(&mut wire, &ping(7), WAIT),
+            Ok(Reply::Error {
+                id: 7,
+                code: ErrorCode::NoClient,
+                detail: "x".into()
+            })
+        );
+    }
+
+    #[derive(Default)]
+    struct FakeListener {
+        script: VecDeque<Result<Option<u32>, SendError>>,
+        disconnects: u32,
+    }
+
+    impl Listener for FakeListener {
+        fn wait_client(&mut self, _wait: Duration) -> Result<Option<u32>, SendError> {
+            self.script.pop_front().unwrap_or(Ok(None))
+        }
+        fn disconnect(&mut self) {
+            self.disconnects += 1;
+        }
+    }
+
+    fn listener(script: Vec<Result<Option<u32>, SendError>>) -> FakeListener {
+        FakeListener {
+            script: script.into(),
+            disconnects: 0,
+        }
+    }
+
+    #[test]
+    fn accept_game_takes_the_game_and_drops_other_clients() {
+        let mut l = listener(vec![Ok(Some(42))]);
+        assert_eq!(accept_game(&mut l, 42, CONNECT_WAIT), Ok(()));
+        assert_eq!(l.disconnects, 0);
+
+        let mut l = listener(vec![Ok(Some(99)), Ok(Some(42))]);
+        assert_eq!(accept_game(&mut l, 42, CONNECT_WAIT), Ok(()));
+        assert_eq!(l.disconnects, 1);
+    }
+
+    #[test]
+    fn accept_game_gives_up_when_only_wrong_clients_come() {
+        let mut l = listener(vec![Ok(Some(99)), Ok(Some(98))]);
+        assert_eq!(
+            accept_game(&mut l, 42, CONNECT_WAIT),
+            Err(SendError::NoConnect)
+        );
+        assert_eq!(l.disconnects, 2);
+    }
+
+    #[test]
+    fn accept_game_passes_a_wait_error_on() {
+        let mut l = listener(vec![Err(SendError::PipeCreate)]);
+        assert_eq!(
+            accept_game(&mut l, 42, CONNECT_WAIT),
+            Err(SendError::PipeCreate)
+        );
+    }
+
+    struct FakeHost {
+        calls: Vec<String>,
+        find: Result<u32, SendError>,
+        create: Result<(), SendError>,
+        loaded: VecDeque<bool>,
+        gone_after_wait: bool,
+        verify: VecDeque<Result<(), SendError>>,
+        load: Result<(), SendError>,
+        accept: Result<(), SendError>,
+        hellos: VecDeque<Result<Reply, SendError>>,
+    }
+
+    impl FakeHost {
+        fn happy() -> Self {
+            FakeHost {
+                calls: Vec::new(),
+                find: Ok(42),
+                create: Ok(()),
+                loaded: VecDeque::new(),
+                gone_after_wait: true,
+                verify: VecDeque::new(),
+                load: Ok(()),
+                accept: Ok(()),
+                hellos: VecDeque::from([Ok(good_hello())]),
+            }
+        }
+        fn count(&self, name: &str) -> usize {
+            self.calls.iter().filter(|c| c.starts_with(name)).count()
+        }
+    }
+
+    fn good_hello() -> Reply {
+        Reply::Hello {
+            id: 1,
+            version: PIPE_PROTOCOL_VERSION,
+            dll: "0.1.0".into(),
+        }
+    }
+
+    impl Host for FakeHost {
+        fn find_game(&mut self) -> Result<u32, SendError> {
+            self.calls.push("find_game".into());
+            self.find.clone()
+        }
+        fn create_pipe(&mut self, pid: u32) -> Result<(), SendError> {
+            self.calls.push(format!("create_pipe({pid})"));
+            self.create.clone()
+        }
+        fn module_loaded(&mut self, _pid: u32) -> bool {
+            self.calls.push("module_loaded".into());
+            self.loaded.pop_front().unwrap_or(false)
+        }
+        fn wait_module_gone(&mut self, _pid: u32, wait: Duration) -> bool {
+            assert_eq!(wait, UNLOAD_WAIT);
+            self.calls.push("wait_module_gone".into());
+            self.gone_after_wait
+        }
+        fn verify_dll(&mut self) -> Result<(), SendError> {
+            self.calls.push("verify_dll".into());
+            self.verify.pop_front().unwrap_or(Ok(()))
+        }
+        fn load_dll(&mut self, pid: u32) -> Result<(), SendError> {
+            self.calls.push(format!("load_dll({pid})"));
+            self.load.clone()
+        }
+        fn accept(&mut self, _pid: u32) -> Result<(), SendError> {
+            self.calls.push("accept".into());
+            self.accept.clone()
+        }
+        fn hello(&mut self) -> Result<Reply, SendError> {
+            self.calls.push("hello".into());
+            self.hellos.pop_front().expect("scripted hello")
+        }
+        fn bye_and_wait(&mut self, _pid: u32) {
+            self.calls.push("bye_and_wait".into());
+        }
+    }
+
+    #[test]
+    fn connect_runs_the_load_sequence_in_order_with_the_pipe_first() {
+        let mut host = FakeHost::happy();
+        assert_eq!(connect(&mut host), Ok(42));
+        assert_eq!(
+            host.calls,
+            [
+                "find_game",
+                "create_pipe(42)",
+                "module_loaded",
+                "verify_dll",
+                "load_dll(42)",
+                "accept",
+                "hello"
+            ]
+        );
+    }
+
+    #[test]
+    fn connect_stops_when_the_game_or_the_pipe_is_missing() {
+        let mut host = FakeHost::happy();
+        host.find = Err(SendError::Game(GameError::NotRunning));
+        assert_eq!(
+            connect(&mut host),
+            Err(SendError::Game(GameError::NotRunning))
+        );
+        assert_eq!(host.calls, ["find_game"]);
+
+        let mut host = FakeHost::happy();
+        host.create = Err(SendError::OpenFailed);
+        assert_eq!(connect(&mut host), Err(SendError::PipeCreate));
+        assert_eq!(host.count("load_dll"), 0);
+    }
+
+    #[test]
+    fn connect_waits_for_an_old_module_to_leave_or_reports_it_stale() {
+        let mut host = FakeHost::happy();
+        host.loaded = VecDeque::from([true]);
+        assert_eq!(connect(&mut host), Ok(42));
+        assert_eq!(host.count("wait_module_gone"), 1);
+
+        let mut host = FakeHost::happy();
+        host.loaded = VecDeque::from([true]);
+        host.gone_after_wait = false;
+        assert_eq!(connect(&mut host), Err(SendError::StaleModule));
+        assert_eq!(host.count("load_dll"), 0);
+    }
+
+    #[test]
+    fn connect_does_not_load_a_file_that_fails_the_pin() {
+        for err in [
+            SendError::NoPin,
+            SendError::DllMissing,
+            SendError::PinMismatch,
+        ] {
+            let mut host = FakeHost::happy();
+            host.verify = VecDeque::from([Err(err.clone())]);
+            assert_eq!(connect(&mut host), Err(err));
+            assert_eq!(host.count("load_dll"), 0);
+        }
+    }
+
+    #[test]
+    fn connect_passes_load_accept_and_hello_errors_on() {
+        let mut host = FakeHost::happy();
+        host.load = Err(SendError::LoadFailed);
+        assert_eq!(connect(&mut host), Err(SendError::LoadFailed));
+        assert_eq!(host.count("accept"), 0);
+
+        let mut host = FakeHost::happy();
+        host.accept = Err(SendError::NoConnect);
+        assert_eq!(connect(&mut host), Err(SendError::NoConnect));
+
+        let mut host = FakeHost::happy();
+        host.hellos = VecDeque::from([Err(SendError::Broken)]);
+        assert_eq!(connect(&mut host), Err(SendError::Broken));
+    }
+
+    fn version_error() -> Reply {
+        Reply::Error {
+            id: 1,
+            code: ErrorCode::Version,
+            detail: String::new(),
+        }
+    }
+
+    #[test]
+    fn connect_replaces_a_stale_module_once() {
+        let mut host = FakeHost::happy();
+        host.hellos = VecDeque::from([Ok(version_error()), Ok(good_hello())]);
+        assert_eq!(connect(&mut host), Ok(42));
+        assert_eq!(host.count("bye_and_wait"), 1);
+        assert_eq!(host.count("load_dll"), 2);
+    }
+
+    #[test]
+    fn connect_gives_up_after_two_version_mismatches() {
+        let mut host = FakeHost::happy();
+        host.hellos = VecDeque::from([Ok(version_error()), Ok(version_error())]);
+        assert_eq!(connect(&mut host), Err(SendError::Dll(ErrorCode::Version)));
+        assert_eq!(host.count("bye_and_wait"), 1);
+
+        let mut host = FakeHost::happy();
+        let other = Reply::Hello {
+            id: 1,
+            version: 2,
+            dll: "x".into(),
+        };
+        host.hellos = VecDeque::from([Ok(other.clone()), Ok(other)]);
+        assert_eq!(connect(&mut host), Err(SendError::Dll(ErrorCode::Version)));
+    }
+
+    #[derive(Default)]
+    struct FakeBackend {
+        calls: Vec<(SendChatChannel, String)>,
+        result: Option<SendError>,
+        sleep: Duration,
+    }
+
+    impl SendBackend for FakeBackend {
+        fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError> {
+            self.calls.push((channel, text.to_string()));
+            std::thread::sleep(self.sleep);
+            match self.result.clone() {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
+    }
+
+    struct Shared(Arc<Mutex<FakeBackend>>);
+
+    impl SendBackend for Shared {
+        fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError> {
+            self.0.lock().unwrap().send(channel, text)
+        }
+    }
+
+    fn too_soon_sentence() -> String {
+        SendTextError::TooSoon { wait_ms: 1 }.to_string()[..12].to_string()
+    }
+
+    #[test]
+    fn the_flow_refuses_when_the_setting_is_off_before_anything_else() {
+        let spacing = Mutex::new(SendSpacing::default());
+        let mut backend = FakeBackend::default();
+        let got = send_chat_flow(false, &spacing, &mut backend, SendChatChannel::Say, "hi");
+        assert_eq!(got, Err(SendError::SettingOff.to_string()));
+        assert!(backend.calls.is_empty());
+    }
+
+    #[test]
+    fn the_flow_checks_the_text_before_the_backend() {
+        let spacing = Mutex::new(SendSpacing::default());
+        let mut backend = FakeBackend::default();
+        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, "   ");
+        assert_eq!(got, Err("보낼 내용이 없습니다.".to_string()));
+        let long = "a".repeat(141);
+        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, &long);
+        assert_eq!(got, Err(SendTextError::TooLong { len: 141 }.to_string()));
+        assert!(backend.calls.is_empty());
+    }
+
+    #[test]
+    fn the_flow_sends_the_prepared_text_and_records_only_a_success() {
+        let spacing = Mutex::new(SendSpacing::default());
+        let mut backend = FakeBackend::default();
+        let got = send_chat_flow(
+            true,
+            &spacing,
+            &mut backend,
+            SendChatChannel::Guild,
+            "  hi\n",
+        );
+        assert_eq!(got, Ok(()));
+        assert_eq!(backend.calls, [(SendChatChannel::Guild, "hi".to_string())]);
+
+        let again = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Guild, "hi");
+        assert!(again.unwrap_err().starts_with(&too_soon_sentence()));
+        assert_eq!(backend.calls.len(), 1);
+    }
+
+    #[test]
+    fn a_failed_send_does_not_start_the_spacing_window() {
+        let spacing = Mutex::new(SendSpacing::default());
+        let mut backend = FakeBackend {
+            result: Some(SendError::Dll(ErrorCode::NoClient)),
+            ..Default::default()
+        };
+        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, "hi");
+        assert_eq!(got, Err(code_text(ErrorCode::NoClient).to_string()));
+        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, "hi");
+        assert_eq!(got, Err(code_text(ErrorCode::NoClient).to_string()));
+        assert_eq!(backend.calls.len(), 2);
+    }
+
+    #[test]
+    fn two_sends_at_once_let_exactly_one_through() {
+        let spacing = Mutex::new(SendSpacing::default());
+        let backend = Arc::new(Mutex::new(FakeBackend {
+            sleep: Duration::from_millis(50),
+            ..Default::default()
+        }));
+        let results: Vec<Result<(), String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    s.spawn(|| {
+                        let mut shared = Shared(backend.clone());
+                        send_chat_flow(true, &spacing, &mut shared, SendChatChannel::Say, "hi")
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        let err = results.into_iter().find_map(Result::err).unwrap();
+        assert!(err.starts_with(&too_soon_sentence()));
+        assert_eq!(backend.lock().unwrap().calls.len(), 1);
+    }
+
+    #[test]
+    fn a_poisoned_spacing_mutex_still_works() {
+        let spacing = Mutex::new(SendSpacing::default());
+        let _ = std::thread::scope(|s| {
+            s.spawn(|| {
+                let _guard = spacing.lock().unwrap();
+                panic!("poison");
+            })
+            .join()
+        });
+        assert!(spacing.is_poisoned());
+        let mut backend = FakeBackend::default();
+        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, "hi");
+        assert_eq!(got, Ok(()));
+        let _ = Instant::now();
+    }
 }
