@@ -1,3 +1,67 @@
+//! What the hook's detour does on the game's main thread: take the job, walk to the live
+//! `ZTcpClient` again, call `Send`, hand the result back. It never lets a panic out (the
+//! detour is an `extern "win64"` function: unwinding through it would abort the game).
+
+use crate::send::SendOutcome;
+use crate::slot::SendSlot;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Mutex, TryLockError};
+
+/// What the pump needs from the game.
+pub trait SendOps {
+    /// Walks from the singleton to the live client, now. Objects are never cached: a client
+    /// from before a reconnect must not be called.
+    fn live_client(&mut self) -> Result<usize, SendOutcome>;
+    /// Calls `ZTcpClient.Send` on `client` with `frame`. Its return value is ignored.
+    fn send(&mut self, client: usize, frame: &[u8]) -> Result<(), SendOutcome>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PumpResult {
+    /// Nothing to do (or not the main thread).
+    Idle,
+    /// A job was taken and completed.
+    Handled,
+    /// A job is waiting but the ops were busy; the next tick takes it.
+    Deferred,
+    /// The work panicked: the job was completed `unsupported` and the slot is disabled.
+    Panicked,
+}
+
+/// One tick of the pump. `main_thread` is the detour's `GetCurrentThreadId() == main_tid`.
+pub fn pump_once<O: SendOps>(slot: &SendSlot, ops: &Mutex<O>, main_thread: bool) -> PumpResult {
+    if !main_thread || !slot.has_job() {
+        return PumpResult::Idle;
+    }
+    let mut ops = match ops.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::WouldBlock) => return PumpResult::Deferred,
+        Err(TryLockError::Poisoned(p)) => p.into_inner(),
+    };
+    let Some(frame) = slot.take_for_pump() else {
+        return PumpResult::Idle;
+    };
+    let work = catch_unwind(AssertUnwindSafe(|| {
+        let client = ops.live_client()?;
+        ops.send(client, &frame)
+    }));
+    match work {
+        Ok(Ok(())) => {
+            slot.complete(SendOutcome::Sent);
+            PumpResult::Handled
+        }
+        Ok(Err(outcome)) => {
+            slot.complete(outcome);
+            PumpResult::Handled
+        }
+        Err(_) => {
+            slot.disable();
+            slot.complete(SendOutcome::Unsupported("internal error".into()));
+            PumpResult::Panicked
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,3 +1,166 @@
+//! The one-slot queue between the worker thread (which holds a request for at most the
+//! DLL's hold) and the pump (which runs on the game's main thread). One state byte decides
+//! every hand-over atomically; the pump's idle path is a single atomic load.
+
+use crate::send::SendOutcome;
+use resonance_types::ingame_pipe::DLL_HOLD_MS;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Mutex, PoisonError};
+
+/// Jobs the slot holds (doc: a single slot).
+pub const SEND_QUEUE_CAP: usize = 1;
+/// How often the worker looks at the slot.
+pub const POLL_MS: u64 = 1;
+/// How long the worker waits for a job the pump has already taken. The app gave up long
+/// before (it waits 1500 ms).
+pub const TAKEN_WAIT_CAP_MS: u64 = 5000;
+
+/// Time, passed in so waits are tested without sleeping.
+pub trait Clock {
+    fn now_ms(&self) -> u64;
+    fn sleep_ms(&self, ms: u64);
+}
+
+const EMPTY: u8 = 0;
+const FILLED: u8 = 1;
+const TAKEN: u8 = 2;
+const DONE: u8 = 3;
+/// The worker gave up on a taken job; the pump's `complete` frees the slot.
+const ABANDONED: u8 = 4;
+
+pub struct SendSlot {
+    state: AtomicU8,
+    closed: AtomicBool,
+    job: Mutex<Option<Vec<u8>>>,
+    result: Mutex<Option<SendOutcome>>,
+}
+
+impl Default for SendSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SendSlot {
+    pub const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(EMPTY),
+            closed: AtomicBool::new(false),
+            job: Mutex::new(None),
+            result: Mutex::new(None),
+        }
+    }
+
+    /// Worker side: puts a frame in. `Busy` if the slot is in use, `Disabled` once closed.
+    pub fn push(&self, frame: Vec<u8>) -> Result<(), SendOutcome> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(SendOutcome::Disabled);
+        }
+        if self.state.load(Ordering::Acquire) != EMPTY {
+            return Err(SendOutcome::Busy);
+        }
+        *self.job.lock().unwrap_or_else(PoisonError::into_inner) = Some(frame);
+        self.state.store(FILLED, Ordering::Release);
+        Ok(())
+    }
+
+    /// Pump side, the idle path: one atomic load.
+    pub fn has_job(&self) -> bool {
+        self.state.load(Ordering::Acquire) == FILLED
+    }
+
+    /// Pump side: takes the job, unless the worker expired it first.
+    pub fn take_for_pump(&self) -> Option<Vec<u8>> {
+        self.state
+            .compare_exchange(FILLED, TAKEN, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        self.job
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Worker side: withdraws a job the pump has not taken. `false` if it was taken.
+    pub fn try_expire(&self) -> bool {
+        if self
+            .state
+            .compare_exchange(FILLED, EMPTY, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return false;
+        }
+        self.job
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        true
+    }
+
+    /// Pump side: finishes the job it took.
+    pub fn complete(&self, outcome: SendOutcome) {
+        *self.result.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+        if self
+            .state
+            .compare_exchange(TAKEN, DONE, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            // The worker abandoned it: nobody reads the result, the slot is free.
+            self.result
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            self.state.store(EMPTY, Ordering::Release);
+        }
+    }
+
+    /// No new job is accepted (unload).
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    /// No new job is accepted (the pump panicked).
+    pub fn disable(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    /// Worker side: waits for the pump's answer to the job pushed just before. A job the
+    /// pump has not taken within [`DLL_HOLD_MS`] is withdrawn (`Expired`: never sent).
+    pub fn wait_for_result(&self, clock: &dyn Clock) -> SendOutcome {
+        let start = clock.now_ms();
+        loop {
+            let elapsed = clock.now_ms().saturating_sub(start);
+            match self.state.load(Ordering::Acquire) {
+                DONE => {
+                    let outcome = self
+                        .result
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take()
+                        .unwrap_or_else(|| SendOutcome::Unsupported("internal error".into()));
+                    self.state.store(EMPTY, Ordering::Release);
+                    return outcome;
+                }
+                FILLED if elapsed >= u64::from(DLL_HOLD_MS) => {
+                    if self.try_expire() {
+                        return SendOutcome::Expired;
+                    }
+                }
+                TAKEN if elapsed >= TAKEN_WAIT_CAP_MS => {
+                    if self
+                        .state
+                        .compare_exchange(TAKEN, ABANDONED, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        return SendOutcome::NotSent("pump stuck".into());
+                    }
+                }
+                _ => {}
+            }
+            clock.sleep_ms(POLL_MS);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
