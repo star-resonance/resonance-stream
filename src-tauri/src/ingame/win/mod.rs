@@ -1,7 +1,9 @@
 //! The Win32 side of in-game sending (Windows only): process and TCP lookups, the
 //! remote load, and the pipe. Only compiled, never unit-tested here.
 
+pub mod host;
 pub mod loader;
+pub mod pipe;
 pub mod process;
 pub mod tcp;
 
