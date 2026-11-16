@@ -15,8 +15,10 @@ compile_error!(
 pub mod error;
 pub mod log;
 pub mod names;
+pub mod pump;
 pub mod send;
 pub mod session;
+pub mod slot;
 pub mod unload;
 pub mod walk;
 
