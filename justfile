@@ -57,9 +57,15 @@ ingame-cross-check:
 
 # The only way the shipped DLL is built (panic = "unwind", see [profile.ingame]).
 # Output: target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll
+# The DLL runs inside the game, whose process need not hold a VC runtime, so it links the C
+# runtime statically (crt-static). Cargo config cannot set flags per crate, and a `.cargo`
+# target rustflag would reach the app too; this recipe builds only `-p resonance-ingame`, so
+# the flag given here reaches only the DLL's dependency tree. The second command prints the DLL's
+# imports (one per line) and fails the recipe on any C-runtime import (VCRUNTIME140, api-ms-win-crt-*).
 [windows]
 ingame-build:
-    cargo build -p resonance-ingame --profile ingame --target x86_64-pc-windows-msvc
+    cargo --config "target.x86_64-pc-windows-msvc.rustflags=['-C','target-feature=+crt-static']" build -p resonance-ingame --profile ingame --target x86_64-pc-windows-msvc
+    cargo test -p resonance-ingame --test dll_imports -- --ignored --nocapture
 
 # Line coverage of core + llama + types (needs `cargo install cargo-llvm-cov`).
 coverage:
