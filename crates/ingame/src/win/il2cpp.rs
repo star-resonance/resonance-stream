@@ -35,6 +35,7 @@ type ThreadDetach = unsafe extern "C" fn(Ptr);
 
 /// The resolved exports. The twelve required ones are all there or [`Api::load`] fails.
 #[allow(dead_code)] // field_static_get_value is resolved (the doc lists it) but not called yet
+#[derive(Clone, Copy)]
 pub struct Api {
     domain_get: DomainGet,
     domain_get_assemblies: DomainGetAssemblies,
@@ -134,6 +135,16 @@ impl Il2cpp {
             api,
             domain,
             thread,
+        }
+    }
+
+    /// The same binding without attaching a thread: for the pump, which runs on a thread the
+    /// game attached itself.
+    pub fn unattached(&self) -> Il2cpp {
+        Il2cpp {
+            api: self.api,
+            domain: self.domain,
+            thread: std::ptr::null_mut(),
         }
     }
 
@@ -301,6 +312,25 @@ impl GameProbe {
                 log.warn(&format!("resolution failed: {e}"));
                 GameProbe::Failed(e)
             }
+        }
+    }
+
+    /// The hook candidates that resolve (resolution only: nothing is patched).
+    pub fn resolve_pumps(
+        &mut self,
+        log: &mut dyn LogSink,
+    ) -> Result<Vec<crate::walk::PumpTarget>, StepError> {
+        match self {
+            GameProbe::Ready(w) => w.resolve_pumps(log),
+            GameProbe::Failed(e) => Err(e.clone()),
+        }
+    }
+
+    /// An il2cpp binding for the pump, if the exports resolved.
+    pub fn pump_il2cpp(&self) -> Option<Il2cpp> {
+        match self {
+            GameProbe::Ready(w) => Some(w.ops().unattached()),
+            GameProbe::Failed(_) => None,
         }
     }
 
