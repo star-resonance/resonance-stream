@@ -45,10 +45,12 @@ package.bat
 
 `package.bat` first builds the in-game DLL (`just ingame-build`: it links the C runtime
 statically, prints the DLL's imports and fails if it imports a C-runtime DLL). It then runs
-`cargo tauri build` (which runs `trunk build` first) with the overlay config and the
-`RESONANCE_INGAME_DLL` and `RESONANCE_INGAME_REQUIRED` variables, and moves the NSIS
-installer (`*-setup.exe`) into `dist\`. The installer holds `ingame\resonance_ingame.dll`.
-The DLL is built only this way. Release builds embed `src-tauri/app.manifest`,
+`cargo tauri build` (which runs `trunk build` first) with the
+`RESONANCE_INGAME_DLL` and `RESONANCE_INGAME_REQUIRED` variables (they only pin the DLL's hash into
+the app), and moves the NSIS installer (`*-setup.exe`) into `dist\`. The installer does NOT hold the
+DLL: the app downloads its own version's DLL into APPDATA when the in-game send is turned on. A
+locally built installer pins a DLL no release has, so its in-game send cannot download one: test
+the send with a Candidate build. The DLL is built only this way. Release builds embed `src-tauri/app.manifest`,
 so the installed app asks for Administrator rights on launch.
 
 The version number is set once, in the root `Cargo.toml` (`[workspace.package]`).

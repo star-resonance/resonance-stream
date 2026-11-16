@@ -43,10 +43,11 @@ package.bat
 ```
 
 `package.bat`는 먼저 인게임 DLL을 빌드합니다(`just ingame-build`: C 런타임을 정적으로 링크하고,
-DLL이 C 런타임 DLL을 임포트하면 실패하며 임포트 목록을 출력). 그다음 오버레이 설정과
-`RESONANCE_INGAME_DLL`·`RESONANCE_INGAME_REQUIRED` 변수를 지정해 `cargo tauri build`(먼저 `trunk build` 실행)를
+DLL이 C 런타임 DLL을 임포트하면 실패하며 임포트 목록을 출력). 그다음
+`RESONANCE_INGAME_DLL`·`RESONANCE_INGAME_REQUIRED` 변수(DLL의 해시를 앱에 고정하는 용도)를 지정해 `cargo tauri build`(먼저 `trunk build` 실행)를
 실행하고, 생성된 NSIS 설치 파일(`*-setup.exe`)을 `dist\` 폴더로 옮깁니다. 설치 파일에는
-`ingame\resonance_ingame.dll`이 들어 있습니다. DLL은 이 방법으로만 빌드합니다. 릴리스 빌드에는 `src-tauri/app.manifest`가 포함되어
+DLL이 들어 있지 않습니다. 앱이 게임 안 전송 기능을 켤 때 자기 버전의 DLL을 APPDATA에 내려받습니다.
+직접 빌드한 설치 파일은 어떤 릴리스에도 없는 DLL의 해시를 고정하므로 내려받기가 되지 않습니다. 게임 안 전송은 Candidate 빌드로 시험하세요. DLL은 이 방법으로만 빌드합니다. 릴리스 빌드에는 `src-tauri/app.manifest`가 포함되어
 설치된 앱은 실행 시 관리자 권한을 요청합니다.
 
 버전 번호는 루트 `Cargo.toml`의 `[workspace.package]` 한 곳에서만 설정합니다.
