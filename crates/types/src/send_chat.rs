@@ -98,25 +98,34 @@ impl std::fmt::Display for SendTextError {
 
 impl std::error::Error for SendTextError {}
 
-/// Prepares `text` for sending: trims it (Unicode white space), turns each CR
-/// and each LF into one space (no collapsing, so `"a\r\nb"` gives `"a  b"`),
-/// and checks it. Empty after the trim is [`SendTextError::Empty`]; more than
-/// [`MAX_TEXT_UTF16`] UTF-16 units after the replacement is
+/// The characters the DLL's second check rejects: Unicode Cc (which includes
+/// CR and LF) plus U+2028 and U+2029, which are not Cc.
+fn is_replaced(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
+}
+
+/// Prepares `text` for sending: turns each control character (Unicode Cc,
+/// the class the DLL's second check rejects: CR, LF, TAB, NUL, ...) and each
+/// U+2028/U+2029 into one space (no collapsing, so `"a\r\nb"` gives
+/// `"a  b"`), then trims (Unicode white space), then checks. The replacement
+/// runs before the trim, so a lone NUL is [`SendTextError::Empty`] and never
+/// a blank message. Empty after the trim is [`SendTextError::Empty`]; more
+/// than [`MAX_TEXT_UTF16`] UTF-16 units after the replacement is
 /// [`SendTextError::TooLong`].
 pub fn prepare_text(text: &str) -> Result<String, SendTextError> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
+    let replaced: String = text
+        .chars()
+        .map(|c| if is_replaced(c) { ' ' } else { c })
+        .collect();
+    let prepared = replaced.trim();
+    if prepared.is_empty() {
         return Err(SendTextError::Empty);
     }
-    let prepared: String = trimmed
-        .chars()
-        .map(|c| if c == '\r' || c == '\n' { ' ' } else { c })
-        .collect();
     let len = prepared.encode_utf16().count();
     if len > MAX_TEXT_UTF16 {
         return Err(SendTextError::TooLong { len });
     }
-    Ok(prepared)
+    Ok(prepared.to_string())
 }
 
 #[cfg(test)]
@@ -205,6 +214,64 @@ mod tests {
         assert_eq!(prepare_text("a\r\nb"), Ok("a  b".to_string()));
         assert_eq!(prepare_text("a\nb"), Ok("a b".to_string()));
         assert_eq!(prepare_text("\u{3000}hi\u{3000}"), Ok("hi".to_string()));
+    }
+
+    #[test]
+    fn prepare_replaces_each_control_character_with_one_space() {
+        for c in [
+            '\t', '\u{0}', '\u{2028}', '\u{2029}', '\u{1}', '\u{1f}', '\u{7f}', '\u{85}', '\u{9f}',
+            '\u{b}', '\u{c}',
+        ] {
+            assert_eq!(
+                prepare_text(&format!("a{c}b")),
+                Ok("a b".to_string()),
+                "{c:?}"
+            );
+        }
+        assert_eq!(prepare_text("a\t\u{0}b"), Ok("a  b".to_string()));
+        assert_eq!(prepare_text("a\r\n\tb"), Ok("a   b".to_string()));
+    }
+
+    #[test]
+    fn prepare_replaces_before_trimming() {
+        assert_eq!(prepare_text("\u{0}hi\u{1f}"), Ok("hi".to_string()));
+        for t in ["\u{0}", "\t\u{0}\u{2028}", "\u{7f}\n"] {
+            assert_eq!(prepare_text(t), Err(SendTextError::Empty), "{t:?}");
+        }
+    }
+
+    #[test]
+    fn prepare_counts_replaced_control_characters() {
+        let a = |n: usize| "a".repeat(n);
+        assert_eq!(
+            prepare_text(&format!("{}\t{}", a(70), a(70))),
+            Err(SendTextError::TooLong { len: 141 })
+        );
+        assert_eq!(
+            prepare_text(&(a(139) + "\u{0}a")),
+            Err(SendTextError::TooLong { len: 141 })
+        );
+        assert!(prepare_text(&(a(140) + "\u{0}")).is_ok());
+        assert!(prepare_text(&(a(70) + "\u{2028}" + &a(69))).is_ok());
+    }
+
+    #[test]
+    fn prepare_leaves_no_control_character() {
+        for c in ('\u{0}'..='\u{9f}')
+            .filter(|c| c.is_control())
+            .chain(['\u{2028}', '\u{2029}'])
+        {
+            let p = prepare_text(&format!("a{c}b")).unwrap();
+            assert_eq!(p, "a b", "{c:?}");
+            assert!(!p
+                .chars()
+                .any(|x| x.is_control() || x == '\u{2028}' || x == '\u{2029}'));
+        }
+    }
+
+    #[test]
+    fn prepare_keeps_format_characters() {
+        assert_eq!(prepare_text("a\u{200b}b"), Ok("a\u{200b}b".to_string()));
     }
 
     #[test]
