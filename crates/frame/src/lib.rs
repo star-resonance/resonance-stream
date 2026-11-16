@@ -3,8 +3,9 @@
 //! (service uuid, stub id, call id, method id) and a protobuf body. All header
 //! integers are big-endian and `size` counts the whole frame.
 //!
-//! `no_std`, no dependencies, and no panic path outside the tests: the caller
-//! runs in the game's process.
+//! `no_std`, no dependencies, and no `unwrap`, `expect` or computed indexing
+//! outside the tests: the caller runs in the game's process. (It allocates the
+//! returned `Vec`, so an allocation failure still aborts.)
 //!
 //! **Derived, not observed.** The layout comes from `docs/ingame-design.md`.
 //! The prefix agrees with core's inbound framing; the rest of the header and
@@ -158,7 +159,6 @@ pub fn build_send_chat(
 mod tests {
     use super::*;
     use alloc::string::String;
-    use alloc::vec;
     use alloc::vec::Vec;
 
     const G1: &[u8] = &[
@@ -320,6 +320,5 @@ mod tests {
             u32::from_be_bytes([f[0], f[1], f[2], f[3]]) as usize,
             f.len()
         );
-        let _ = vec![0u8; 0];
     }
 }
