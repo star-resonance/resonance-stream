@@ -85,6 +85,10 @@ pub struct AppConfig {
     /// Opt-in, off by default: load a module into the game to send chat from the app.
     #[serde(default)]
     pub ingame_send: bool,
+    /// The composer's channel, by wire name (`world`, `guild`, `party`, `say`); an unknown
+    /// name is World in the ui.
+    #[serde(default = "default_send_channel")]
+    pub send_channel: String,
     /// Sending guild chat to the guild's Discord channel through a broker (#367).
     #[serde(default)]
     pub guild_relay: GuildRelayConfig,
@@ -104,6 +108,10 @@ pub struct GuildRelayConfig {
     pub enabled: bool,
     /// The broker's base URL (`https://` only). Empty: no broker, nothing is sent.
     pub broker_url: String,
+}
+
+fn default_send_channel() -> String {
+    "world".to_owned()
 }
 
 fn default_spacing() -> u32 {
@@ -153,6 +161,7 @@ impl Default for AppConfig {
             chat_log_retention_days: 0,
             raw_capture: false,
             ingame_send: false,
+            send_channel: default_send_channel(),
             guild_relay: GuildRelayConfig::default(),
             nav_tabs: default_nav_tabs(),
             click_through_hold_key: ClickThroughHoldKey::default(),
