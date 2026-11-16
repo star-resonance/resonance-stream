@@ -1,8 +1,8 @@
 use crate::composer_view::{
-    can_send, channel_options, counter_over, counter_text, enter_sends, module_line, preselect,
-    send_request, COUNTER_TITLE,
+    can_send, channel_options, counter_over, counter_text, enter_sends, module_line, send_request,
+    stored_channel, tab_pick, COUNTER_TITLE,
 };
-use crate::store::AppSignals;
+use crate::store::{AppActions, AppSignals};
 use crate::tauri_bridge::{call, listen};
 use crate::ui_types::ProgressPayload;
 use leptos::html::Input;
@@ -18,10 +18,20 @@ use wasm_bindgen::prelude::*;
 #[component]
 pub fn ChatComposer() -> impl IntoView {
     let signals = use_context::<AppSignals>().expect("AppSignals missing");
+    let actions = use_context::<AppActions>().expect("AppActions missing");
     let active_tab = signals.config.active_tab;
+    let send_channel = signals.config.send_channel;
+    let set_send_channel = signals.config.set_send_channel;
+    // The picker shows, and sends to, the saved channel: one value for both.
+    let channel = move || stored_channel(&send_channel.get());
+    let choose = move |c: SendChatChannel| {
+        if c.as_str() != send_channel.get_untracked() {
+            set_send_channel.set(c.as_str().to_owned());
+            actions.save_config.dispatch(());
+        }
+    };
 
     let draft = RwSignal::new(String::new());
-    let channel = RwSignal::new(SendChatChannel::ALL[0]);
     let sending = RwSignal::new(false);
     let error = RwSignal::new(String::new());
     let input_ref = NodeRef::<Input>::new();
@@ -44,10 +54,15 @@ pub fn ChatComposer() -> impl IntoView {
         closure.forget();
     });
 
-    // A tab with a chat channel moves the picker to it; any other tab leaves it.
-    Effect::new(move |_| {
-        if let Some(c) = preselect(&active_tab.get()) {
-            channel.set(c);
+    // A tab change to a chat channel moves the picker to it; any other tab leaves it. Not on the
+    // first run: on start the saved channel wins over the restored tab.
+    Effect::new(move |prev: Option<()>| {
+        if let Some(c) = tab_pick(
+            prev.is_none(),
+            &active_tab.get(),
+            &send_channel.get_untracked(),
+        ) {
+            choose(c);
         }
     });
 
@@ -56,7 +71,7 @@ pub fn ChatComposer() -> impl IntoView {
             return;
         }
         sending.set(true);
-        let request = send_request(channel.get_untracked(), &draft.get_untracked());
+        let request = send_request(channel(), &draft.get_untracked());
         spawn_local(async move {
             match call::<SendChat>(&request).await {
                 Ok(()) => {
@@ -80,7 +95,7 @@ pub fn ChatComposer() -> impl IntoView {
                     on:change=move |ev| {
                         let value = event_target_value(&ev);
                         if let Some(c) = SendChatChannel::ALL.into_iter().find(|c| c.as_str() == value) {
-                            channel.set(c);
+                            choose(c);
                         }
                     }
                 >
@@ -88,7 +103,7 @@ pub fn ChatComposer() -> impl IntoView {
                         .into_iter()
                         .map(|(value, label)| {
                             view! {
-                                <option value=value selected=move || channel.get().as_str() == value>
+                                <option value=value selected=move || channel().as_str() == value>
                                     {label}
                                 </option>
                             }
