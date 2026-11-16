@@ -1,5 +1,6 @@
 use crate::capture::message_processor::{MessageProcessor, ProcessAction, DEFAULT_DEDUP_CAPACITY};
 use crate::capture::stream_tracker::{StreamKey, StreamTracker};
+use crate::game_clients::{ClientFact, Endpoint, Roster};
 use crate::protocol::framing::FrameKind;
 use crate::protocol::own_player::{own_player, OwnPlayer};
 use crate::protocol::parser::{history_pipeline, parsing_pipeline, Port5003Event};
@@ -7,6 +8,7 @@ use crate::text::normalize_emotes;
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
 use resonance_types::ChatMessage;
 use std::collections::HashMap;
+use std::time::Instant;
 
 pub enum PipelineAction {
     UpdateBlockedMessage(ChatMessage),
@@ -33,6 +35,8 @@ pub struct ChatPipeline {
     keep_unknown_fields: bool,
     /// The last own-player record reported, so an unchanged one is not sent again.
     own_player: Option<OwnPlayer>,
+    /// Which connection is which character (read before the duplicate check).
+    roster: Roster,
 }
 
 impl ChatPipeline {
@@ -42,6 +46,7 @@ impl ChatPipeline {
             processor: MessageProcessor::new(),
             keep_unknown_fields: false,
             own_player: None,
+            roster: Roster::new(),
         }
     }
 
@@ -61,6 +66,11 @@ impl ChatPipeline {
         for message in messages {
             self.processor.commit_new_message(message);
         }
+    }
+
+    /// The connections and their characters' nicknames, when they changed since the last call.
+    pub fn take_clients(&mut self) -> Option<Vec<ClientFact>> {
+        self.roster.take_changed(Instant::now())
     }
 
     /// 100% Pure Logic: Takes raw network bytes and returns UI Actions.
@@ -103,6 +113,12 @@ impl ChatPipeline {
         stream_key[6..10].copy_from_slice(&ipv4.destination);
         stream_key[10..12].copy_from_slice(&tcp.destination_port.to_be_bytes());
 
+        let local = Endpoint {
+            addr: ipv4.destination,
+            port: tcp.destination_port,
+        };
+        self.roster.see_connection(local, Instant::now());
+
         // 3. Assemble fragmented bytes into complete frames (retransmits dropped)
         let frames = self
             .tracker
@@ -115,6 +131,8 @@ impl ChatPipeline {
                 FrameKind::History => (history_pipeline(&frame.root), Origin::History),
                 FrameKind::State => {
                     if let Some(player) = own_player(&frame.root) {
+                        // Per connection, before the (single) own-player slot below.
+                        self.roster.own_uid(local, player.uid, Instant::now());
                         if self.own_player != Some(player) {
                             self.own_player = Some(player);
                             actions.push(PipelineAction::OwnPlayer(player));
@@ -154,6 +172,8 @@ impl ChatPipeline {
         is_blocked: impl Fn(u64) -> bool,
         mut assign_pid: impl FnMut() -> u64,
     ) -> Option<PipelineAction> {
+        // Before the duplicate check: a line dropped as a duplicate still names its sender.
+        self.roster.see_line(chat.uid, &chat.nickname);
         if !self.keep_unknown_fields {
             chat.unknown_fields = HashMap::new();
         }
