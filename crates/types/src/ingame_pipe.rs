@@ -586,6 +586,6 @@ mod tests {
         // The cap holds across pushes too.
         let mut b = LineBuffer::new();
         assert!(b.push(&vec![b'a'; 4000]).unwrap().is_empty());
-        assert_eq!(b.push(&vec![b'a'; 200]), Err(LineTooLong));
+        assert_eq!(b.push(&[b'a'; 200]), Err(LineTooLong));
     }
 }
