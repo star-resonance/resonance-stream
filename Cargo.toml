@@ -22,7 +22,7 @@ gloo-timers = { version = "0.4.0", features = ["futures"] }
 chrono = "0.4.44"
 
 [workspace]
-members = ["src-tauri", "crates/core", "crates/llama", "crates/types"]
+members = ["src-tauri", "crates/core", "crates/frame", "crates/llama", "crates/types"]
 
 # The one place the app version is set. src-tauri inherits it, and
 # tauri.conf.json has no "version", so Tauri falls back to src-tauri's.

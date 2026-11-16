@@ -25,6 +25,7 @@ sha2 = "0.11"
 ruzstd = "0.9.1"
 
 [dev-dependencies]
+resonance-frame = { path = "../frame" }
 insta = "1.49.0"
 # Property tests: tests/properties.rs
 proptest = "1"

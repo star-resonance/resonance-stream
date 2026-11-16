@@ -1,0 +1,7 @@
+[package]
+name = "resonance-frame"
+version.workspace = true
+authors = ["Enjay27 <kdkm2002@gmail.com>"]
+description = "Builds the outbound SendChitChatMsg Call frame for Resonance Stream (no_std, no dependencies)"
+edition = "2021"
+publish = false
