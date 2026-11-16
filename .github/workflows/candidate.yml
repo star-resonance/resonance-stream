@@ -308,6 +308,10 @@ jobs:
         with:
           name: signed-exe
           path: signed
+      - uses: actions/download-artifact@v8
+        with:
+          name: ingame-dll
+          path: ingame-dll
       - name: SHA256SUMS, the candidate feed entry and the tester notes
         env:
           REPO: ${{ github.repository }}
@@ -324,6 +328,11 @@ jobs:
           mv signed/resonance-stream.exe.sig "files/$exe.sig"
           (cd files && sha256sum "$exe" "$exe.sig" > SHA256SUMS)
           sum=$(sha256sum "files/$exe" | cut -d' ' -f1)
+          # The in-game DLL: a prerelease-only asset, deliberately outside SHA256SUMS (Promote requires
+          # that file to list exactly the exe and its .sig). The very bytes the exe pins.
+          dll="Resonance-Stream-$FINAL-ingame.dll"
+          mv ingame-dll/resonance_ingame.dll "files/$dll"
+          dllsum=$(sha256sum "files/$dll" | cut -d' ' -f1)
 
           # The candidate-channel feed entry: the final version and the signature, the prerelease's exe.
           release_notes_user_part < "release-notes/$FINAL.md" > user-notes.md
@@ -341,11 +350,13 @@ jobs:
             printf '1. `%s` 를 내려받습니다. 설치는 필요 없습니다.\n' "$exe"
             printf '2. 실행하면 관리자 권한을 요청합니다 (패킷 캡처에 필요) → **예**.\n'
             printf '3. 설치된 앱과 같은 설정·번역 모델·채팅 기록 폴더를 함께 씁니다. 두 앱을 동시에 켜지 마세요.\n'
-            printf '4. `latest.json` 은 이 후보의 업데이트 피드입니다. 시험용 빌드(`--feed-url`)에 지정해 업데이트 경로를 시험합니다.\n\n'
+            printf '4. `latest.json` 은 이 후보의 업데이트 피드입니다. 시험용 빌드(`--feed-url`)에 지정해 업데이트 경로를 시험합니다.\n'
+            printf '5. `%s` 는 게임 안 전송 기능(실험적, 선택 사항)을 시험할 때만 필요합니다. 앱 옆에 `ingame\\resonance_ingame.dll` 로 저장하세요. 앱이 SHA-256 을 확인합니다 (SHA256SUMS 에는 없습니다).\n\n' "$dll"
             printf '### 빌드 정보\n'
             printf -- '- main 커밋: `%s`\n' "$GITHUB_SHA"
             printf -- '- 실행: %s\n' "$RUN_URL"
-            printf -- '- SHA-256: `%s`\n\n' "$sum"
+            printf -- '- SHA-256: `%s`\n' "$sum"
+            printf -- '- 전송 모듈 SHA-256: `%s`\n\n' "$dllsum"
             printf '## 이번 후보에 들어온 변경\n'
             git log --no-merges --format='- %s (`%h`)' "$range" | rc_changes
             printf '\n'
@@ -394,6 +405,7 @@ jobs:
         run: |
           set -euo pipefail
           exe="Resonance-Stream-$FINAL.exe"
+          dll="Resonance-Stream-$FINAL-ingame.dll"
           commit=$GITHUB_SHA
           if [ "$STAMP" = true ]; then
             # The release commit: the main commit plus the two stamped files, nothing else, and only
@@ -428,7 +440,7 @@ jobs:
                    | gh api "repos/$REPO/git/tags" --input - --jq .sha)
           gh api "repos/$REPO/git/refs" -f ref="refs/tags/$RC" -f sha="$object" > /dev/null
           cd files
-          gh release create "$RC" "$exe" "$exe.sig" SHA256SUMS latest.json \
+          gh release create "$RC" "$exe" "$exe.sig" SHA256SUMS latest.json "$dll" \
             --repo "$REPO" --verify-tag --prerelease --latest=false --title "$RC (테스트용)" --notes-file notes.md
           gh api "repos/$REPO/git/refs" -f ref="refs/heads/rc/$RC" -f sha="$commit" > /dev/null
           for b in $SUPERSEDED; do
