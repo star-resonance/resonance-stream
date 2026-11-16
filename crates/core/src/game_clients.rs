@@ -1,4 +1,194 @@
-//! Tests first (F-MC-2): the roster and the naming of game clients. The code follows in the next commit.
+//! Which game client is which character: a roster that maps each connection's own uid (read from
+//! its world-state frames) to a nickname (read from chat lines), and the display names the
+//! `game_clients` command answers. Pure: no clock inside (callers pass `now`), no OS calls.
+//!
+//! A name is built only from the nickname and [`UNKNOWN_NAME`]: a pid, an address, a port or an
+//! executable name is never part of it (DS-0007).
+
+use resonance_types::ipc::GameClient;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::time::{Duration, Instant};
+
+/// Shown while a client's character is not known.
+pub const UNKNOWN_NAME: &str = "이름 확인 중";
+/// Most uid -> nickname entries kept; the oldest go first.
+pub const NAME_CAP: usize = 2048;
+/// A connection not seen for this long is forgotten (the TCP table join ignores dead ones anyway).
+pub const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// A connection's local end (the game client's side), IPv4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Endpoint {
+    pub addr: [u8; 4],
+    pub port: u16,
+}
+
+/// One connection and its character's nickname, when known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientFact {
+    pub local: Endpoint,
+    pub nickname: Option<String>,
+}
+
+struct Conn {
+    own_uid: Option<u64>,
+    nickname: Option<String>,
+    last_seen: Instant,
+}
+
+#[derive(Default)]
+pub struct Roster {
+    names: HashMap<u64, String>,
+    order: VecDeque<u64>,
+    conns: BTreeMap<Endpoint, Conn>,
+    dirty: bool,
+    last: Vec<ClientFact>,
+}
+
+impl Roster {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn conn(&mut self, local: Endpoint, now: Instant) -> &mut Conn {
+        let dirty = &mut self.dirty;
+        let conn = self.conns.entry(local).or_insert_with(|| {
+            *dirty = true;
+            Conn {
+                own_uid: None,
+                nickname: None,
+                last_seen: now,
+            }
+        });
+        conn.last_seen = now;
+        conn
+    }
+
+    /// A packet of this connection was seen.
+    pub fn see_connection(&mut self, local: Endpoint, now: Instant) {
+        self.conn(local, now);
+    }
+
+    /// The connection's own player is `uid`; its nickname is whatever `names` holds for it.
+    pub fn own_uid(&mut self, local: Endpoint, uid: u64, now: Instant) {
+        let name = self.names.get(&uid).cloned();
+        let conn = self.conn(local, now);
+        if conn.own_uid != Some(uid) {
+            conn.own_uid = Some(uid);
+            conn.nickname = name;
+            self.dirty = true;
+        }
+    }
+
+    /// A chat line from `uid` named `nickname` (`uid == 0` and blank names carry nothing).
+    pub fn see_line(&mut self, uid: u64, nickname: &str) {
+        let nickname = nickname.trim();
+        if uid == 0 || nickname.is_empty() {
+            return;
+        }
+        if self.names.insert(uid, nickname.to_string()).is_none() {
+            self.order.push_back(uid);
+            if self.order.len() > NAME_CAP {
+                if let Some(old) = self.order.pop_front() {
+                    self.names.remove(&old);
+                }
+            }
+        }
+        for conn in self.conns.values_mut() {
+            if conn.own_uid == Some(uid) && conn.nickname.as_deref() != Some(nickname) {
+                conn.nickname = Some(nickname.to_string());
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// The snapshot (sorted by endpoint) if it differs from the last one returned; connections
+    /// idle for [`CLIENT_IDLE_TIMEOUT`] are dropped first.
+    pub fn take_changed(&mut self, now: Instant) -> Option<Vec<ClientFact>> {
+        let before = self.conns.len();
+        self.conns
+            .retain(|_, c| now.saturating_duration_since(c.last_seen) < CLIENT_IDLE_TIMEOUT);
+        if self.conns.len() != before {
+            self.dirty = true;
+        }
+        if !self.dirty {
+            return None;
+        }
+        self.dirty = false;
+        let snapshot: Vec<ClientFact> = self
+            .conns
+            .iter()
+            .map(|(local, c)| ClientFact {
+                local: *local,
+                nickname: c.nickname.clone(),
+            })
+            .collect();
+        if snapshot == self.last {
+            return None;
+        }
+        self.last = snapshot.clone();
+        Some(snapshot)
+    }
+}
+
+/// A TCP table row's `dwLocalAddr` (network-order bytes in a little-endian `u32`) and
+/// `dwLocalPort`.
+pub fn row_endpoint(raw_addr: u32, raw_port: u32) -> Endpoint {
+    Endpoint {
+        addr: raw_addr.to_le_bytes(),
+        port: crate::ingame_send::remote_port(raw_port),
+    }
+}
+
+/// `MIB_TCP_STATE_ESTAB`.
+pub fn is_established(state: u32) -> bool {
+    state == 5
+}
+
+/// The clients `pids` with their display names: a pid's nickname is the first one a fact gives
+/// for one of its `rows` (owner pid, local end). Unknown is [`UNKNOWN_NAME`], numbered 1, 2, ...
+/// in pid order only when two or more are unknown.
+pub fn client_views(
+    pids: &[u32],
+    rows: &[(u32, Endpoint)],
+    facts: &[ClientFact],
+) -> Vec<GameClient> {
+    let mut pids = pids.to_vec();
+    pids.sort_unstable();
+    pids.dedup();
+    let nicks: Vec<Option<String>> = pids
+        .iter()
+        .map(|pid| {
+            rows.iter()
+                .filter(|(owner, _)| owner == pid)
+                .find_map(|(_, end)| {
+                    facts
+                        .iter()
+                        .find(|f| f.local == *end)
+                        .and_then(|f| f.nickname.as_deref())
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                        .map(str::to_string)
+                })
+        })
+        .collect();
+    let unknown = nicks.iter().filter(|n| n.is_none()).count();
+    let mut ordinal = 0;
+    pids.iter()
+        .zip(nicks)
+        .map(|(&target, nick)| GameClient {
+            target,
+            name: match nick {
+                Some(name) => name,
+                None if unknown > 1 => {
+                    ordinal += 1;
+                    format!("{UNKNOWN_NAME} {ordinal}")
+                }
+                None => UNKNOWN_NAME.to_string(),
+            },
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {

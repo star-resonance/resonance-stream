@@ -15,6 +15,16 @@ use crate::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// A connected game client as the ui lists it. `target` goes back unchanged as `send_chat`'s
+/// `client`; the ui never shows or interprets it. `name` is the character's nickname, or a
+/// placeholder while it is not known: never a pid, an address or an exe name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameClient {
+    pub target: u32,
+    pub name: String,
+}
+
 /// A Tauri command: its registered name and what it answers. A command that returns
 /// `Result<T, String>` answers `T`; its error arrives as the call's error.
 pub trait Command: Serialize {
@@ -62,6 +72,7 @@ commands! {
 
     // Chat sending (through the in-game module). The error is one Korean sentence.
     SendChat = "send_chat" { channel: SendChatChannel, text: String } -> ();
+    GameClients = "game_clients" {} -> Vec<GameClient>;
 
     // Translator.
     LaunchTranslator = "launch_translator" {} -> ();
