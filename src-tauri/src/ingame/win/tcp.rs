@@ -1,5 +1,6 @@
 //! Which processes hold a connection to the game's chat port.
 
+use resonance_core::game_clients::{is_established, row_endpoint, Endpoint};
 use resonance_core::ingame_send::{remote_port, CHAT_PORT};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL,
@@ -76,4 +77,13 @@ pub fn chat_port_owners() -> Vec<u32> {
         }
     }
     owners
+}
+
+/// The established connections to [`CHAT_PORT`]: the owning pid and the local end of each.
+pub fn chat_connections() -> Vec<(u32, Endpoint)> {
+    table_rows()
+        .into_iter()
+        .filter(|r| remote_port(r.remote_port) == CHAT_PORT && is_established(r.state))
+        .map(|r| (r.pid, row_endpoint(r.local_addr, r.local_port)))
+        .collect()
 }

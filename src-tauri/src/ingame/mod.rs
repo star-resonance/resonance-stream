@@ -9,6 +9,9 @@ mod win;
 use crate::protocol::types::SystemLogLevel;
 use crate::services::downloader::{cancel_module, ensure_module, module_running};
 use crate::{inject_system_message, AppState};
+#[cfg(windows)]
+use resonance_core::game_clients::client_views;
+use resonance_core::game_clients::ClientFact;
 use resonance_core::ingame_fetch::{dll_to_load, FetchError, SUCCESS_LINE};
 #[cfg(windows)]
 use resonance_core::ingame_send::{pick_target, Resident};
@@ -16,6 +19,7 @@ use resonance_core::ingame_send::{send_chat_flow, SendBackend, SendError};
 #[cfg(windows)]
 use resonance_core::ingame_sessions::Sessions;
 use resonance_core::send_text::SendSpacing;
+use resonance_types::ipc::GameClient;
 use resonance_types::SendChatChannel;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +28,14 @@ use tauri::{AppHandle, State};
 
 /// Spacing between sends. A `std` mutex: the flow keeps its guard across the send.
 static SPACING: LazyLock<Mutex<SendSpacing>> = LazyLock::new(|| Mutex::new(SendSpacing::default()));
+
+/// The sniffer's latest roster: each connection and its character's nickname.
+static CLIENTS: parking_lot::Mutex<Vec<ClientFact>> = parking_lot::Mutex::new(Vec::new());
+
+/// The sniffer stores the roster when it changes (an empty list when it stops).
+pub(crate) fn set_clients(facts: Vec<ClientFact>) {
+    *CLIENTS.lock() = facts;
+}
 
 /// The connections to the games, one per game pid.
 #[cfg(windows)]
@@ -168,6 +180,25 @@ pub fn send_chat(
         channel,
         &text,
     )
+}
+
+/// The connected game clients, each named by its character (a placeholder while unknown).
+/// `target` goes back as `send_chat`'s `client`. Empty when no game is connected (or off
+/// Windows); it does not depend on the in-game setting.
+#[tauri::command(async)]
+pub fn game_clients() -> Vec<GameClient> {
+    #[cfg(windows)]
+    {
+        match win::find_clients() {
+            Ok(pids) => client_views(&pids, &win::tcp::chat_connections(), &CLIENTS.lock()),
+            Err(e) => {
+                log::debug!("no game clients: {e}");
+                Vec::new()
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    Vec::new()
 }
 
 /// The setting changed: on fetches the module if needed and loads it now (a game that is not

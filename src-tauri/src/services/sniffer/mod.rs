@@ -259,11 +259,16 @@ pub fn start_sniffer_worker(app: AppHandle, activity: Arc<SnifferActivity>) -> S
                 },
             );
 
+            if let Some(facts) = pipeline.take_clients() {
+                crate::ingame::set_clients(facts);
+            }
+
             // 2. Dispatch Side Effects
             if !actions.is_empty() {
                 dispatch_pipeline_actions(&app_handle, actions);
             }
         }
+        crate::ingame::set_clients(Vec::new());
     });
 
     handle // Kept in AppState; dropping it stops the sniffer
