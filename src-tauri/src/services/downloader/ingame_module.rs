@@ -59,12 +59,19 @@ fn holds_pin(file: &Path, pin: &str) -> bool {
 /// Makes sure the module of this version is on disk: `Ok(false)` it already was, `Ok(true)` it
 /// was downloaded and checked just now. Removes the folders of other versions afterwards.
 /// `pin` is the SHA-256 the exe was built with.
-pub fn ensure_module(app: &AppHandle, pin: &str) -> Result<bool, FetchError> {
+pub fn ensure_module(
+    app: &AppHandle,
+    pin: &str,
+    still_wanted: impl Fn() -> bool,
+) -> Result<bool, FetchError> {
     let version = env!("CARGO_PKG_VERSION");
     let data = crate::app_dirs::data(app).map_err(|_| FetchError::Disk)?;
     let file = module_file(&data, version);
     if holds_pin(&file, pin) {
-        clean_up(&data, version);
+        // Not while a run stages its folder: the clean-up would remove it.
+        if let Some(_idle) = RUN.try_start() {
+            clean_up(&data, version);
+        }
         return Ok(false);
     }
 
@@ -75,6 +82,10 @@ pub fn ensure_module(app: &AppHandle, pin: &str) -> Result<bool, FetchError> {
         }
         std::thread::sleep(Duration::from_millis(200));
     };
+    // The setting may have been turned off while this run waited for the slot.
+    if !still_wanted() {
+        return Err(FetchError::Cancelled);
+    }
     // The run we waited for may have placed it.
     if holds_pin(&file, pin) {
         clean_up(&data, version);

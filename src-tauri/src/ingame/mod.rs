@@ -67,7 +67,10 @@ fn missing_module(app: &AppHandle) -> SendError {
     if module_running() {
         return SendError::DllDownloading;
     }
-    if LAST_FAILED.load(Ordering::SeqCst) || pin::INGAME_DLL_SHA256.is_none() {
+    if LAST_FAILED.load(Ordering::SeqCst)
+        || pin::INGAME_DLL_SHA256.is_none()
+        || pin::dll_path_override().is_some()
+    {
         return SendError::DllMissing;
     }
     let app = app.clone();
@@ -84,10 +87,10 @@ fn fetch_module(app: &AppHandle) -> bool {
     if pin::dll_path_override().is_some() {
         return true;
     }
-    match ensure_module(app, pin) {
+    match ensure_module(app, pin, || WANTED.load(Ordering::SeqCst)) {
         Ok(downloaded) => {
             LAST_FAILED.store(false, Ordering::SeqCst);
-            if downloaded {
+            if downloaded && WANTED.load(Ordering::SeqCst) {
                 inject_system_message(app, SystemLogLevel::Success, SOURCE, SUCCESS_LINE);
             }
             true
