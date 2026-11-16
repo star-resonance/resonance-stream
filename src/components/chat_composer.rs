@@ -1,14 +1,16 @@
 use crate::composer_view::{
-    can_send, channel_options, counter_over, counter_text, enter_sends, preselect, send_request,
-    COUNTER_TITLE,
+    can_send, channel_options, counter_over, counter_text, enter_sends, module_line, preselect,
+    send_request, COUNTER_TITLE,
 };
 use crate::store::AppSignals;
-use crate::tauri_bridge::call;
+use crate::tauri_bridge::{call, listen};
+use crate::ui_types::ProgressPayload;
 use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use resonance_types::ipc::SendChat;
+use resonance_types::ipc::{event, SendChat};
 use resonance_types::SendChatChannel;
+use wasm_bindgen::prelude::*;
 
 /// The composer under the chat list: channel picker, draft, live counter, Send
 /// and one error line. The draft stays on a failed send. Mounted under a
@@ -23,6 +25,24 @@ pub fn ChatComposer() -> impl IntoView {
     let sending = RwSignal::new(false);
     let error = RwSignal::new(String::new());
     let input_ref = NodeRef::<Input>::new();
+    // The module's download, while it runs: its progress label is the only thing this listens for.
+    let module = RwSignal::new(None::<String>);
+    spawn_local(async move {
+        let closure = Closure::wrap(Box::new(move |event_obj: JsValue| {
+            if let Ok(ev) = serde_wasm_bindgen::from_value::<serde_json::Value>(event_obj) {
+                if let Ok(payload) =
+                    serde_json::from_value::<ProgressPayload>(ev["payload"].clone())
+                {
+                    if payload.current_file.starts_with("게임 내 전송 모듈") {
+                        // The signal is gone once the composer is (setting off).
+                        let _ = module.try_set(module_line(&payload.current_file, payload.percent));
+                    }
+                }
+            }
+        }) as Box<dyn FnMut(JsValue)>);
+        listen(event::DOWNLOAD_PROGRESS, &closure).await;
+        closure.forget();
+    });
 
     // A tab with a chat channel moves the picker to it; any other tab leaves it.
     Effect::new(move |_| {
@@ -105,6 +125,12 @@ pub fn ChatComposer() -> impl IntoView {
                 >
                     "보내기"
                 </button>
+            </div>
+            <div
+                class="px-2 pb-1 text-[10px] text-base-content/70 truncate"
+                class:hidden=move || module.get().is_none()
+            >
+                {move || module.get().unwrap_or_default()}
             </div>
             <div
                 class="px-2 pb-1 text-[10px] text-error truncate"
