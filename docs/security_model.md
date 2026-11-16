@@ -25,6 +25,7 @@ So a flaw that lets any of those inputs change what runs, runs as administrator.
 | The `metadata` branch of this repo (the signed model / dictionary metadata, from `metadata/` on `main`) | untrusted transport, authenticated by signature (written by `metadata.yml` on a pushed tag `metadata-v<N>`; read by the app from M3b on) |
 | The AI-server zip on this repo's releases (`v0.2.0` asset) | pinned by a SHA-256 constant in code |
 | Another process of the same Windows user | **not trusted**, but today it can write where the app executes from |
+| The in-game DLL `resonance_ingame.dll`, once loaded (planned, opt-in; R4, R5, R6) | our code, pinned by a build-time SHA-256 (section 3.8); it runs inside the game process, takes requests only from the app over the pipe, and can only post a chat line; a fault in it is a fault in the game |
 | A tester running the bridge | trusted, but only in a `test-env` build |
 | The webview content (the app's own UI) | trusted code, but with no CSP |
 
@@ -107,6 +108,25 @@ The zip pin protects the download, not the files later on disk. A process of the
 | Commands are a **fixed allow-list** (`Command` in `core/bridge.rs`); an unknown name is refused with an error | confirmed |
 | An answer over 16 MiB becomes an error ack (`fit_ack`), not a dropped connection | confirmed (PR #203) |
 
+### 3.8 The in-game DLL: pipe and load (planned, D-35)
+
+Design: [`ingame-design.md`](ingame-design.md) sections 5 and 6. Nothing here exists in code yet; chat sending is opt-in and off by default.
+
+| Check | Status |
+|---|---|
+| The app creates the pipe `\\.\pipe\resonance-ingame-<game pid>` before it loads the DLL, as the first instance only (`FILE_FLAG_FIRST_PIPE_INSTANCE`), one instance, remote clients rejected (`PIPE_REJECT_REMOTE_CLIENTS`); if the name is already taken, the app does not go on | planned (R4/R6) |
+| DACL `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;<current user SID>)S:(ML;;NW;;;ME)`: SYSTEM and Administrators full, the interactive user read and write, and an explicit Medium mandatory label so a non-elevated game can connect (the label's effect is estimated; NOT VERIFIED on the game's integrity level, `ingame-design.md` "Not verified") | planned (R4/R6) |
+| Client-pid check: the app calls `GetNamedPipeClientProcessId` and drops a client whose pid is not the game's; this is the real authentication, the ACL is not | planned (R4/R6) |
+| A line is at most 4096 bytes (placeholder); JSON lines only; a fixed op list (`hello`, `send`, `ping`, `bye`); anything else is answered `bad_request` and the connection is closed | planned (R4/R6) |
+| The DLL re-checks channel, emptiness, no CR/LF, any other control character (`bad_request`, R5) and 140 UTF-16 units. Ten error codes: `bad_request`, `bad_channel`, `empty`, `too_long`, `no_client`, `not_sent`, `busy`, `expired`, `unsupported`, `version`; each is shown to the user as a fixed sentence chosen by the code, never by `detail` | planned (R4/R6) |
+| Timeouts, all placeholders: write 100 ms (placeholder), DLL hold 1000 ms (placeholder), app wait 1500 ms (placeholder), the whole `send_chat` within 2 s (placeholder); `expired` always means not sent | planned (R4/R6) |
+| What the pipe does not stop: any process of the same user can open it. The pid check stops it from being served; the pipe carries no secret and can only ask the DLL to post a chat line the user could post (gap stated, not closed) | planned (R4/R6) |
+| **DLL integrity:** the SHA-256 of the DLL is computed at build time and built into the app as a pin (the way `server_pins` does, section 3.3). The DLL is `<exe dir>/ingame/resonance_ingame.dll`, loaded in place: no copy is made. R8's Candidate build builds it first, passes `RESONANCE_INGAME_DLL` and `RESONANCE_INGAME_REQUIRED` (an app build that requires the pin fails without the DLL) and bundles the same bytes. A changed file is refused at load. A stable release carries no DLL until a later task: it is a prerelease-only asset outside `SHA256SUMS` | planned (R6; R8 builds and bundles) |
+| **The check-to-load gap:** the app opens the file with `FILE_SHARE_READ`, hashes through that handle and holds it across `LoadLibraryW`, so no process can write or replace the file between hash and load. Estimated to close the gap section 3.3 states for the server; **NOT VERIFIED on Windows** that `LoadLibraryW` accepts a file held this way. If it hits a sharing violation the hold is dropped and the gap stays open (a same-user process that swaps the file between hash and load; estimated to add no reach, since it could inject into the game itself), and the fallback is a copy into the app's own data folder, hashed and loaded from there | planned (R6) |
+| Load: a remote thread (`LoadLibraryW`); the game's pid is found by the exe-name prefix `StarSEA` or `StarASIA`, then by the owner of the connection to port 5003 when several match; a 32-bit game is refused; nothing is written to the game's folder. Unload on `bye` or a broken pipe; a DLL whose unhook cannot be proven safe stays loaded (R5) | planned (R4/R6) |
+
+Result: if these hold, a local process gains nothing over what it already has (it could inject into the game itself), and a swapped DLL is refused before it is loaded, with the check-to-load gap closed or named. None of it is confirmed until R4 to R6 exist and Kade has run them on Windows.
+
 ## 4. Threat scenarios
 
 | # | Scenario | Today | Gap |
@@ -120,9 +140,10 @@ The zip pin protects the download, not the files later on disk. A process of the
 | T-7 | A player writes control tokens or `[P<n>]` in chat | tokens are stripped; `[P<n>]` collides | W-11 |
 | T-8 | A page of the webview is hijacked | no CSP (S3c-2, waits on a Windows test); any URL can be opened and leftover shell permissions (both closed, S3c-1) | **W-9** |
 | T-9 | A hung remote host blocks start-up | no timeout on gist / dictionary fetches | W-8 |
-| T-10 | Another local process uses the pipe between the app and the DLL as an entry point (the app is Administrator and the DLL runs in the game) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: see docs/ingame-design.md (R0) |
-| T-11 | The `resonance_ingame.dll` file is replaced before it is loaded (code that would run inside the game, loaded by the elevated app; the same shape as T-2) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: see docs/ingame-design.md (R0) |
-| T-12 | A fault in the DLL crashes the game (the DLL runs in the game's process) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: see docs/ingame-design.md (R0) |
+| T-10 | Another local process uses the pipe between the app and the DLL as an entry point (the app is Administrator and the DLL runs in the game) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: pipe created by the app, user-only DACL with a Medium label, client-pid check, line cap, JSON-only, ten error codes (3.8; [ingame-design.md section 5](ingame-design.md#5-the-app---dll-pipe-protocol)) |
+| T-11 | The `resonance_ingame.dll` file is replaced before it is loaded (code that would run inside the game, loaded by the elevated app; the same shape as T-2) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: build-time SHA-256 pin, checked on the file held open with `FILE_SHARE_READ` across hash and load, no copy; the gap is closed if Windows allows it (NOT VERIFIED), else it stays open and a copy into the app's folder is the fallback (3.8; [ingame-design.md section 6](ingame-design.md#6-loading-and-unloading)) |
+| T-12 | A fault in the DLL crashes the game (the DLL runs in the game's process) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: custom root profile with `panic = "unwind"`, `catch_unwind` at every FFI edge, refuse to call on any doubt, no allocation or lock on the idle pump path ([ingame-design.md section 6](ingame-design.md#6-loading-and-unloading), Crash safety) |
+| T-13 | A crash while the hook is patched in or out: another game thread runs the bytes being overwritten (not a fault in our code, so T-12 does not cover it) | no code exists yet: chat sending is planned (D-35) and off by default | mitigation: the DLL suspends the game's other threads itself around enabling and removing the hook (ilhook 2.3.0 does not; its `ThreadCallback` pre/post is where this goes), one thread hooks and unhooks, a prologue that cannot be moved is refused with nothing patched, the hook is removed before the drain, unload waits for the in-detour counter and one more frame, and a DLL whose unhook cannot be proven safe stays loaded; residual: a suspended thread that holds a lock the DLL needs (the DLL allocates and locks nothing meanwhile); NOT VERIFIED in the game |
 
 ## 5. Rules for new code
 
@@ -134,6 +155,7 @@ The zip pin protects the download, not the files later on disk. A process of the
 6. **No new shell permission or capability** without a reason written next to it; remove the ones that are unused.
 7. **The bridge stays behind `test-env`**: no new command that is not in the fixed list, no non-loopback address.
 8. **No secrets in the repo.** The gist, feed and release URLs and the update public keys are public; the private signing keys are not here (CLAUDE.md).
+9. **The in-game DLL is opt-in, off by default and send-chat only** (D-35): the setting is off until the user turns it on after the terms-of-service warning; the DLL has no op but `hello`, `send`, `ping`, `bye`; no new op without a new decision and a new row in 3.8; the app loads it only while the setting is on.
 
 ## 6. What to do about the gaps
 

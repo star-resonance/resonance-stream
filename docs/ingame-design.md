@@ -1,8 +1,16 @@
 # In-game sender: design options
 
-**Status:** options for Kade, nothing decided. Task R0 (lane chat-send,
+**Status:** options as written; the choices Kade made are in the Decided note. Task R0 (lane chat-send,
 milestone M0). Written 2026-11-15. No code was written, and nothing was built or run in
 the game for this document.
+
+**Decided.** Hook-and-pump (section 2 A); `ilhook` 2.3.0 as the detour crate (section 3 D, which the DLL
+pairs with its own suspension of the game's other threads); `crates/frame` and `crates/ingame` in the
+workspace with a custom root profile that sets `panic = "unwind"` (section 4 A); loading by remote
+thread (section 6 A). The DLL is loaded in place from `<exe dir>/ingame/resonance_ingame.dll`, with the
+file held open across hash and load; a copy into the app's data folder is the fallback. The matching
+rows are in [security_model.md](security_model.md) section 3.8. D-35 in [decisions.md](decisions.md)
+is the record.
 
 ## How to read this
 
@@ -225,7 +233,9 @@ game bytes means fewer things for a game patch to break.
   drains the slot and runs section 1's walk and `Send` there, on the same thread the game sends its
   own chat from. The candidate is the `Update` of the game's net loop owner (per Stellar, `ZRpcCtrl` drives the game's
   network update loop, `…/Game/PandaChatProbe.Send.LiveClient.cs:54-56`), or a Unity per-frame entry if that
-  method does not exist. The exact method is named from a dump of the current build: NOT VERIFIED.
+  method does not exist. R5 hooks `ZRpcCtrl.Update` (namespace `ZCode.ZRpc`; the method name is
+  inferred, not read), with `Panda.Core.Game.Update` as the fallback, using ilhook's `JmpBack`. The exact
+  method is named from a dump of the current build: NOT VERIFIED.
   It needs one hook, so it needs section 3's detour crate. During a loading screen the main thread
   may not tick, so a send can wait. The pipe reply then has a deadline (section 5).
 - **B. Attach and call from the pipe thread.** The pipe thread calls `il2cpp_thread_attach` once and
@@ -270,19 +280,26 @@ hooks that sections 1 and 2 choose:
 
 ### Facts (crates.io API, read 2026-11-15)
 
-| | `minhook` 0.9.0 | `retour` 0.3.1 | `detour` 0.11.1 | hand-rolled |
-|---|---|---|---|---|
-| what | Rust bindings that vendor the C MinHook library (built by `cc`) | maintained fork of `detour`, pure Rust plus `libudis86-sys` (C) | the original `detour`, revived in 2026 | our own code |
-| last release | 2025-12-14 (0.8.0 2025-08, 0.7.x 2025-02/03) | stable 0.3.1 2023-07-18; only `0.4.0-alpha.4` since (2025-09-11) | 0.11.1 2026-11-09 (0.9.0 2026-09-23, 0.10.0 2026-09-30) | n/a |
-| license | MIT (MinHook itself: BSD-2-Clause, reported) | BSD-2-Clause | BSD-2-Clause | MIT (ours) |
-| normal deps | `tracing` (build: `cc`) | `cfg-if`, `generic-array`, `libc`, `libudis86-sys`, `mmap-fixed-fixed`, `once_cell`, `region`, `slice-pool2` | `iced-x86`, `libc`, `mach2`, `region`, `windows-sys` 0.61 | none (`windows-sys` already in the tree) |
-| x64 Windows | yes (MinHook's main target, reported) | yes (reported) | yes (reported) | as written |
-| other threads while patching | MinHook suspends the process's other threads and moves their instruction pointers out of the patched bytes (MinHook's documented behaviour, reported) | not documented (NOT VERIFIED) | not documented (NOT VERIFIED) | to be written: a suspend-all is about 100 lines |
-| first bytes not relocatable | refuses with an error code (`MH_ERROR_UNSUPPORTED_FUNCTION`, reported) | returns an error (reported) | returns an error (reported) | we would need an instruction decoder |
-| unhook | `MH_DisableHook` / `MH_RemoveHook` / `MH_Uninitialize` | drop or `disable()` | drop or `disable()` | to be written |
+| | `minhook` 0.9.0 | `retour` 0.3.1 | `detour` 0.11.1 | hand-rolled | `ilhook` 2.3.0 |
+|---|---|---|---|---|---|
+| what | Rust bindings that vendor the C MinHook library (built by `cc`) | maintained fork of `detour`, pure Rust plus `libudis86-sys` (C) | the original `detour`, revived in 2026 | our own code | pure Rust; `iced-x86` is its disassembler |
+| last release | 2025-12-14 (0.8.0 2025-08, 0.7.x 2025-02/03) | stable 0.3.1 2023-07-18; only `0.4.0-alpha.4` since (2025-09-11) | 0.11.1 2026-11-09 (0.9.0 2026-09-23, 0.10.0 2026-09-30) | n/a | 2.3.0 |
+| license | MIT (MinHook itself: BSD-2-Clause, reported) | BSD-2-Clause | BSD-2-Clause | MIT (ours) | not checked |
+| normal deps | `tracing` (build: `cc`) | `cfg-if`, `generic-array`, `libc`, `libudis86-sys`, `mmap-fixed-fixed`, `once_cell`, `region`, `slice-pool2` | `iced-x86`, `libc`, `mach2`, `region`, `windows-sys` 0.61 | none (`windows-sys` already in the tree) | `iced-x86` (no C build step) |
+| x64 Windows | yes (MinHook's main target, reported) | yes (reported) | yes (reported) | as written | yes (the x64 patch is `src/x64.rs`, source read) |
+| other threads while patching | MinHook suspends the process's other threads and moves their instruction pointers out of the patched bytes (MinHook's documented behaviour, reported) | not documented (NOT VERIFIED) | not documented (NOT VERIFIED) | to be written: a suspend-all is about 100 lines | not documented, but it offers a `ThreadCallback` with `pre()`/`post()` around the write (NOT VERIFIED beyond the source read) |
+| first bytes not relocatable | refuses with an error code (`MH_ERROR_UNSUPPORTED_FUNCTION`, reported) | returns an error (reported) | returns an error (reported) | we would need an instruction decoder | refuses with `HookError::MovingCodeNotSupported` or `Disassemble` |
+| unhook | `MH_DisableHook` / `MH_RemoveHook` / `MH_Uninitialize` | drop or `disable()` | drop or `disable()` | to be written | `HookPoint::unhook`; `Drop` unhooks and swallows any error |
 
 The repository's own license is MIT (`LICENSE`), and all three crates' licenses are compatible with
 it. `windows-sys` 0.61.2 is already a dependency of the app (`src-tauri/Cargo.toml:53`).
+
+`ilhook` 2.3.0, read from its source:
+- It patches a 14-byte window at the target (`jmp_inst_size: 14`, `src/x64.rs:263`), written with plain
+  byte copies, so the write is not atomic, and it puts the 14 original bytes back on unhook.
+- Its README says it "is not thread-safe" unless a flag (`NOT_MODIFY_MEMORY_PROTECT`) is set, so one
+  thread hooks and unhooks.
+- It does not suspend other threads itself; `ThreadCallback` `pre()` and `post()` run around the write.
 
 ### Options
 
@@ -298,6 +315,10 @@ it. `windows-sys` 0.61.2 is already a dependency of the app (`src-tauri/Cargo.to
   it needs an x64 instruction-length decoder to relocate the overwritten prologue (RIP-relative
   operands), and a thread suspend while patching. That is a few hundred lines of the most
   safety-critical code in the DLL, which nobody else tests. Not recommended.
+- **D. `ilhook` 2.3.0.** Pure Rust, with `iced-x86` as its disassembler and no C build step. Trade-off:
+  it has no thread suspension of its own (not documented), so the DLL's `ThreadCallback` suspends the
+  game's other threads around enabling the hook, with `windows-sys` (R5), and allocates and locks
+  nothing between suspend and resume.
 
 (`detour` 0.11.1 is listed for completeness. Its revival is two months old, so it has no track
 record yet.)
@@ -305,11 +326,14 @@ record yet.)
 **Upkeep, in words Kade can weigh.** Each option adds one crate that Dependabot will raise PRs for.
 A and B each add a C build step to the DLL crate only (not to the app or the ui). With A, a broken
 release means pinning the previous one; MinHook's C code has barely changed in years (reported). With
-C there is nothing to bump, but every bug is ours, and a bug here crashes the game.
+C there is nothing to bump, but every bug is ours, and a bug here crashes the game. D adds one
+pure-Rust crate (and `iced-x86`) and no C build step; it adds no thread suspension of its own, so the
+DLL's thread callbacks carry that code.
 
-`Recommended: A (minhook)`, if section 2's A is chosen. It is the standard tool for exactly this job,
-has the smallest dependency tree, carries the license the repository already uses, and suspends
-threads while patching. If Kade picks section 2's B, no detour crate is needed at all.
+`Recommended: D (ilhook 2.3.0)`, if section 2's A is chosen. Kade asked for a pure-Rust crate, and none
+of the pure-Rust crates documents thread suspension, so the DLL suspends threads itself. `minhook`
+stays described as the C-library option: the standard tool, with the smallest tree and its own
+suspension. If Kade picks section 2's B, no detour crate is needed at all.
 
 ## 4. Where the frame builder and the DLL crate live, and goldens
 
@@ -381,7 +405,7 @@ standard shape for a wire format. The DLL stays small, and `core` can check ever
   a second Dependabot entry, and `crates/frame` is used through a path dependency across workspaces.
 - **C. In the workspace with `abort`.** Remove every panic path instead (`#![deny(clippy::unwrap_used,
   clippy::expect_used, clippy::indexing_slicing, …)]`). It is simple to build, but an allocation
-  failure or a panic in a dependency (MinHook's bindings, `serde_json`) still kills the game, and
+  failure or a panic in a dependency (a dependency's code, `serde_json`) still kills the game, and
   `catch_unwind` cannot help. Not recommended.
 
 `Recommended: A`. It keeps one workspace and one lockfile, and the custom profile is Cargo's own
@@ -571,7 +595,7 @@ yet. Options appear only where the choice is real.
 
 - **A. Remote thread (`LoadLibraryW`).** `OpenProcess` -> `VirtualAllocEx` + `WriteProcessMemory` (the
   DLL path as UTF-16) -> `CreateRemoteThread(LoadLibraryW, path)` -> `WaitForSingleObject` (5 s) ->
-  check the module snapshot for `resonance_ingame-*.dll` -> `VirtualFreeEx`. This is the standard,
+  check the module snapshot for `resonance_ingame.dll` -> `VirtualFreeEx`. This is the standard,
   documented way. It writes nothing into the game's folder, and loading happens only while the app
   runs and the setting is on.
 - **B. Proxy DLL in the game folder** (the Stellar way: BepInEx IL2CPP through a doorstop
@@ -601,16 +625,32 @@ opt-in exactly (no setting, no DLL).
 - **When to load.** When the setting is on and the game process is found (on enable, and at the
   first send if it is not loaded yet). The DLL stays loaded until the setting is turned off, the app
   exits, or the game exits.
-- **Checking the DLL is ours.** The DLL ships with the app (a bundle resource). Its SHA-256 is
-  computed at build time and built into the app as a pin, the way `server_pins` works. Before each
-  load, the app copies it to
-  `%LOCALAPPDATA%\<app data folder>\ingame\resonance_ingame-<version>-<sha8>.dll` (inside the app's
-  own data folder, never the game's), hashes the copy, and loads only on a match. The check-to-load
-  gap is the one the security model already names. A same-user process that could use it could
-  inject into the game itself anyway, so the gap adds no new reach (estimated). Having the DLL check
-  which module loaded it is not worth it: nothing in the DLL is privileged.
-- **No overwrite while loaded.** A loaded DLL file cannot be replaced, so each version gets its own
-  file name (above). The app deletes old copies that no process has loaded.
+- **Checking the DLL is ours.** The DLL ships with the app, next to the exe, as
+  `<exe dir>/ingame/resonance_ingame.dll`. Its SHA-256 is computed at build time and built into the app
+  as a pin, the way `server_pins` works.
+  - **Loaded in place, no copy.** The app loads that file where it is; nothing is written to the game's
+    folder or the app's data folder. It opens the file with `FILE_SHARE_READ` (nobody else may write
+    or delete it), hashes through that handle, and keeps the handle open across the remote-thread
+    `LoadLibraryW`. That closes the check-to-load gap the security model names, if Windows allows
+    `LoadLibraryW` on a file held that way: NOT VERIFIED on Windows.
+  - **Fallback: a copy.** If `LoadLibraryW` hits a sharing violation, the hold is dropped and the gap
+    stays open as the security model states it. The app then copies the DLL into its own data folder as
+    `%LOCALAPPDATA%\<app data folder>\ingame\resonance_ingame-<version>-<sha8>.dll` (never the
+    game's), hashes the copy, and loads only on a match. A same-user process that could use the gap
+    could inject into the game itself anyway, so it adds no new reach (estimated).
+  - **The pin contract.** The app's build script reads `RESONANCE_INGAME_DLL` (the absolute path of the
+    built DLL) and `RESONANCE_INGAME_REQUIRED` (with it set and the file missing, the app build
+    fails, so a Candidate can never ship without a pin; without it the build succeeds with no pin and a
+    warning); `src-tauri/build.rs` writes the hash into the app. R8's Candidate builds the DLL first,
+    then the app, and bundles the same bytes next to the exe. In a debug build whose
+    `RESONANCE_INGAME_DLL` was set at build time the path is that file (dev only).
+  - **A prerelease-only asset.** Releases ship a bare exe, so the DLL is an asset of the prerelease
+    only, outside `SHA256SUMS`. The stable path (the DLL fetched by the updater, signed and listed) is
+    a later task; until then a stable build has no DLL and the app answers that the module is missing.
+  - Having the DLL check which module loaded it is not worth it: nothing in the DLL is privileged.
+- **No overwrite while loaded.** A loaded DLL file cannot be replaced: the updater swaps only the exe,
+  and a still-loaded old module is waited out (see an app update, below). In the fallback each version
+  has its own file name, and the app deletes old copies that no process has loaded.
 - **`DllMain` does almost nothing.** On `DLL_PROCESS_ATTACH` it calls `DisableThreadLibraryCalls` and
   `CreateThread(worker)`, and returns. The worker starts after the loader lock is released, then
   attaches to il2cpp, resolves exports, and connects the pipe. No il2cpp call ever runs inside
@@ -620,19 +660,23 @@ opt-in exactly (no setting, no DLL).
 
 - **On request (`bye`: setting off, app exit, app update).** The DLL:
   1. stops accepting sends (and answers a queued one `expired`);
-  2. disables and removes every hook (`MH_DisableHook(MH_ALL_HOOKS)`, `MH_Uninitialize`);
+  2. removes the ilhook detour (`HookPoint::unhook`, with the DLL's `ThreadCallback` suspending the game's
+     other threads around it) before the drain;
   3. waits until an in-detour counter is zero and one more frame has passed, so no thread is inside
      the DLL's code;
   4. closes the pipe;
   5. calls `FreeLibraryAndExitThread` from its own worker thread.
 
-  The app waits for the module to leave the module snapshot (2 s).
+  The app waits for the module to leave the module snapshot (2 s). If the unhook cannot be proven safe
+  (a thread is in the patched window, the trampoline or the DLL's code), the DLL does not unload: it
+  stays loaded (`KeepResident`, R5), closes its pipe and logs it. The app treats "module still in the
+  snapshot after 2 s" as that case, never as a crash.
 - **The app is killed first.** The pipe breaks. The DLL runs the same sequence and unloads itself. A
-  fresh app loads a fresh copy. This avoids a DLL left behind that no app can talk to.
+  fresh app loads the DLL again. This avoids a DLL left behind that no app can talk to.
 - **The game is closed first.** The pipe breaks and the game's process handle is signalled. The app
   marks the DLL unloaded, and the next send finds no game.
-- **An app update.** The old app sends `bye` on exit. The new app loads its own version under its
-  own file name, so two versions are never loaded at once. If an old copy is found in the module
+- **An app update.** The old app sends `bye` on exit. The new app loads the DLL again (in the fallback,
+  under its own version's file name), so two versions are never loaded at once. If an old copy is found in the module
   snapshot (the old app crashed during the exchange), the app waits for its self-unload (it sees the
   broken pipe) before loading.
 
@@ -735,11 +779,13 @@ far the app reaches into the game. Each is answered by picking a letter.
    - B. Attach the DLL's pipe thread to il2cpp and call `Send` from it. No hook and no new dependency,
      but a data race with the game's net code is possible and cannot be ruled out by a test.
 2. **Which detour crate, if 1 is A (section 3)?**
-   - **A. `minhook` 0.9.0 (Recommended).** The standard tool for this job: MIT, the smallest
+   - A. `minhook` 0.9.0. The standard tool for this job: MIT, the smallest
      dependency tree, and it suspends threads while patching.
    - B. `retour` 0.3.1. Pure Rust apart from the disassembler, but no stable release since 2023.
    - C. Hand-rolled patch and trampoline. No dependency, but a few hundred lines of crash-critical
      code that only we test.
+   - **D. `ilhook` 2.3.0 (Recommended).** Pure Rust, no C build step; the DLL suspends the game's other
+     threads itself, because none of the pure-Rust crates documents doing it.
 3. **Where do the frame builder and the DLL crate live (section 4)?**
    - **A. Two new crates in the workspace (Recommended):** `crates/frame` (pure, no dependencies) and
      `crates/ingame` (the DLL), with a custom `[profile.ingame]` that sets `panic = "unwind"`. One
@@ -761,14 +807,14 @@ far the app reaches into the game. Each is answered by picking a letter.
 | section | recommendation | rests on |
 |---|---|---|
 | 1. Live `ZTcpClient` | A: active walk, `il2cpp_runtime_invoke`, `il2cpp_field_get_offset`, no hook | - |
-| 2. Thread | A: hook-and-pump on the main thread | Question 1 |
-| 3. Detour crate | A: `minhook`, needed only if question 1 is A | Questions 1, 2 |
+| 2. Thread | A: hook-and-pump on the main thread; hook point `ZRpcCtrl.Update` (NOT VERIFIED) | Question 1 |
+| 3. Detour crate | D: `ilhook` 2.3.0 (pure Rust; the DLL suspends other threads itself), needed only if question 1 is A | Questions 1, 2 |
 | 4. Frame builder | A: `crates/frame`, no dependencies, `no_std` | Question 3 |
 | 4. DLL crate | A: in the workspace, custom `ingame` profile with `panic = "unwind"` | Question 3 |
 | 4. Goldens | derived bytes + round trip through `core` now, one observed frame in Kade's test | - |
 | 5. Pipe | named pipe created by the app, user-only DACL with Medium label, client-pid check, JSON lines, ten error codes | - |
-| 6. Loading | A: remote thread; pid by `StarSEA`/`StarASIA` prefix and the port-5003 owner; build-time SHA-256 pin | Question 4 |
-| 6. Unloading | `bye` -> hooks off -> drain -> `FreeLibraryAndExitThread`; self-unload on a broken pipe | Question 1 (hooks) |
+| 6. Loading | A: remote thread; pid by `StarSEA`/`StarASIA` prefix and the port-5003 owner; build-time SHA-256 pin; loaded in place with the file held open (a copy is the fallback) | Question 4 |
+| 6. Unloading | `bye` -> ilhook unhook -> drain -> `FreeLibraryAndExitThread`; `KeepResident` if the unhook is not provably safe; self-unload on a broken pipe | Question 1 (hooks) |
 | 7. Resilience | resolve by name each build, report permanent failures once, no build allow-list | - |
 
 ## Not verified
@@ -790,8 +836,9 @@ Only a run in the game on Kade's PC can show these. No agent can run the game.
   managed array (`il2cpp_array_new`) rather than Rust memory.
 - What `ZTcpClient.Send` returns and whether it can fail without an exception.
 - Whether `ZTcpClient.Send` is safe from a foreign thread (only matters for question 1 B).
-- The name of a per-frame main-thread method for the pump, and that a native detour on it is not
+- The name of a per-frame main-thread method for the pump (the candidates are `ZRpcCtrl.Update` and `Panda.Core.Game.Update`), and that a native detour on it is not
   bypassed by inlining.
+- `LoadLibraryW` loading a file the app holds open with `FILE_SHARE_READ` (and the copy as the fallback if not).
 - The game's integrity level (elevated or not), and whether the pipe's DACL and Medium label let it
   connect.
 - That the game has no anti-cheat that blocks `OpenProcess`, `CreateRemoteThread` or code patching
