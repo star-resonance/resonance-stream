@@ -23,7 +23,7 @@ Python 사이드카나 드라이버 SDK 설치는 필요하지 않습니다. 패
   ```cmd
   npm install
   ```
-* **just** (선택, 검사 명령용): `cargo install just` 또는 `pip install rust-just`.
+* **just** (릴리스 빌드와 검사 명령에 필요): `cargo install just` 또는 `pip install rust-just`.
 
 ## 🚀 2. 개발 모드 실행
 
@@ -42,8 +42,11 @@ cargo tauri dev
 package.bat
 ```
 
-`package.bat`는 `cargo tauri build`(먼저 `trunk build` 실행)를 실행하고, 생성된 NSIS 설치 파일
-(`*-setup.exe`)을 `dist\` 폴더로 옮깁니다. 릴리스 빌드에는 `src-tauri/app.manifest`가 포함되어
+`package.bat`는 먼저 인게임 DLL을 빌드합니다(`just ingame-build`: C 런타임을 정적으로 링크하고,
+DLL이 C 런타임 DLL을 임포트하면 실패하며 임포트 목록을 출력). 그다음 오버레이 설정과
+`RESONANCE_INGAME_DLL`·`RESONANCE_INGAME_REQUIRED` 변수를 지정해 `cargo tauri build`(먼저 `trunk build` 실행)를
+실행하고, 생성된 NSIS 설치 파일(`*-setup.exe`)을 `dist\` 폴더로 옮깁니다. 설치 파일에는
+`ingame\resonance_ingame.dll`이 들어 있습니다. DLL은 이 방법으로만 빌드합니다. 릴리스 빌드에는 `src-tauri/app.manifest`가 포함되어
 설치된 앱은 실행 시 관리자 권한을 요청합니다.
 
 버전 번호는 루트 `Cargo.toml`의 `[workspace.package]` 한 곳에서만 설정합니다.

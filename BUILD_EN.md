@@ -24,7 +24,7 @@ model are downloaded by the app at runtime.
   ```cmd
   npm install
   ```
-* **just** (optional, for the check commands): `cargo install just` or `pip install rust-just`.
+* **just** (required for the release build and the check commands): `cargo install just` or `pip install rust-just`.
 
 ## 🚀 2. Run in development
 
@@ -43,8 +43,12 @@ This runs `trunk serve` on port 1420 and starts the app against it.
 package.bat
 ```
 
-`package.bat` runs `cargo tauri build` (which runs `trunk build` first) and moves the
-NSIS installer (`*-setup.exe`) into `dist\`. Release builds embed `src-tauri/app.manifest`,
+`package.bat` first builds the in-game DLL (`just ingame-build`: it links the C runtime
+statically, prints the DLL's imports and fails if it imports a C-runtime DLL). It then runs
+`cargo tauri build` (which runs `trunk build` first) with the overlay config and the
+`RESONANCE_INGAME_DLL` and `RESONANCE_INGAME_REQUIRED` variables, and moves the NSIS
+installer (`*-setup.exe`) into `dist\`. The installer holds `ingame\resonance_ingame.dll`.
+The DLL is built only this way. Release builds embed `src-tauri/app.manifest`,
 so the installed app asks for Administrator rights on launch.
 
 The version number is set once, in the root `Cargo.toml` (`[workspace.package]`).
