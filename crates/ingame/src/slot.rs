@@ -162,9 +162,8 @@ impl SendSlot {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::send::SendOutcome;
+pub(crate) mod fake_clock {
+    use super::Clock;
     use std::cell::{Cell, RefCell};
 
     /// A clock whose `sleep_ms` advances time and runs the actions scheduled up to it.
@@ -174,17 +173,17 @@ mod tests {
     }
 
     impl<'a> FakeClock<'a> {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
                 now: Cell::new(0),
                 script: RefCell::new(Vec::new()),
             }
         }
-        fn at(self, time: u64, action: impl FnMut() + 'a) -> Self {
+        pub(crate) fn at(self, time: u64, action: impl FnMut() + 'a) -> Self {
             self.script.borrow_mut().push((time, Box::new(action)));
             self
         }
-        fn now(&self) -> u64 {
+        pub(crate) fn now(&self) -> u64 {
             self.now.get()
         }
     }
@@ -208,6 +207,13 @@ mod tests {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake_clock::FakeClock;
+    use super::*;
+    use crate::send::SendOutcome;
 
     #[test]
     fn constants() {

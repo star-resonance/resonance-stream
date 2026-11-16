@@ -51,6 +51,7 @@ mod tests {
     struct Recorder {
         calls: Vec<&'static str>,
         panic_on: Option<&'static str>,
+        fail: std::collections::HashMap<&'static str, String>,
     }
 
     impl Recorder {
@@ -66,11 +67,13 @@ mod tests {
         fn stop_accepting(&mut self) {
             self.step("stop_accepting");
         }
-        fn disable_hooks(&mut self) {
+        fn disable_hooks(&mut self) -> Result<(), String> {
             self.step("disable_hooks");
+            self.fail.get("disable_hooks").cloned().map_or(Ok(()), Err)
         }
-        fn drain(&mut self) {
+        fn drain(&mut self) -> Result<(), String> {
             self.step("drain");
+            self.fail.get("drain").cloned().map_or(Ok(()), Err)
         }
         fn close_pipe(&mut self) {
             self.step("close_pipe");
@@ -116,5 +119,58 @@ mod tests {
         u.run(&mut r);
         u.run(&mut r);
         assert_eq!(r.calls, ORDER);
+    }
+
+    #[test]
+    fn all_steps_ok_unloads() {
+        let mut r = Recorder::default();
+        assert_eq!(Unload::new().run(&mut r), UnloadOutcome::Unloaded);
+    }
+
+    #[test]
+    fn a_failed_unhook_keeps_the_dll_resident() {
+        let mut r = Recorder::default();
+        r.fail.insert("disable_hooks", "still patched".into());
+        assert_eq!(Unload::new().run(&mut r), UnloadOutcome::KeepResident);
+        assert_eq!(
+            r.calls,
+            [
+                "stop_accepting",
+                "disable_hooks",
+                "close_pipe",
+                "detach_thread",
+                "close_log"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_panicking_unhook_keeps_the_dll_resident() {
+        let mut r = Recorder {
+            panic_on: Some("disable_hooks"),
+            ..Default::default()
+        };
+        assert_eq!(Unload::new().run(&mut r), UnloadOutcome::KeepResident);
+        assert!(!r.calls.contains(&"drain"));
+        assert!(r.calls.contains(&"close_log"));
+    }
+
+    #[test]
+    fn a_stuck_drain_keeps_the_dll_resident() {
+        let mut r = Recorder::default();
+        r.fail.insert("drain", "detour still running".into());
+        assert_eq!(Unload::new().run(&mut r), UnloadOutcome::KeepResident);
+        assert_eq!(r.calls, ORDER);
+    }
+
+    #[test]
+    fn a_second_run_changes_nothing_and_repeats_the_outcome() {
+        let mut r = Recorder::default();
+        r.fail.insert("disable_hooks", "x".into());
+        let mut u = Unload::new();
+        assert_eq!(u.run(&mut r), UnloadOutcome::KeepResident);
+        let calls = r.calls.len();
+        assert_eq!(u.run(&mut r), UnloadOutcome::KeepResident);
+        assert_eq!(r.calls.len(), calls);
     }
 }
