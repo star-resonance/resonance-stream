@@ -11,7 +11,7 @@ use super::pump::{pump_detour, IN_DETOUR, MAIN_TID};
 use super::threads::{Callback, SuspendState};
 use crate::log::LogSink;
 use crate::patch_safety::{
-    decode_jmp_target, install_with_retry, InstallError, INSTALL_ATTEMPTS, RETRY_SLEEP_MS,
+    decode_jmp_target, install_with_retry, InstallError, Refusal, INSTALL_ATTEMPTS, RETRY_SLEEP_MS,
 };
 use crate::walk::PumpTarget;
 use ilhook::x64::{CallbackOption, HookFlags, HookPoint, HookType, Hooker};
@@ -130,8 +130,8 @@ impl PumpHook {
                 main_tid,
             }),
             Err(HookError::PreHook) => {
-                if state.take_refused().is_some() {
-                    log.info("hook: a thread was inside the 14 bytes; retrying");
+                if let Some(refusal) = state.take_refused() {
+                    log.info(&refusal_line(refusal));
                 }
                 Err(InstallError::Transient)
             }
@@ -185,8 +185,11 @@ impl PumpHook {
                 restored = true;
                 break;
             }
-            if self.state.take_refused().is_some() {
-                log.info(&format!("unhook: a thread was in the way (try {attempt})"));
+            if let Some(refusal) = self.state.take_refused() {
+                log.info(&format!(
+                    "unhook (try {attempt}): {}",
+                    refusal_line(refusal)
+                ));
             }
             // SAFETY: plain sleep, outside any suspension.
             unsafe { Sleep(RETRY_SLEEP_MS as u32) };
@@ -205,5 +208,15 @@ impl PumpHook {
         // it was; ilhook's `Drop` rewrites the same bytes and frees the trampoline.
         unsafe { ManuallyDrop::drop(&mut self.hook) };
         Ok(())
+    }
+}
+
+/// The log line for a refused `stop`, written after the threads are running again.
+fn refusal_line(refusal: Refusal) -> String {
+    match refusal {
+        Refusal::Inside => "hook: a thread was inside the 14 bytes; retrying".into(),
+        Refusal::Context { tid, code } => {
+            format!("hook: could not read thread {tid}'s context (error {code}); retrying")
+        }
     }
 }
