@@ -1,3 +1,203 @@
+//! What the DLL does with a `send` request: its own second check of the text, the frame,
+//! the hand-over to the pump and the reply. Pure: the queue to the game's main thread is a
+//! trait, so every rule here is tested on any OS.
+//!
+//! Chat text is never put in a detail or a log line.
+
+use resonance_frame::{build_send_chat, FrameError, WireChannel, MAX_TEXT_UTF16};
+use resonance_types::ingame_pipe::{ErrorCode, Reply, DLL_HOLD_MS};
+
+/// Why the DLL's own check refused the text. The app trims and counts first; this is the
+/// second check, and it never edits the text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextError {
+    /// Nothing left after the trim.
+    Empty,
+    /// More than the game's limit, or a CR/LF inside (the detail says which).
+    TooLong(String),
+    /// Any other control character (DS-0004).
+    BadRequest(String),
+}
+
+impl TextError {
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            TextError::Empty => ErrorCode::Empty,
+            TextError::TooLong(_) => ErrorCode::TooLong,
+            TextError::BadRequest(_) => ErrorCode::BadRequest,
+        }
+    }
+
+    pub fn detail(&self) -> String {
+        match self {
+            TextError::Empty => "empty".into(),
+            TextError::TooLong(d) | TextError::BadRequest(d) => d.clone(),
+        }
+    }
+}
+
+/// The trimmed text that is sent, or why it is refused. Details name a count or a code
+/// point, never a character of the text.
+pub fn recheck_text(text: &str) -> Result<&str, TextError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(TextError::Empty);
+    }
+    for c in text.chars() {
+        if c == '\r' || c == '\n' {
+            return Err(TextError::TooLong("newline".into()));
+        }
+        if c.is_control() || c == '\u{2028}' || c == '\u{2029}' {
+            return Err(TextError::BadRequest(format!(
+                "control_char:U+{:04X}",
+                c as u32
+            )));
+        }
+    }
+    let units: usize = text.chars().map(char::len_utf16).sum();
+    if units > MAX_TEXT_UTF16 {
+        return Err(TextError::TooLong(format!("units:{units}")));
+    }
+    Ok(text)
+}
+
+/// The `call_id`s this DLL sends: always in the upper half of `u32`, where the game's own
+/// ids do not live.
+pub struct CallIds {
+    next: u32,
+}
+
+impl CallIds {
+    const LOW: u32 = 0x8000_0000;
+
+    pub fn from_seed(seed: u32) -> Self {
+        Self {
+            next: Self::LOW | (seed & 0x7FFF_FFFF),
+        }
+    }
+
+    /// Seeded from std's OS-seeded randomness.
+    pub fn new() -> Self {
+        use std::hash::{BuildHasher, Hasher};
+        let seed = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
+        Self::from_seed((seed ^ (seed >> 32)) as u32)
+    }
+
+    pub fn peek(&self) -> u32 {
+        self.next
+    }
+
+    /// The current id; the next call returns the one after it.
+    pub fn next(&mut self) -> u32 {
+        let current = self.next;
+        self.next = if current == u32::MAX {
+            Self::LOW
+        } else {
+            current + 1
+        };
+        current
+    }
+}
+
+impl Default for CallIds {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// How one send ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SendOutcome {
+    Sent,
+    NoClient(String),
+    Unsupported(String),
+    NotSent(String),
+    /// The one slot is taken.
+    Busy,
+    /// The main thread did not take the job in time. Always means not sent.
+    Expired,
+    /// The pump was disabled after a panic, or the DLL is unloading.
+    Disabled,
+    /// The hook could not be installed.
+    HookFailed(String),
+}
+
+/// The reply for `outcome`; `call_id` is the one the frame carried.
+pub fn reply_for(id: u32, call_id: u32, outcome: SendOutcome) -> Reply {
+    let error = |code, detail: String| Reply::Error { id, code, detail };
+    match outcome {
+        SendOutcome::Sent => Reply::Send { id, call_id },
+        SendOutcome::NoClient(d) => error(ErrorCode::NoClient, d),
+        SendOutcome::Unsupported(d) => error(ErrorCode::Unsupported, d),
+        SendOutcome::NotSent(d) => error(ErrorCode::NotSent, d),
+        SendOutcome::Busy => error(ErrorCode::Busy, "send already waiting".into()),
+        SendOutcome::Expired => error(
+            ErrorCode::Expired,
+            format!("main thread did not tick in {DLL_HOLD_MS} ms"),
+        ),
+        SendOutcome::Disabled => error(ErrorCode::Unsupported, "pump disabled".into()),
+        SendOutcome::HookFailed(n) => error(ErrorCode::Unsupported, format!("hook_failed:{n}")),
+    }
+}
+
+/// Hands a frame to the game's main thread and waits (at most the DLL's hold) for the
+/// result.
+pub trait SendQueue {
+    fn submit(&mut self, frame: &[u8]) -> SendOutcome;
+}
+
+/// What the session calls for a `send` request.
+pub trait Sender {
+    fn send(&mut self, id: u32, channel: &str, text: &str) -> Reply;
+}
+
+pub struct SendService<Q> {
+    queue: Q,
+    ids: CallIds,
+}
+
+impl<Q: SendQueue> SendService<Q> {
+    pub fn new(queue: Q, ids: CallIds) -> Self {
+        Self { queue, ids }
+    }
+
+    pub fn queue(&self) -> &Q {
+        &self.queue
+    }
+}
+
+impl<Q: SendQueue> Sender for SendService<Q> {
+    fn send(&mut self, id: u32, channel: &str, text: &str) -> Reply {
+        let error = |code, detail: &str| Reply::Error {
+            id,
+            code,
+            detail: detail.into(),
+        };
+        let Some(channel) = WireChannel::from_name(channel) else {
+            return error(ErrorCode::BadChannel, "unknown channel");
+        };
+        let text = match recheck_text(text) {
+            Ok(t) => t,
+            Err(e) => return error(e.code(), &e.detail()),
+        };
+        let call_id = self.ids.peek();
+        let frame = match build_send_chat(channel, text, call_id) {
+            Ok(f) => f,
+            Err(FrameError::TextTooLong { units }) => {
+                return error(ErrorCode::TooLong, &format!("units:{units}"))
+            }
+        };
+        let outcome = self.queue.submit(&frame);
+        // A busy slot took nothing: the id is not used up.
+        if outcome != SendOutcome::Busy {
+            self.ids.next();
+        }
+        reply_for(id, call_id, outcome)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,7 +272,7 @@ mod tests {
     fn details_never_hold_the_text() {
         for t in ["a\nsecret", "secret\tx", "secret\u{0}"] {
             let (_, d) = detail_of(recheck_text(t));
-            assert!(!d.contains("secret") && !d.contains('a'), "{d}");
+            assert!(!d.contains("secret") && !d.contains('x'), "{d}");
         }
     }
 
