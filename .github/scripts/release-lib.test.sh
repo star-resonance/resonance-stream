@@ -330,7 +330,7 @@ eq "candidate builds one test-env exe" "1" "$(grep -c 'tauri-apps/cli@2 build .*
 eq "promote never builds or mentions test-env" "0" "$(grep -c 'test-env\|tauri-apps/cli' "$workflows/promote.yml")"
 eq "only candidate signs the exe" "1" "$(grep -l 'signer sign .*resonance-stream\.exe' "$workflows"/*.yml | wc -l | tr -d ' ')"
 eq "promote holds no signing secret" "0" "$(grep -c 'secrets\.' "$workflows/promote.yml")"
-eq "candidate signs with the final version" "1" "$(grep -c 'signer sign --app-version "\$VERSION"' "$workflows/candidate.yml")"
+eq "candidate signs the exe and the DLL with the final version" "2" "$(grep -c 'signer sign --app-version "$VERSION"' "$workflows/candidate.yml")"
 eq "promote never promotes the test-env exe" "0" "$(grep -c -- '-test' "$workflows/promote.yml")"
 # The real-app smoke test is slow: no pull request and no push starts it; Candidate calls it once and the tag waits for it.
 eq "smoke test has no pull_request trigger" "0" "$(grep -c '^  pull_request' "$workflows/bridge-smoke.yml")"
@@ -377,13 +377,27 @@ eq "overlay: maps the DLL to ingame/resonance_ingame.dll once" "1" "$(grep -c '"
 eq "overlay: its source is the ingame profile's DLL" "1" "$(grep -c '"../target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll"' "$overlay")"
 eq "tauri.conf.json has no static DLL mapping" "0" "$(grep -c 'resonance_ingame' ../../src-tauri/tauri.conf.json)"
 eq "the test-env build has no --config" "1" "$(grep -c 'build --no-bundle --features test-env$' "$workflows/candidate.yml")"
-eq "SHA256SUMS stays the exe and its signature" "1" "$(grep -c 'sha256sum "\$exe" "\$exe.sig" > SHA256SUMS' "$workflows/candidate.yml")"
-eq "no workflow builds the DLL outside the recipe, signs a dll, or uses signtool" "0" "$(cat "$workflows"/*.yml | grep -c 'cargo build.*resonance-ingame\|signtool\|signer sign .*\.dll')"
-eq "promote never mentions the DLL" "0" "$(grep -c 'ingame' "$workflows/promote.yml")"
-# The DLL is a prerelease-only asset (decision DS-0004 Q1 = B): outside SHA256SUMS, which Promote requires to list exactly the exe and its .sig.
-eq "the prerelease carries the DLL as an extra asset" "1" "$(grep -c 'gh release create "\$RC" "\$exe" "\$exe.sig" SHA256SUMS latest.json "\$dll"' "$workflows/candidate.yml")"
-eq "the DLL asset is named in the files and tag jobs only" "2" "$(grep -c '^ *dll="Resonance-Stream-\$FINAL-ingame.dll"$' "$workflows/candidate.yml")"
-eq "-ingame.dll appears on those two lines only" "2" "$(grep -c -- '-ingame\.dll' "$workflows/candidate.yml")"
+# --- the DLL on the stable path (F-R8a-1): signed like the exe in Candidate, listed in SHA256SUMS, carried and re-checked by Promote ---
+sha_line='sha256sum "$exe" "$exe.sig" "$dll" "$dll.sig" > SHA256SUMS'
+eq "SHA256SUMS lists the exe, the DLL and their signatures" "1" "$(grep -cF -- "$sha_line" "$workflows/candidate.yml")"
+eq "no workflow builds the DLL outside the recipe, or uses signtool" "0" "$(cat "$workflows"/*.yml | grep -c 'cargo build.*resonance-ingame\|signtool')"
+eq "the DLL is signed once, in candidate.yml only" "1" "$(cat "$workflows"/*.yml | grep -c 'signer sign .*resonance_ingame\.dll')"
+eq "... and that is candidate.yml" "1" "$(grep -c 'signer sign .*resonance_ingame\.dll' "$workflows/candidate.yml")"
+eq "promote never builds or signs" "0" "$(grep -c 'cargo build\|signer sign' "$workflows/promote.yml")"
+eq "promote names the DLL file only on the dll= line of publish" "1" "$(grep -c -- '-ingame\.dll' "$workflows/promote.yml")"
+eq "candidate names the DLL file only on the dll= line of tag (comments aside)" "1" "$(grep -v '^ *#' "$workflows/candidate.yml" | grep -c -- '-ingame\.dll')"
+eq "the prerelease carries the DLL and its signature" "1" "$(grep -cF 'gh release create "$RC" "$exe" "$exe.sig" "$dll" "$dll.sig" SHA256SUMS latest.json' "$workflows/candidate.yml")"
+eq "the stable release carries the DLL and its signature" "1" "$(grep -cF 'gh release create "$FINAL" "$exe" "$exe.sig" "$dll" "$dll.sig" SHA256SUMS latest.json' "$workflows/promote.yml")"
+eq "candidate: the hard-coded DLL asset name appears once (tag)" "1" "$(grep -c '^ *dll="Resonance-Stream-\$FINAL-ingame.dll"$' "$workflows/candidate.yml")"
+eq "promote: the hard-coded DLL asset name appears once (publish)" "1" "$(grep -c '^ *dll="Resonance-Stream-\$FINAL-ingame.dll"$' "$workflows/promote.yml")"
+eq "candidate and promote take the name from release_dll_asset in files" "1 1" "$(grep -c 'dll=\$(release_dll_asset "\$FINAL")' "$workflows/candidate.yml") $(grep -c 'dll=\$(release_dll_asset "\$FINAL")' "$workflows/promote.yml")"
+eq "candidate verifies the exe and the DLL the way the app will" "2" "$(grep -c 'example verify_update' "$workflows/candidate.yml")"
+eq "promote verifies the exe and the DLL" "2" "$(grep -c 'example verify_update' "$workflows/promote.yml")"
+eq "promote re-proves the exe's pin on the files it publishes" "1" "$(grep -c 'release_pin_problem' "$workflows/promote.yml")"
+eq "candidate proves the pin on the files it publishes" "1" "$(grep -c 'release_pin_problem' "$workflows/candidate.yml")"
+eq "promote downloads four patterns and SHA256SUMS" "5" "$(grep -c -- '--pattern' "$workflows/promote.yml")"
+eq "latest.json gets the DLL url in both" "2" "$(cat "$workflows/candidate.yml" "$workflows/promote.yml" | grep -c 'release_dll_url')"
+eq "the ingame-dll artifact lists the DLL signature" "1" "$(grep -c 'target/release/ingame/resonance_ingame.dll.sig' "$workflows/candidate.yml")"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
