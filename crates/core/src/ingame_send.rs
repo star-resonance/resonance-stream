@@ -13,6 +13,7 @@ use resonance_types::ingame_pipe::{
 };
 use resonance_types::{prepare_text, SendChatChannel, SendTextError};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Read};
 use std::sync::{Mutex, PoisonError};
@@ -58,14 +59,15 @@ pub fn is_game_exe(name: &str) -> bool {
         .any(|p| stem.starts_with(&p.to_ascii_lowercase()))
 }
 
-/// Picks the game's pid. `port_owners` (the pids holding a connection to
-/// [`CHAT_PORT`]) is asked for only when more than one exe matches. A 32-bit game
-/// is refused.
-pub fn pick_game(
+/// Lists the pids of the running 64-bit game clients, sorted. `port_owners` (the
+/// pids holding a connection to [`CHAT_PORT`]) is asked for only when more than one
+/// exe matches; then only the owners are clients. A 32-bit game is dropped, and a
+/// list that was not empty and is now is `Is32Bit`.
+pub fn list_games(
     processes: &[ProcessEntry],
     port_owners: impl FnOnce() -> Vec<u32>,
     is_32bit: impl Fn(u32) -> bool,
-) -> Result<u32, GameError> {
+) -> Result<Vec<u32>, GameError> {
     let mut pids: Vec<u32> = processes
         .iter()
         .filter(|p| is_game_exe(&p.exe))
@@ -73,22 +75,32 @@ pub fn pick_game(
         .collect();
     pids.sort_unstable();
     pids.dedup();
-    let pid = match pids.as_slice() {
-        [] => return Err(GameError::NotRunning),
-        [one] => *one,
-        _ => {
-            let owners = port_owners();
-            let mut owning = pids.iter().copied().filter(|p| owners.contains(p));
-            match (owning.next(), owning.next()) {
-                (Some(pid), None) => pid,
-                _ => return Err(GameError::Several),
-            }
+    if pids.len() > 1 {
+        let owners = port_owners();
+        pids.retain(|p| owners.contains(p));
+        if pids.is_empty() {
+            return Err(GameError::Several);
         }
-    };
-    if is_32bit(pid) {
+    }
+    if pids.is_empty() {
+        return Err(GameError::NotRunning);
+    }
+    pids.retain(|p| !is_32bit(*p));
+    if pids.is_empty() {
         return Err(GameError::Is32Bit);
     }
-    Ok(pid)
+    Ok(pids)
+}
+
+/// The client a send goes to: the only one, or the one `target` names. Several
+/// clients and no target is `ChooseClient`; a target that is not listed is `ClientGone`.
+pub fn pick_target(clients: &[u32], target: Option<u32>) -> Result<u32, SendError> {
+    match (clients, target) {
+        ([one], None) => Ok(*one),
+        (_, Some(pid)) if clients.contains(&pid) => Ok(pid),
+        (_, Some(_)) => Err(SendError::ClientGone),
+        _ => Err(SendError::ChooseClient),
+    }
 }
 
 /// The port of a TCP table row's `dwRemotePort`: the low 16 bits, in network order.
@@ -172,6 +184,10 @@ pub fn code_text(code: ErrorCode) -> &'static str {
 pub enum SendError {
     SettingOff,
     Game(GameError),
+    /// Several clients are connected and the call named none.
+    ChooseClient,
+    /// The named client is no longer running.
+    ClientGone,
     NoPin,
     DllMissing,
     PinMismatch,
@@ -195,6 +211,8 @@ impl fmt::Display for SendError {
             SendError::Game(GameError::NotRunning) => "게임이 실행 중이 아닙니다.",
             SendError::Game(GameError::Several) => "게임이 둘 이상 실행 중입니다.",
             SendError::Game(GameError::Is32Bit) => "32비트 게임은 지원하지 않습니다.",
+            SendError::ChooseClient => "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요.",
+            SendError::ClientGone => "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.",
             SendError::NoPin => "이 앱에는 게임 내 전송 모듈이 들어 있지 않습니다.",
             SendError::DllMissing => {
                 "게임 내 전송 모듈 파일을 찾을 수 없습니다. 앱을 다시 설치해 주세요."
@@ -362,27 +380,30 @@ pub trait Host {
     fn bye_and_wait(&mut self, pid: u32) -> bool;
 }
 
-/// The game process whose module stayed loaded after the unload wait. A resident
+/// The game processes whose module stayed loaded after the unload wait. A resident
 /// module is not reopened by a second load, so while it is there the app never
 /// loads it again; a game with another pid (a restart) loads it fresh.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Resident {
-    pid: Option<u32>,
+    pids: BTreeSet<u32>,
 }
 
 impl Resident {
     /// Empty, usable in a `static`.
     pub const fn new() -> Self {
-        Resident { pid: None }
+        Resident {
+            pids: BTreeSet::new(),
+        }
     }
     pub fn note(&mut self, pid: u32) {
-        self.pid = Some(pid);
+        self.pids.insert(pid);
     }
     pub fn holds(&self, pid: u32) -> bool {
-        self.pid == Some(pid)
+        self.pids.contains(&pid)
     }
-    pub fn clear(&mut self) {
-        self.pid = None;
+    /// Forgets `pid` only.
+    pub fn clear(&mut self, pid: u32) {
+        self.pids.remove(&pid);
     }
 }
 
@@ -398,7 +419,7 @@ pub fn connect(host: &mut impl Host, resident: &mut Resident) -> Result<u32, Sen
         if host.module_loaded(pid) {
             return Err(SendError::ResidentModule);
         }
-        resident.clear();
+        resident.clear(pid);
     }
     host.create_pipe(pid).map_err(|_| SendError::PipeCreate)?;
     if host.module_loaded(pid) && !host.wait_module_gone(pid, UNLOAD_WAIT) {
