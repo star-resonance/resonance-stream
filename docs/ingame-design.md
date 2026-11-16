@@ -73,7 +73,8 @@ These were decided in DS-0001 and DS-0002 and in the lane's shared values. This 
 
   `SendChatChannel` lives in `crates/types`. Its `ALL` is in tab order World, Guild, Party, Say.
   `from_channel(Channel)` returns an `Option`, and Beginner maps to `None`.
-- **Text.** Trim, then turn each CR and each LF into one space. Empty text is an error. The limit is
+- **Text.** Turn each control character (CR, LF, TAB, NUL, U+2028/U+2029 and the rest) into one space, then trim
+  (DS-0008). Empty text is an error. The limit is
   140 UTF-16 code units (`encode_utf16().count()`), counted after that preparation. `prepare_text` and
   its errors live in `crates/types` (DS-0002).
 - **Spacing.** The app refuses a send that comes less than 1500 ms after its last successful send.
