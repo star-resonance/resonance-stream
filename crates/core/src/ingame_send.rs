@@ -13,6 +13,7 @@ use resonance_types::ingame_pipe::{
 };
 use resonance_types::{prepare_text, SendChatChannel, SendTextError};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Read};
 use std::sync::{Mutex, PoisonError};
@@ -58,14 +59,15 @@ pub fn is_game_exe(name: &str) -> bool {
         .any(|p| stem.starts_with(&p.to_ascii_lowercase()))
 }
 
-/// Picks the game's pid. `port_owners` (the pids holding a connection to
-/// [`CHAT_PORT`]) is asked for only when more than one exe matches. A 32-bit game
-/// is refused.
-pub fn pick_game(
+/// Lists the pids of the running 64-bit game clients, sorted. `port_owners` (the
+/// pids holding a connection to [`CHAT_PORT`]) is asked for only when more than one
+/// exe matches; then only the owners are clients. A 32-bit game is dropped, and a
+/// list that was not empty and is now is `Is32Bit`.
+pub fn list_games(
     processes: &[ProcessEntry],
     port_owners: impl FnOnce() -> Vec<u32>,
     is_32bit: impl Fn(u32) -> bool,
-) -> Result<u32, GameError> {
+) -> Result<Vec<u32>, GameError> {
     let mut pids: Vec<u32> = processes
         .iter()
         .filter(|p| is_game_exe(&p.exe))
@@ -73,22 +75,32 @@ pub fn pick_game(
         .collect();
     pids.sort_unstable();
     pids.dedup();
-    let pid = match pids.as_slice() {
-        [] => return Err(GameError::NotRunning),
-        [one] => *one,
-        _ => {
-            let owners = port_owners();
-            let mut owning = pids.iter().copied().filter(|p| owners.contains(p));
-            match (owning.next(), owning.next()) {
-                (Some(pid), None) => pid,
-                _ => return Err(GameError::Several),
-            }
+    if pids.len() > 1 {
+        let owners = port_owners();
+        pids.retain(|p| owners.contains(p));
+        if pids.is_empty() {
+            return Err(GameError::Several);
         }
-    };
-    if is_32bit(pid) {
+    }
+    if pids.is_empty() {
+        return Err(GameError::NotRunning);
+    }
+    pids.retain(|p| !is_32bit(*p));
+    if pids.is_empty() {
         return Err(GameError::Is32Bit);
     }
-    Ok(pid)
+    Ok(pids)
+}
+
+/// The client a send goes to: the only one, or the one `target` names. Several
+/// clients and no target is `ChooseClient`; a target that is not listed is `ClientGone`.
+pub fn pick_target(clients: &[u32], target: Option<u32>) -> Result<u32, SendError> {
+    match (clients, target) {
+        ([one], None) => Ok(*one),
+        (_, Some(pid)) if clients.contains(&pid) => Ok(pid),
+        (_, Some(_)) => Err(SendError::ClientGone),
+        _ => Err(SendError::ChooseClient),
+    }
 }
 
 /// The port of a TCP table row's `dwRemotePort`: the low 16 bits, in network order.
@@ -172,6 +184,10 @@ pub fn code_text(code: ErrorCode) -> &'static str {
 pub enum SendError {
     SettingOff,
     Game(GameError),
+    /// Several clients are connected and the call named none.
+    ChooseClient,
+    /// The named client is no longer running.
+    ClientGone,
     NoPin,
     DllMissing,
     PinMismatch,
@@ -195,6 +211,8 @@ impl fmt::Display for SendError {
             SendError::Game(GameError::NotRunning) => "게임이 실행 중이 아닙니다.",
             SendError::Game(GameError::Several) => "게임이 둘 이상 실행 중입니다.",
             SendError::Game(GameError::Is32Bit) => "32비트 게임은 지원하지 않습니다.",
+            SendError::ChooseClient => "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요.",
+            SendError::ClientGone => "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.",
             SendError::NoPin => "이 앱에는 게임 내 전송 모듈이 들어 있지 않습니다.",
             SendError::DllMissing => {
                 "게임 내 전송 모듈 파일을 찾을 수 없습니다. 앱을 다시 설치해 주세요."
@@ -341,8 +359,6 @@ pub fn accept_game(
 /// The steps of connecting to the game, so the order can be tested; the Windows
 /// implementation is in `src-tauri/src/ingame/win/`.
 pub trait Host {
-    /// The game's pid ([`pick_game`] over the live process list).
-    fn find_game(&mut self) -> Result<u32, SendError>;
     /// Creates the pipe (first instance) for `pid`; before any load.
     fn create_pipe(&mut self, pid: u32) -> Result<(), SendError>;
     /// Whether the DLL module is in the game's module list.
@@ -362,43 +378,44 @@ pub trait Host {
     fn bye_and_wait(&mut self, pid: u32) -> bool;
 }
 
-/// The game process whose module stayed loaded after the unload wait. A resident
+/// The game processes whose module stayed loaded after the unload wait. A resident
 /// module is not reopened by a second load, so while it is there the app never
 /// loads it again; a game with another pid (a restart) loads it fresh.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Resident {
-    pid: Option<u32>,
+    pids: BTreeSet<u32>,
 }
 
 impl Resident {
     /// Empty, usable in a `static`.
     pub const fn new() -> Self {
-        Resident { pid: None }
+        Resident {
+            pids: BTreeSet::new(),
+        }
     }
     pub fn note(&mut self, pid: u32) {
-        self.pid = Some(pid);
+        self.pids.insert(pid);
     }
     pub fn holds(&self, pid: u32) -> bool {
-        self.pid == Some(pid)
+        self.pids.contains(&pid)
     }
-    pub fn clear(&mut self) {
-        self.pid = None;
+    /// Forgets `pid` only.
+    pub fn clear(&mut self, pid: u32) {
+        self.pids.remove(&pid);
     }
 }
 
-/// Finds the game, creates the pipe, loads the DLL and says `hello`; returns the
-/// game's pid. A DLL of another protocol version (a stale module: the file name is
+/// Creates the pipe for `pid`, loads the DLL and says `hello`; returns `pid`. A DLL of another protocol version (a stale module: the file name is
 /// fixed, so the old one must leave first) gets one `bye`, a wait and a second try.
 ///
 /// A module that is still in the game after [`UNLOAD_WAIT`] is resident: it is
 /// noted in `resident`, and `connect` returns `ResidentModule` without loading again.
-pub fn connect(host: &mut impl Host, resident: &mut Resident) -> Result<u32, SendError> {
-    let pid = host.find_game()?;
+pub fn connect(host: &mut impl Host, resident: &mut Resident, pid: u32) -> Result<u32, SendError> {
     if resident.holds(pid) {
         if host.module_loaded(pid) {
             return Err(SendError::ResidentModule);
         }
-        resident.clear();
+        resident.clear(pid);
     }
     host.create_pipe(pid).map_err(|_| SendError::PipeCreate)?;
     if host.module_loaded(pid) && !host.wait_module_gone(pid, UNLOAD_WAIT) {
@@ -455,7 +472,14 @@ pub fn map_send_reply(reply: Reply) -> (Result<(), SendError>, bool) {
 
 /// What `send_chat` needs from the session: connect if needed, send, map the reply.
 pub trait SendBackend {
-    fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError>;
+    /// `target` is the game's pid (never shown to the user); `None` is allowed only
+    /// with one client.
+    fn send(
+        &mut self,
+        target: Option<u32>,
+        channel: SendChatChannel,
+        text: &str,
+    ) -> Result<(), SendError>;
 }
 
 /// The `send_chat` command's logic: setting, text rules, spacing, send. The spacing
@@ -466,6 +490,7 @@ pub fn send_chat_flow(
     setting_on: bool,
     spacing: &Mutex<SendSpacing>,
     backend: &mut impl SendBackend,
+    target: Option<u32>,
     channel: SendChatChannel,
     text: &str,
 ) -> Result<(), String> {
@@ -476,7 +501,7 @@ pub fn send_chat_flow(
         let prepared = prepare_text(text)?;
         let mut guard = spacing.lock().unwrap_or_else(PoisonError::into_inner);
         guard.allow(Instant::now())?;
-        backend.send(channel, &prepared)?;
+        backend.send(target, channel, &prepared)?;
         guard.record_success(Instant::now());
         log::debug!(
             "chat sent: channel {}, {} units",
@@ -518,52 +543,106 @@ mod tests {
         }
     }
 
+    fn run(
+        list: &[ProcessEntry],
+        owners: Vec<u32>,
+        is_32bit: impl Fn(u32) -> bool,
+    ) -> Result<Vec<u32>, GameError> {
+        list_games(list, || owners, is_32bit)
+    }
+
     #[test]
-    fn pick_game_with_no_match_does_not_ask_for_port_owners() {
+    fn list_games_with_no_match_does_not_ask_for_port_owners() {
         let list = [proc(1, "notepad.exe")];
-        let got = pick_game(&list, || panic!("asked"), |_| false);
+        let got = list_games(&list, || panic!("asked"), |_| false);
         assert_eq!(got, Err(GameError::NotRunning));
         assert_eq!(
-            pick_game(&[], || panic!("asked"), |_| false),
+            list_games(&[], || panic!("asked"), |_| false),
             Err(GameError::NotRunning)
         );
     }
 
     #[test]
-    fn pick_game_with_one_match_returns_it_without_asking() {
+    fn list_games_with_one_match_returns_it_without_asking() {
         let list = [proc(5, "notepad.exe"), proc(10, "StarSEA.exe")];
-        assert_eq!(pick_game(&list, || panic!("asked"), |_| false), Ok(10));
+        assert_eq!(
+            list_games(&list, || panic!("asked"), |_| false),
+            Ok(vec![10])
+        );
     }
 
     #[test]
-    fn pick_game_with_two_matches_takes_the_port_owner() {
-        let list = [proc(10, "StarSEA.exe"), proc(20, "StarASIA.exe")];
-        assert_eq!(pick_game(&list, || vec![20], |_| false), Ok(20));
-        assert_eq!(
-            pick_game(&list, Vec::new, |_| false),
-            Err(GameError::Several)
-        );
-        assert_eq!(
-            pick_game(&list, || vec![10, 20], |_| false),
-            Err(GameError::Several)
-        );
+    fn list_games_with_several_matches_lists_the_port_owners_sorted() {
+        let list = [proc(42, "StarSEA.exe"), proc(7, "StarASIA.exe")];
+        assert_eq!(run(&list, vec![42, 7], |_| false), Ok(vec![7, 42]));
+        assert_eq!(run(&list, vec![42], |_| false), Ok(vec![42]));
+        assert_eq!(run(&list, Vec::new(), |_| false), Err(GameError::Several));
         // an owner that is no game process does not count
-        assert_eq!(pick_game(&list, || vec![99, 10], |_| false), Ok(10));
+        assert_eq!(run(&list, vec![99, 42], |_| false), Ok(vec![42]));
     }
 
     #[test]
-    fn pick_game_refuses_a_32_bit_game() {
-        let list = [proc(10, "StarSEA.exe")];
+    fn list_games_drops_32_bit_games() {
+        let one = [proc(10, "StarSEA.exe")];
         assert_eq!(
-            pick_game(&list, || panic!("asked"), |pid| pid == 10),
+            list_games(&one, || panic!("asked"), |pid| pid == 10),
             Err(GameError::Is32Bit)
         );
+        let two = [proc(42, "StarSEA.exe"), proc(7, "StarSEA.exe")];
+        assert_eq!(run(&two, vec![42, 7], |pid| pid == 7), Ok(vec![42]));
+        assert_eq!(run(&two, vec![42, 7], |_| true), Err(GameError::Is32Bit));
     }
 
     #[test]
-    fn pick_game_ignores_non_game_processes_with_equal_pids() {
+    fn list_games_ignores_non_game_processes_with_equal_pids() {
         let list = [proc(10, "notepad.exe"), proc(20, "StarSEA.exe")];
-        assert_eq!(pick_game(&list, || vec![10], |_| false), Ok(20));
+        assert_eq!(run(&list, vec![10], |_| false), Ok(vec![20]));
+    }
+
+    #[test]
+    fn pick_target_takes_the_only_client_or_the_named_one() {
+        assert_eq!(pick_target(&[42], None), Ok(42));
+        assert_eq!(pick_target(&[42], Some(42)), Ok(42));
+        assert_eq!(pick_target(&[42], Some(7)), Err(SendError::ClientGone));
+        assert_eq!(pick_target(&[7, 42], Some(7)), Ok(7));
+        assert_eq!(pick_target(&[7, 42], None), Err(SendError::ChooseClient));
+        assert_eq!(pick_target(&[7, 42], Some(9)), Err(SendError::ClientGone));
+    }
+
+    #[test]
+    fn the_client_sentences_are_one_line_without_digits_and_their_own() {
+        let choose = SendError::ChooseClient.to_string();
+        let gone = SendError::ClientGone.to_string();
+        assert_eq!(
+            choose,
+            "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요."
+        );
+        assert_eq!(gone, "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.");
+        for text in [&choose, &gone] {
+            assert!(!text.contains('\n') && !text.chars().any(|c| c.is_ascii_digit()));
+        }
+        assert_ne!(choose, gone);
+        for other in [
+            SendError::SettingOff,
+            SendError::Game(GameError::Several),
+            SendError::NoConnect,
+            SendError::Broken,
+            SendError::ResidentModule,
+        ] {
+            assert_ne!(other.to_string(), choose);
+            assert_ne!(other.to_string(), gone);
+        }
+    }
+
+    #[test]
+    fn the_resident_memory_holds_a_set_of_pids() {
+        let mut resident = Resident::new();
+        assert!(!resident.holds(42) && !resident.holds(7));
+        resident.note(42);
+        resident.note(7);
+        assert!(resident.holds(42) && resident.holds(7));
+        resident.clear(42);
+        assert!(!resident.holds(42) && resident.holds(7));
     }
 
     #[test]
@@ -874,7 +953,6 @@ mod tests {
 
     struct FakeHost {
         calls: Vec<String>,
-        find: Result<u32, SendError>,
         create: Result<(), SendError>,
         loaded: VecDeque<bool>,
         gone_after_wait: bool,
@@ -889,7 +967,6 @@ mod tests {
         fn happy() -> Self {
             FakeHost {
                 calls: Vec::new(),
-                find: Ok(42),
                 create: Ok(()),
                 loaded: VecDeque::new(),
                 gone_after_wait: true,
@@ -914,10 +991,6 @@ mod tests {
     }
 
     impl Host for FakeHost {
-        fn find_game(&mut self) -> Result<u32, SendError> {
-            self.calls.push("find_game".into());
-            self.find.clone()
-        }
         fn create_pipe(&mut self, pid: u32) -> Result<(), SendError> {
             self.calls.push(format!("create_pipe({pid})"));
             self.create.clone()
@@ -959,11 +1032,10 @@ mod tests {
     #[test]
     fn connect_runs_the_load_sequence_in_order_with_the_pipe_first() {
         let mut host = FakeHost::happy();
-        assert_eq!(connect(&mut host, &mut Resident::default()), Ok(42));
+        assert_eq!(connect(&mut host, &mut Resident::default(), 42), Ok(42));
         assert_eq!(
             host.calls,
             [
-                "find_game",
                 "create_pipe(42)",
                 "module_loaded",
                 "verify_dll",
@@ -975,36 +1047,48 @@ mod tests {
     }
 
     #[test]
-    fn connect_stops_when_the_game_or_the_pipe_is_missing() {
-        let mut host = FakeHost::happy();
-        host.find = Err(SendError::Game(GameError::NotRunning));
-        assert_eq!(
-            connect(&mut host, &mut Resident::default()),
-            Err(SendError::Game(GameError::NotRunning))
-        );
-        assert_eq!(host.calls, ["find_game"]);
-
+    fn connect_stops_when_the_pipe_cannot_be_created() {
         let mut host = FakeHost::happy();
         host.create = Err(SendError::OpenFailed);
         assert_eq!(
-            connect(&mut host, &mut Resident::default()),
+            connect(&mut host, &mut Resident::default(), 42),
             Err(SendError::PipeCreate)
         );
         assert_eq!(host.count("load_dll"), 0);
     }
 
     #[test]
+    fn connect_for_another_pid_is_the_normal_sequence_beside_a_resident_one() {
+        let mut resident = Resident::new();
+        resident.note(42);
+        let mut host = FakeHost::happy();
+        assert_eq!(connect(&mut host, &mut resident, 7), Ok(7));
+        assert_eq!(
+            host.calls,
+            [
+                "create_pipe(7)",
+                "module_loaded",
+                "verify_dll",
+                "load_dll(7)",
+                "accept",
+                "hello"
+            ]
+        );
+        assert!(resident.holds(42));
+    }
+
+    #[test]
     fn connect_waits_for_an_old_module_to_leave_or_reports_it_stale() {
         let mut host = FakeHost::happy();
         host.loaded = VecDeque::from([true]);
-        assert_eq!(connect(&mut host, &mut Resident::default()), Ok(42));
+        assert_eq!(connect(&mut host, &mut Resident::default(), 42), Ok(42));
         assert_eq!(host.count("wait_module_gone"), 1);
 
         let mut host = FakeHost::happy();
         host.loaded = VecDeque::from([true]);
         host.gone_after_wait = false;
         assert_eq!(
-            connect(&mut host, &mut Resident::default()),
+            connect(&mut host, &mut Resident::default(), 42),
             Err(SendError::ResidentModule)
         );
         assert_eq!(host.count("load_dll"), 0);
@@ -1019,7 +1103,7 @@ mod tests {
         ] {
             let mut host = FakeHost::happy();
             host.verify = VecDeque::from([Err(err.clone())]);
-            assert_eq!(connect(&mut host, &mut Resident::default()), Err(err));
+            assert_eq!(connect(&mut host, &mut Resident::default(), 42), Err(err));
             assert_eq!(host.count("load_dll"), 0);
         }
     }
@@ -1029,7 +1113,7 @@ mod tests {
         let mut host = FakeHost::happy();
         host.load = Err(SendError::LoadFailed);
         assert_eq!(
-            connect(&mut host, &mut Resident::default()),
+            connect(&mut host, &mut Resident::default(), 42),
             Err(SendError::LoadFailed)
         );
         assert_eq!(host.count("accept"), 0);
@@ -1037,14 +1121,14 @@ mod tests {
         let mut host = FakeHost::happy();
         host.accept = Err(SendError::NoConnect);
         assert_eq!(
-            connect(&mut host, &mut Resident::default()),
+            connect(&mut host, &mut Resident::default(), 42),
             Err(SendError::NoConnect)
         );
 
         let mut host = FakeHost::happy();
         host.hellos = VecDeque::from([Err(SendError::Broken)]);
         assert_eq!(
-            connect(&mut host, &mut Resident::default()),
+            connect(&mut host, &mut Resident::default(), 42),
             Err(SendError::Broken)
         );
     }
@@ -1061,7 +1145,7 @@ mod tests {
     fn connect_replaces_a_stale_module_once() {
         let mut host = FakeHost::happy();
         host.hellos = VecDeque::from([Ok(version_error()), Ok(good_hello())]);
-        assert_eq!(connect(&mut host, &mut Resident::default()), Ok(42));
+        assert_eq!(connect(&mut host, &mut Resident::default(), 42), Ok(42));
         assert_eq!(host.count("bye_and_wait"), 1);
         assert_eq!(host.count("load_dll"), 2);
     }
@@ -1073,7 +1157,7 @@ mod tests {
         host.bye_gone = false;
         let mut resident = Resident::default();
         assert_eq!(
-            connect(&mut host, &mut resident),
+            connect(&mut host, &mut resident, 42),
             Err(SendError::ResidentModule)
         );
         assert_eq!(host.count("bye_and_wait"), 1);
@@ -1089,7 +1173,7 @@ mod tests {
         host.gone_after_wait = false;
         let mut resident = Resident::default();
         assert_eq!(
-            connect(&mut host, &mut resident),
+            connect(&mut host, &mut resident, 42),
             Err(SendError::ResidentModule)
         );
         assert_eq!(host.count("load_dll"), 0);
@@ -1104,10 +1188,10 @@ mod tests {
         let mut host = FakeHost::happy();
         host.loaded = VecDeque::from([true]);
         assert_eq!(
-            connect(&mut host, &mut resident),
+            connect(&mut host, &mut resident, 42),
             Err(SendError::ResidentModule)
         );
-        assert_eq!(host.calls, ["find_game", "module_loaded"]);
+        assert_eq!(host.calls, ["module_loaded"]);
     }
 
     #[test]
@@ -1116,14 +1200,14 @@ mod tests {
         resident.note(42);
         let mut host = FakeHost::happy();
         host.loaded = VecDeque::from([false, false]);
-        assert_eq!(connect(&mut host, &mut resident), Ok(42));
+        assert_eq!(connect(&mut host, &mut resident, 42), Ok(42));
         assert!(!resident.holds(42));
         assert_eq!(host.count("create_pipe"), 1);
 
         let mut resident = Resident::default();
         resident.note(7);
         let mut host = FakeHost::happy();
-        assert_eq!(connect(&mut host, &mut resident), Ok(42));
+        assert_eq!(connect(&mut host, &mut resident, 42), Ok(42));
         assert_eq!(host.count("create_pipe"), 1);
         assert_eq!(host.count("load_dll"), 1);
     }
@@ -1147,7 +1231,7 @@ mod tests {
         let mut host = FakeHost::happy();
         host.hellos = VecDeque::from([Ok(version_error()), Ok(version_error())]);
         assert_eq!(
-            connect(&mut host, &mut Resident::default()),
+            connect(&mut host, &mut Resident::default(), 42),
             Err(SendError::Dll(ErrorCode::Version))
         );
         assert_eq!(host.count("bye_and_wait"), 1);
@@ -1160,7 +1244,7 @@ mod tests {
         };
         host.hellos = VecDeque::from([Ok(other.clone()), Ok(other)]);
         assert_eq!(
-            connect(&mut host, &mut Resident::default()),
+            connect(&mut host, &mut Resident::default(), 42),
             Err(SendError::Dll(ErrorCode::Version))
         );
     }
@@ -1168,12 +1252,19 @@ mod tests {
     #[derive(Default)]
     struct FakeBackend {
         calls: Vec<(SendChatChannel, String)>,
+        targets: Vec<Option<u32>>,
         result: Option<SendError>,
         sleep: Duration,
     }
 
     impl SendBackend for FakeBackend {
-        fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError> {
+        fn send(
+            &mut self,
+            target: Option<u32>,
+            channel: SendChatChannel,
+            text: &str,
+        ) -> Result<(), SendError> {
+            self.targets.push(target);
             self.calls.push((channel, text.to_string()));
             std::thread::sleep(self.sleep);
             match self.result.clone() {
@@ -1186,8 +1277,13 @@ mod tests {
     struct Shared(Arc<Mutex<FakeBackend>>);
 
     impl SendBackend for Shared {
-        fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError> {
-            self.0.lock().unwrap().send(channel, text)
+        fn send(
+            &mut self,
+            target: Option<u32>,
+            channel: SendChatChannel,
+            text: &str,
+        ) -> Result<(), SendError> {
+            self.0.lock().unwrap().send(target, channel, text)
         }
     }
 
@@ -1203,19 +1299,66 @@ mod tests {
     fn the_flow_refuses_when_the_setting_is_off_before_anything_else() {
         let spacing = Mutex::new(SendSpacing::default());
         let mut backend = FakeBackend::default();
-        let got = send_chat_flow(false, &spacing, &mut backend, SendChatChannel::Say, "hi");
+        let got = send_chat_flow(
+            false,
+            &spacing,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            "hi",
+        );
         assert_eq!(got, Err(SendError::SettingOff.to_string()));
         assert!(backend.calls.is_empty());
+    }
+
+    #[test]
+    fn the_flow_passes_the_target_to_the_backend() {
+        let spacing = Mutex::new(SendSpacing::default());
+        let mut backend = FakeBackend::default();
+        let got = send_chat_flow(
+            true,
+            &spacing,
+            &mut backend,
+            Some(7),
+            SendChatChannel::Say,
+            "hi",
+        );
+        assert_eq!(got, Ok(()));
+        let spacing = Mutex::new(SendSpacing::default());
+        let got = send_chat_flow(
+            true,
+            &spacing,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            "hi",
+        );
+        assert_eq!(got, Ok(()));
+        assert_eq!(backend.targets, [Some(7), None]);
     }
 
     #[test]
     fn the_flow_checks_the_text_before_the_backend() {
         let spacing = Mutex::new(SendSpacing::default());
         let mut backend = FakeBackend::default();
-        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, "   ");
+        let got = send_chat_flow(
+            true,
+            &spacing,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            "   ",
+        );
         assert_eq!(got, Err("보낼 내용이 없습니다.".to_string()));
         let long = "a".repeat(141);
-        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, &long);
+        let got = send_chat_flow(
+            true,
+            &spacing,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            &long,
+        );
         assert_eq!(got, Err(SendTextError::TooLong { len: 141 }.to_string()));
         assert!(backend.calls.is_empty());
     }
@@ -1228,13 +1371,21 @@ mod tests {
             true,
             &spacing,
             &mut backend,
+            None,
             SendChatChannel::Guild,
             "  hi\n",
         );
         assert_eq!(got, Ok(()));
         assert_eq!(backend.calls, [(SendChatChannel::Guild, "hi".to_string())]);
 
-        let again = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Guild, "hi");
+        let again = send_chat_flow(
+            true,
+            &spacing,
+            &mut backend,
+            None,
+            SendChatChannel::Guild,
+            "hi",
+        );
         assert!(again.unwrap_err().starts_with(&too_soon_sentence()));
         assert_eq!(backend.calls.len(), 1);
     }
@@ -1246,9 +1397,23 @@ mod tests {
             result: Some(SendError::Dll(ErrorCode::NoClient)),
             ..Default::default()
         };
-        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, "hi");
+        let got = send_chat_flow(
+            true,
+            &spacing,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            "hi",
+        );
         assert_eq!(got, Err(code_text(ErrorCode::NoClient).to_string()));
-        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, "hi");
+        let got = send_chat_flow(
+            true,
+            &spacing,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            "hi",
+        );
         assert_eq!(got, Err(code_text(ErrorCode::NoClient).to_string()));
         assert_eq!(backend.calls.len(), 2);
     }
@@ -1265,7 +1430,14 @@ mod tests {
                 .map(|_| {
                     s.spawn(|| {
                         let mut shared = Shared(backend.clone());
-                        send_chat_flow(true, &spacing, &mut shared, SendChatChannel::Say, "hi")
+                        send_chat_flow(
+                            true,
+                            &spacing,
+                            &mut shared,
+                            None,
+                            SendChatChannel::Say,
+                            "hi",
+                        )
                     })
                 })
                 .collect();
@@ -1289,7 +1461,14 @@ mod tests {
         });
         assert!(spacing.is_poisoned());
         let mut backend = FakeBackend::default();
-        let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, "hi");
+        let got = send_chat_flow(
+            true,
+            &spacing,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            "hi",
+        );
         assert_eq!(got, Ok(()));
         let _ = Instant::now();
     }

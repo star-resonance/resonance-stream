@@ -8,8 +8,10 @@ mod win;
 
 use crate::AppState;
 #[cfg(windows)]
-use resonance_core::ingame_send::Resident;
+use resonance_core::ingame_send::{pick_target, Resident};
 use resonance_core::ingame_send::{send_chat_flow, SendBackend, SendError};
+#[cfg(windows)]
+use resonance_core::ingame_sessions::Sessions;
 use resonance_core::send_text::SendSpacing;
 use resonance_types::SendChatChannel;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,11 +21,12 @@ use tauri::State;
 /// Spacing between sends. A `std` mutex: the flow keeps its guard across the send.
 static SPACING: LazyLock<Mutex<SendSpacing>> = LazyLock::new(|| Mutex::new(SendSpacing::default()));
 
-/// The connection to the game, if one is up.
+/// The connections to the games, one per game pid.
 #[cfg(windows)]
-static SESSION: parking_lot::Mutex<Option<win::Session>> = parking_lot::Mutex::new(None);
+static SESSIONS: parking_lot::Mutex<Sessions<win::Session>> =
+    parking_lot::Mutex::new(Sessions::new());
 
-/// The game whose module stayed loaded after an unload. Locked after `SESSION`,
+/// The games whose module stayed loaded after an unload. Locked after `SESSIONS`,
 /// never the other way round.
 #[cfg(windows)]
 static RESIDENT: parking_lot::Mutex<Resident> = parking_lot::Mutex::new(Resident::new());
@@ -36,16 +39,23 @@ struct AppBackend;
 
 #[cfg(windows)]
 impl SendBackend for AppBackend {
-    fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError> {
-        let mut slot = SESSION.lock();
-        if slot.is_none() {
-            *slot = Some(win::Session::connect(&mut RESIDENT.lock())?);
-        }
-        let session = slot.as_mut().expect("the session was just set");
+    fn send(
+        &mut self,
+        target: Option<u32>,
+        channel: SendChatChannel,
+        text: &str,
+    ) -> Result<(), SendError> {
+        let clients = win::find_clients()?;
+        let pid = pick_target(&clients, target)?;
+        let mut sessions = SESSIONS.lock();
+        // A session of a game that has closed goes first (closing its pipe).
+        sessions.retain_live(&clients);
+        let session =
+            sessions.get_or_connect(pid, || win::Session::connect(pid, &mut RESIDENT.lock()))?;
         let (result, dropped) = session.send(channel, text);
         if dropped {
             // Closing the pipe makes the DLL unload itself; the next send reconnects.
-            *slot = None;
+            sessions.drop_pid(pid);
         }
         result
     }
@@ -53,21 +63,35 @@ impl SendBackend for AppBackend {
 
 #[cfg(not(windows))]
 impl SendBackend for AppBackend {
-    fn send(&mut self, _channel: SendChatChannel, _text: &str) -> Result<(), SendError> {
+    fn send(
+        &mut self,
+        _target: Option<u32>,
+        _channel: SendChatChannel,
+        _text: &str,
+    ) -> Result<(), SendError> {
         Err(SendError::OpenFailed)
     }
 }
 
-/// Sends `text` to `channel` in the game. Blocks for seconds (a first send loads
+/// Sends `text` to `channel` in the game `client` (a pid, never shown to the user;
+/// none is fine with one client). Blocks for seconds (a first send loads
 /// the module), so it runs off the main thread.
 #[tauri::command(async)]
 pub fn send_chat(
     state: State<'_, AppState>,
     channel: SendChatChannel,
     text: String,
+    client: Option<u32>,
 ) -> Result<(), String> {
     let setting_on = state.config.read().ingame_send;
-    send_chat_flow(setting_on, &SPACING, &mut AppBackend, channel, &text)
+    send_chat_flow(
+        setting_on,
+        &SPACING,
+        &mut AppBackend,
+        client,
+        channel,
+        &text,
+    )
 }
 
 /// The setting changed: on loads the module now (a game that is not running is not
@@ -81,23 +105,40 @@ pub(crate) fn apply_setting(on: bool) {
         }
         #[cfg(windows)]
         {
-            let mut slot = SESSION.lock();
-            if slot.is_none() && WANTED.load(Ordering::SeqCst) {
-                match win::Session::connect(&mut RESIDENT.lock()) {
-                    Ok(session) => *slot = Some(session),
-                    Err(e) => log::info!("in-game module not loaded yet: {e}"),
+            let clients = match win::find_clients() {
+                Ok(clients) => clients,
+                Err(e) => {
+                    log::info!("in-game module not loaded yet: {e}");
+                    return;
+                }
+            };
+            let mut sessions = SESSIONS.lock();
+            sessions.retain_live(&clients);
+            for pid in clients {
+                if !WANTED.load(Ordering::SeqCst) {
+                    break;
+                }
+                // One client's failure does not stop the others.
+                if let Err(e) = sessions
+                    .get_or_connect(pid, || win::Session::connect(pid, &mut RESIDENT.lock()))
+                {
+                    log::info!("in-game module not loaded in a game yet: {e}");
                 }
             }
         }
     });
 }
 
-/// Unloads the module and closes the pipe; safe to call twice and at app exit.
+/// Unloads the module from every game and closes the pipes; safe to call twice and
+/// at app exit.
 pub(crate) fn shutdown() {
     #[cfg(windows)]
-    if let Some(session) = SESSION.lock().take() {
-        if let Some(pid) = session.unload() {
-            RESIDENT.lock().note(pid);
+    {
+        let all = SESSIONS.lock().take_all();
+        for (_, session) in all {
+            if let Some(pid) = session.unload() {
+                RESIDENT.lock().note(pid);
+            }
         }
     }
 }

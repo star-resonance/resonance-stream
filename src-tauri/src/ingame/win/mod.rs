@@ -8,7 +8,7 @@ pub mod process;
 pub mod tcp;
 
 use resonance_core::ingame_send::{
-    connect, exchange, map_send_reply, Listener, Resident, SendError, UNLOAD_WAIT,
+    connect, exchange, list_games, map_send_reply, Listener, Resident, SendError, UNLOAD_WAIT,
 };
 use resonance_types::ingame_pipe::{Request, APP_WAIT_MS};
 use resonance_types::SendChatChannel;
@@ -44,6 +44,17 @@ impl Drop for Handle {
     }
 }
 
+/// The pids of the running game clients ([`list_games`] over the live process
+/// list and the chat-port connections).
+pub fn find_clients() -> Result<Vec<u32>, SendError> {
+    let processes = process::list_processes();
+    Ok(list_games(
+        &processes,
+        tcp::chat_port_owners,
+        process::is_32bit,
+    )?)
+}
+
 /// A connected session: the pipe the DLL answers on, and the game it lives in.
 pub struct Session {
     pid: u32,
@@ -52,10 +63,10 @@ pub struct Session {
 }
 
 impl Session {
-    /// Finds the game, loads the DLL and says `hello` ([`connect`]).
-    pub fn connect(resident: &mut Resident) -> Result<Session, SendError> {
+    /// Loads the DLL into the game `pid` and says `hello` ([`connect`]).
+    pub fn connect(pid: u32, resident: &mut Resident) -> Result<Session, SendError> {
         let mut host = host::WinHost::new();
-        let pid = connect(&mut host, resident)?;
+        let pid = connect(&mut host, resident, pid)?;
         let pipe = host.pipe.take().ok_or(SendError::PipeCreate)?;
         Ok(Session {
             pid,
