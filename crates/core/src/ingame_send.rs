@@ -6,11 +6,17 @@
 //!
 //! Chat text is never logged here: only the channel and the length.
 
-use resonance_types::{ingame_pipe::ErrorCode, SendTextError};
+use crate::send_text::SendSpacing;
+use resonance_types::ingame_pipe::{
+    decode_reply, encode_request, ErrorCode, LineBuffer, Reply, Request, PIPE_PROTOCOL_VERSION,
+    WRITE_TIMEOUT_MS,
+};
+use resonance_types::{prepare_text, SendChatChannel, SendTextError};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::{self, Read};
-use std::time::Duration;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 /// Executable base names that are the game: the stem starts with one of these.
 pub const GAME_EXE_PREFIXES: [&str; 2] = ["StarSEA", "StarASIA"];
@@ -235,6 +241,201 @@ impl From<PinError> for SendError {
     }
 }
 
+// ---- the pipe exchange ------------------------------------------------------
+
+/// Why a pipe read or write did not finish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireError {
+    Timeout,
+    Broken,
+}
+
+/// The app's end of the pipe. The Windows implementation does overlapped I/O and
+/// cancels it on a timeout.
+pub trait Wire {
+    /// Writes the whole `line`, or fails after `timeout`.
+    fn write_line(&mut self, line: &[u8], timeout: Duration) -> Result<(), WireError>;
+    /// Reads at least one byte (0 means the pipe closed), or fails after `wait`.
+    fn read(&mut self, buf: &mut [u8], wait: Duration) -> Result<usize, WireError>;
+}
+
+fn reply_id(reply: &Reply) -> u32 {
+    match reply {
+        Reply::Hello { id, .. }
+        | Reply::Send { id, .. }
+        | Reply::Ack { id }
+        | Reply::Error { id, .. } => *id,
+    }
+}
+
+/// Sends one request and reads its reply, all within `wait`. A write or read that
+/// fails, a reply that does not decode, is too long or answers another request is
+/// `Broken` (the session is dropped). A DLL `Reply::Error` is returned as `Ok`: the
+/// caller maps it.
+pub fn exchange(
+    wire: &mut impl Wire,
+    request: &Request,
+    wait: Duration,
+) -> Result<Reply, SendError> {
+    let line = encode_request(request);
+    wire.write_line(
+        line.as_bytes(),
+        Duration::from_millis(u64::from(WRITE_TIMEOUT_MS)),
+    )
+    .map_err(|_| SendError::Broken)?;
+    let started = Instant::now();
+    let mut lines = LineBuffer::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let left = wait
+            .checked_sub(started.elapsed())
+            .filter(|d| !d.is_zero())
+            .ok_or(SendError::Broken)?;
+        let count = wire.read(&mut buf, left).map_err(|_| SendError::Broken)?;
+        if count == 0 {
+            return Err(SendError::Broken);
+        }
+        let got = lines.push(&buf[..count]).map_err(|_| SendError::Broken)?;
+        if let Some(first) = got.first() {
+            let reply = decode_reply(first).map_err(|_| SendError::Broken)?;
+            if reply_id(&reply) != request.id() {
+                return Err(SendError::Broken);
+            }
+            return Ok(reply);
+        }
+    }
+}
+
+/// Waits for clients of the pipe.
+pub trait Listener {
+    /// Waits up to `wait` for a client; its process id, or `None` on timeout.
+    fn wait_client(&mut self, wait: Duration) -> Result<Option<u32>, SendError>;
+    /// Drops the current client so the wait can go on.
+    fn disconnect(&mut self);
+}
+
+/// Waits up to `total` for the game process itself to connect: a client of any
+/// other process is disconnected and the wait goes on.
+pub fn accept_game(
+    listener: &mut impl Listener,
+    game_pid: u32,
+    total: Duration,
+) -> Result<(), SendError> {
+    let started = Instant::now();
+    loop {
+        let left = total
+            .checked_sub(started.elapsed())
+            .filter(|d| !d.is_zero())
+            .ok_or(SendError::NoConnect)?;
+        match listener.wait_client(left)? {
+            None => return Err(SendError::NoConnect),
+            Some(pid) if pid == game_pid => return Ok(()),
+            Some(_) => listener.disconnect(),
+        }
+    }
+}
+
+// ---- the load sequence --------------------------------------------------------
+
+/// The steps of connecting to the game, so the order can be tested; the Windows
+/// implementation is in `src-tauri/src/ingame/win/`.
+pub trait Host {
+    /// The game's pid ([`pick_game`] over the live process list).
+    fn find_game(&mut self) -> Result<u32, SendError>;
+    /// Creates the pipe (first instance) for `pid`; before any load.
+    fn create_pipe(&mut self, pid: u32) -> Result<(), SendError>;
+    /// Whether the DLL module is in the game's module list.
+    fn module_loaded(&mut self, pid: u32) -> bool;
+    /// Waits up to `wait` for the module to leave; true once it has.
+    fn wait_module_gone(&mut self, pid: u32, wait: Duration) -> bool;
+    /// Opens and holds the DLL file and checks its hash against the pin.
+    fn verify_dll(&mut self) -> Result<(), SendError>;
+    /// Loads the verified file into `pid` ([`LOAD_WAIT`]).
+    fn load_dll(&mut self, pid: u32) -> Result<(), SendError>;
+    /// Waits for the game to connect to the pipe ([`accept_game`]).
+    fn accept(&mut self, pid: u32) -> Result<(), SendError>;
+    /// Sends `hello` with the protocol version and returns the reply.
+    fn hello(&mut self) -> Result<Reply, SendError>;
+    /// Sends `bye` and waits up to [`UNLOAD_WAIT`] for the module to leave.
+    fn bye_and_wait(&mut self, pid: u32);
+}
+
+/// Finds the game, creates the pipe, loads the DLL and says `hello`; returns the
+/// game's pid. A DLL of another protocol version (a stale module: the file name is
+/// fixed, so the old one must leave first) gets one `bye`, a wait and a second try.
+pub fn connect(host: &mut impl Host) -> Result<u32, SendError> {
+    let pid = host.find_game()?;
+    host.create_pipe(pid).map_err(|_| SendError::PipeCreate)?;
+    if host.module_loaded(pid) && !host.wait_module_gone(pid, UNLOAD_WAIT) {
+        return Err(SendError::StaleModule);
+    }
+    let mut replaced = false;
+    loop {
+        host.verify_dll()?;
+        host.load_dll(pid)?;
+        host.accept(pid)?;
+        match host.hello()? {
+            Reply::Hello { version, .. } if version == PIPE_PROTOCOL_VERSION => return Ok(pid),
+            Reply::Hello { .. }
+            | Reply::Error {
+                code: ErrorCode::Version,
+                ..
+            } => {
+                if replaced {
+                    return Err(SendError::Dll(ErrorCode::Version));
+                }
+                replaced = true;
+                host.bye_and_wait(pid);
+            }
+            Reply::Error { code, detail, .. } => {
+                log::warn!("hello refused: {} ({detail})", code.as_str());
+                return Err(SendError::Dll(code));
+            }
+            _ => return Err(SendError::Broken),
+        }
+    }
+}
+
+// ---- the send flow ------------------------------------------------------------
+
+/// What `send_chat` needs from the session: connect if needed, send, map the reply.
+pub trait SendBackend {
+    fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError>;
+}
+
+/// The `send_chat` command's logic: setting, text rules, spacing, send. The spacing
+/// guard is held across the send, so two calls at once cannot both pass; only a
+/// send that succeeded starts the window. The error is the one sentence the ui shows.
+/// Chat text is not logged, only the channel and the length.
+pub fn send_chat_flow(
+    setting_on: bool,
+    spacing: &Mutex<SendSpacing>,
+    backend: &mut impl SendBackend,
+    channel: SendChatChannel,
+    text: &str,
+) -> Result<(), String> {
+    let mut run = || -> Result<(), SendError> {
+        if !setting_on {
+            return Err(SendError::SettingOff);
+        }
+        let prepared = prepare_text(text)?;
+        let mut guard = spacing.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.allow(Instant::now())?;
+        backend.send(channel, &prepared)?;
+        guard.record_success(Instant::now());
+        log::debug!(
+            "chat sent: channel {}, {} units",
+            channel.as_str(),
+            prepared.encode_utf16().count()
+        );
+        Ok(())
+    };
+    run().map_err(|e| {
+        log::debug!("chat not sent: channel {}: {e}", channel.as_str());
+        e.to_string()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,15 +652,9 @@ mod tests {
 
     // ---- flows -------------------------------------------------------------
 
-    use resonance_types::ingame_pipe::{
-        decode_request, encode_request, Reply, Request, PIPE_PROTOCOL_VERSION, WRITE_TIMEOUT_MS,
-    };
-    use resonance_types::SendChatChannel;
+    use resonance_types::ingame_pipe::decode_request;
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
-    use std::time::Instant;
-
-    use crate::send_text::SendSpacing;
+    use std::sync::Arc;
 
     struct FakeWire {
         writes: Vec<(Vec<u8>, Duration)>,
@@ -842,7 +1037,11 @@ mod tests {
     }
 
     fn too_soon_sentence() -> String {
-        SendTextError::TooSoon { wait_ms: 1 }.to_string()[..12].to_string()
+        SendTextError::TooSoon { wait_ms: 1 }
+            .to_string()
+            .chars()
+            .take(8)
+            .collect()
     }
 
     #[test]
