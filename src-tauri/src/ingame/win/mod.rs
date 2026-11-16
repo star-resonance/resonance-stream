@@ -63,9 +63,13 @@ pub struct Session {
 }
 
 impl Session {
-    /// Loads the DLL into the game `pid` and says `hello` ([`connect`]).
-    pub fn connect(pid: u32, resident: &mut Resident) -> Result<Session, SendError> {
-        let mut host = host::WinHost::new();
+    /// Loads the DLL file `dll` into the game `pid` and says `hello` ([`connect`]).
+    pub fn connect(
+        pid: u32,
+        resident: &mut Resident,
+        dll: &std::path::Path,
+    ) -> Result<Session, SendError> {
+        let mut host = host::WinHost::new(dll.to_path_buf());
         let pid = connect(&mut host, resident, pid)?;
         let pipe = host.pipe.take().ok_or(SendError::PipeCreate)?;
         Ok(Session {

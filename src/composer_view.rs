@@ -33,6 +33,19 @@ pub fn can_send(draft: &str, sending: bool) -> bool {
     !sending && prepare_text(draft).is_ok()
 }
 
+/// What every progress label of the in-game module download starts with (the backend's
+/// `ingame_fetch::MODULE_LABEL_PREFIX`; the ui does not depend on the core crate).
+const MODULE_LABEL_PREFIX: &str = "게임 내 전송 모듈";
+
+/// The composer's line for a `download-progress` event: the module download below 100 %;
+/// `None` for any other download or when it is done.
+pub fn module_line(label: &str, percent: u8) -> Option<String> {
+    if !label.starts_with(MODULE_LABEL_PREFIX) || percent >= 100 {
+        return None;
+    }
+    Some(format!("게임 내 전송 모듈을 내려받는 중... {percent}%"))
+}
+
 /// The channel a tab preselects; `None` for tabs without one (the picker stays).
 pub fn preselect(tab_label: &str) -> Option<SendChatChannel> {
     match Tab::parse(tab_label)? {
@@ -72,6 +85,22 @@ mod tests {
 
     fn a(n: usize) -> String {
         "a".repeat(n)
+    }
+
+    #[test]
+    fn the_module_download_shows_a_line_below_100_percent_only() {
+        let label = "게임 내 전송 모듈 내려받는 중...";
+        assert_eq!(
+            module_line(label, 40).as_deref(),
+            Some("게임 내 전송 모듈을 내려받는 중... 40%")
+        );
+        assert_eq!(
+            module_line(label, 0).as_deref(),
+            Some("게임 내 전송 모듈을 내려받는 중... 0%")
+        );
+        assert_eq!(module_line(label, 100), None);
+        assert_eq!(module_line("앱 업데이트", 50), None);
+        assert_eq!(module_line("AI 모델 다운로드", 10), None);
     }
 
     #[test]

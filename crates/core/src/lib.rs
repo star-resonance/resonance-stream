@@ -13,6 +13,7 @@ pub mod flow;
 pub mod furigana;
 pub mod guild_relay;
 pub mod history;
+pub mod ingame_fetch;
 pub mod ingame_send;
 pub mod ingame_sessions;
 pub mod kanji_on;

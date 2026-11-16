@@ -52,7 +52,10 @@ fn remote_client() -> Result<reqwest::Client, String> {
 
 /// The body of `res`, up to `limit` bytes: a longer one is refused at once when the host announces
 /// its length, and as it arrives otherwise, so a host that never stops cannot fill the memory.
-async fn read_capped(mut res: reqwest::Response, limit: usize) -> Result<Vec<u8>, String> {
+pub(super) async fn read_capped(
+    mut res: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
     if res.content_length().is_some_and(|n| n > limit as u64) {
         return Err(BodyTooLarge { limit }.to_string());
     }
@@ -72,7 +75,11 @@ pub fn announced_update(app: &AppHandle) -> Option<UpdateFeed> {
 
 /// GET `url`, up to `limit` bytes. `Ok(None)`: nothing is published there (404). `what` names the
 /// file in an error.
-async fn fetch_published(url: &str, limit: usize, what: &str) -> Result<Option<Vec<u8>>, String> {
+pub(super) async fn fetch_published(
+    url: &str,
+    limit: usize,
+    what: &str,
+) -> Result<Option<Vec<u8>>, String> {
     let res = remote_client()?
         .get(url)
         .send()

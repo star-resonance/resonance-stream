@@ -95,6 +95,7 @@ pub fn run() {
             // Before anything that emits, so the bridge hears all of it: the translator's first states, the first system
             // messages (it queues until connected). Its commands wait for `mark_ready` below.
             bridge::start(&handle);
+            ingame::prepare(&handle, config.ingame_send);
 
             // After the bridge, so it hears the relay's first status.
             app.manage(services::guild_relay::start(

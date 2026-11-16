@@ -7,8 +7,8 @@ the game for this document.
 **Decided.** Hook-and-pump (section 2 A); `ilhook` 2.3.0 as the detour crate (section 3 D, which the DLL
 pairs with its own suspension of the game's other threads); `crates/frame` and `crates/ingame` in the
 workspace with a custom root profile that sets `panic = "unwind"` (section 4 A); loading by remote
-thread (section 6 A). The DLL is loaded in place from `<exe dir>/ingame/resonance_ingame.dll`, with the
-file held open across hash and load; a copy into the app's data folder is the fallback. The matching
+thread (section 6 A). The DLL is downloaded from the app's own release into `<app data>/bin/ingame/<version>/` and loaded from there in place, with the
+file held open across hash and load; a copy is the fallback. The matching
 rows are in [security_model.md](security_model.md) section 3.8. D-35 in [decisions.md](decisions.md)
 is the record.
 
@@ -625,33 +625,37 @@ opt-in exactly (no setting, no DLL).
 - **When to load.** When the setting is on and the game process is found (on enable, and at the
   first send if it is not loaded yet). The DLL stays loaded until the setting is turned off, the app
   exits, or the game exits.
-- **Checking the DLL is ours.** The DLL ships with the app, next to the exe, as
-  `<exe dir>/ingame/resonance_ingame.dll`. Its SHA-256 is computed at build time and built into the app
+- **Checking the DLL is ours.** The DLL is fetched by the app when the setting is turned on and kept as
+  `<app data>/bin/ingame/<version>/resonance_ingame.dll` (the installer bundle beside the exe is no longer read). Its SHA-256 is computed at build time and built into the app
   as a pin, the way `server_pins` works.
   - **Loaded in place, no copy.** The app loads that file where it is; nothing is written to the game's
-    folder or the app's data folder. It opens the file with `FILE_SHARE_READ` (nobody else may write
+    folder, and the downloaded file is not copied again. It opens the file with `FILE_SHARE_READ` (nobody else may write
     or delete it), hashes through that handle, and keeps the handle open across the remote-thread
     `LoadLibraryW`. That closes the check-to-load gap the security model names, if Windows allows
     `LoadLibraryW` on a file held that way: NOT VERIFIED on Windows.
   - **Fallback: a copy.** If `LoadLibraryW` hits a sharing violation, the hold is dropped and the gap
     stays open as the security model states it. The app then copies the DLL into its own data folder as
-    `%LOCALAPPDATA%\<app data folder>\ingame\resonance_ingame-<version>-<sha8>.dll` (never the
+    a second file in the app's data folder (never the
     game's), hashes the copy, and loads only on a match. A same-user process that could use the gap
     could inject into the game itself anyway, so it adds no new reach (estimated).
   - **The pin contract.** The app's build script reads `RESONANCE_INGAME_DLL` (the absolute path of the
     built DLL) and `RESONANCE_INGAME_REQUIRED` (with it set and the file missing, the app build
     fails, so a Candidate can never ship without a pin; without it the build succeeds with no pin and a
     warning); `src-tauri/build.rs` writes the hash into the app. R8's Candidate builds the DLL first,
-    then the app, and bundles the same bytes next to the exe. In a debug build whose
+    then the app; the same bytes are the release asset the app downloads. In a debug build whose
     `RESONANCE_INGAME_DLL` was set at build time the path is that file (dev only).
   - **A signed release asset.** Releases ship a bare exe, so the DLL is its own asset next to it: signed with
     the exe's key and version comment, listed in `SHA256SUMS` with its `.sig`, carried from the prerelease to
-    the stable release by Promote, and announced in `latest.json`. Fetching it with an update, and the
-    opt-in download for an exe without it, are later tasks; until then a build without the DLL answers that the module is missing.
+    the stable release by Promote. The app fetches it by tag pattern, not through `latest.json` (whose
+    feed names only the newest stable release): `v<version>` when its `SHA256SUMS` lists the module with the
+    pin, else the newest `v<version>-rc.<N>` prerelease that does (an rc exe has the stable version, whose
+    tag does not exist before Promote). The signature and the pin are checked before the folder is moved
+    into place; a build without a pin downloads nothing.
   - Having the DLL check which module loaded it is not worth it: nothing in the DLL is privileged.
 - **No overwrite while loaded.** A loaded DLL file cannot be replaced: the updater swaps only the exe,
-  and a still-loaded old module is waited out (see an app update, below). In the fallback each version
-  has its own file name, and the app deletes old copies that no process has loaded.
+  and a still-loaded old module is waited out (see an app update, below). Each version has its own
+  folder; the app deletes the folders of other versions that no process has loaded (a held one is tried
+  again at the next run).
 - **`DllMain` does almost nothing.** On `DLL_PROCESS_ATTACH` it calls `DisableThreadLibraryCalls` and
   `CreateThread(worker)`, and returns. The worker starts after the loader lock is released, then
   attaches to il2cpp, resolves exports, and connects the pipe. No il2cpp call ever runs inside
@@ -676,8 +680,7 @@ opt-in exactly (no setting, no DLL).
   fresh app loads the DLL again. This avoids a DLL left behind that no app can talk to.
 - **The game is closed first.** The pipe breaks and the game's process handle is signalled. The app
   marks the DLL unloaded, and the next send finds no game.
-- **An app update.** The old app sends `bye` on exit. The new app loads the DLL again (in the fallback,
-  under its own version's file name), so two versions are never loaded at once. If an old copy is found in the module
+- **An app update.** The old app sends `bye` on exit. The new app downloads its own version's DLL if it is not there yet and loads it again, so two versions are never loaded at once. If an old copy is found in the module
   snapshot (the old app crashed during the exchange), the app waits for its self-unload (it sees the
   broken pipe) before loading.
 
