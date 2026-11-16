@@ -1,3 +1,240 @@
+//! The pure half of in-game chat sending: which process is the game, whether the
+//! DLL file is the one the app was built with, the Korean sentence of every
+//! failure, and (further down) the pipe exchange, the load sequence and the send
+//! flow, all behind small traits so they run on any OS. The Win32 calls that
+//! implement the traits are in `src-tauri/src/ingame/win/`.
+//!
+//! Chat text is never logged here: only the channel and the length.
+
+use resonance_types::{ingame_pipe::ErrorCode, SendTextError};
+use sha2::{Digest, Sha256};
+use std::fmt;
+use std::io::{self, Read};
+use std::time::Duration;
+
+/// Executable base names that are the game: the stem starts with one of these.
+pub const GAME_EXE_PREFIXES: [&str; 2] = ["StarSEA", "StarASIA"];
+/// The game's chat server port; the game process owns a connection to it.
+pub const CHAT_PORT: u16 = 5003;
+/// The DLL's file name, in the game and next to the app.
+pub const DLL_NAME: &str = "resonance_ingame.dll";
+/// How long the app waits for the DLL to connect to the pipe after the load.
+pub const CONNECT_WAIT: Duration = Duration::from_secs(5);
+/// How long the app waits for the remote `LoadLibraryW` thread.
+pub const LOAD_WAIT: Duration = Duration::from_secs(5);
+/// How long the app waits for the module to leave the game after `bye`.
+pub const UNLOAD_WAIT: Duration = Duration::from_secs(2);
+
+/// One running process, as the process snapshot lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessEntry {
+    pub pid: u32,
+    /// The executable's file name (`StarSEA.exe`).
+    pub exe: String,
+}
+
+/// Why no single 64-bit game process could be chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GameError {
+    NotRunning,
+    Several,
+    Is32Bit,
+}
+
+/// True for `<prefix>*.exe` (case-insensitive), a prefix of [`GAME_EXE_PREFIXES`].
+pub fn is_game_exe(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let Some(stem) = lower.strip_suffix(".exe") else {
+        return false;
+    };
+    GAME_EXE_PREFIXES
+        .iter()
+        .any(|p| stem.starts_with(&p.to_ascii_lowercase()))
+}
+
+/// Picks the game's pid. `port_owners` (the pids holding a connection to
+/// [`CHAT_PORT`]) is asked for only when more than one exe matches. A 32-bit game
+/// is refused.
+pub fn pick_game(
+    processes: &[ProcessEntry],
+    port_owners: impl FnOnce() -> Vec<u32>,
+    is_32bit: impl Fn(u32) -> bool,
+) -> Result<u32, GameError> {
+    let mut pids: Vec<u32> = processes
+        .iter()
+        .filter(|p| is_game_exe(&p.exe))
+        .map(|p| p.pid)
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    let pid = match pids.as_slice() {
+        [] => return Err(GameError::NotRunning),
+        [one] => *one,
+        _ => {
+            let owners = port_owners();
+            let mut owning = pids.iter().copied().filter(|p| owners.contains(p));
+            match (owning.next(), owning.next()) {
+                (Some(pid), None) => pid,
+                _ => return Err(GameError::Several),
+            }
+        }
+    };
+    if is_32bit(pid) {
+        return Err(GameError::Is32Bit);
+    }
+    Ok(pid)
+}
+
+/// The port of a TCP table row's `dwRemotePort`: the low 16 bits, in network order.
+pub fn remote_port(raw: u32) -> u16 {
+    (raw as u16).swap_bytes()
+}
+
+/// SHA-256 of everything `reader` yields, as lower-case hex.
+pub fn sha256_hex(mut reader: impl Read) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Why the DLL file is not loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinError {
+    /// The app was built without a DLL (or with an unusable pin).
+    NoPin,
+    /// The file's hash is not the pin.
+    Mismatch,
+}
+
+/// Compares the build-time pin with the file's hash. A pin that is not 64 hex
+/// digits counts as no pin.
+pub fn check_pin(pin: Option<&str>, actual: &str) -> Result<(), PinError> {
+    let pin = match pin {
+        Some(p) if p.len() == 64 && p.bytes().all(|b| b.is_ascii_hexdigit()) => p,
+        _ => return Err(PinError::NoPin),
+    };
+    if pin.eq_ignore_ascii_case(actual) {
+        Ok(())
+    } else {
+        Err(PinError::Mismatch)
+    }
+}
+
+/// The pipe's security descriptor: SYSTEM and Administrators full, the current
+/// user read/write, a Medium mandatory label so a Medium-integrity game can connect.
+pub fn pipe_sddl(user_sid: &str) -> String {
+    format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;{user_sid})S:(ML;;NW;;;ME)")
+}
+
+/// The sentence for a DLL error code (selected by code, never by its `detail`).
+pub fn code_text(code: ErrorCode) -> &'static str {
+    match code {
+        ErrorCode::BadRequest => {
+            "게임 내 전송 모듈과 통신하지 못했습니다. 앱을 다시 시작해 주세요."
+        }
+        ErrorCode::BadChannel => "이 채널로는 보낼 수 없습니다.",
+        ErrorCode::Empty => "보낼 내용이 없습니다.",
+        ErrorCode::TooLong => "메시지가 너무 깁니다. 140자 이하로 줄여 주세요.",
+        ErrorCode::NoClient => {
+            "게임 채팅 서버에 연결되어 있지 않습니다. 로그인한 뒤 다시 시도해 주세요."
+        }
+        ErrorCode::NotSent => "게임이 메시지를 보내지 못했습니다.",
+        ErrorCode::Busy => "이전 메시지를 보내는 중입니다. 잠시 후 다시 시도해 주세요.",
+        ErrorCode::Expired => {
+            "게임이 응답하지 않아 보내지 않았습니다. 로딩이 끝난 뒤 다시 시도해 주세요."
+        }
+        ErrorCode::Unsupported => {
+            "이 게임 버전에서는 채팅 보내기를 지원하지 않습니다. 앱 업데이트를 기다려 주세요."
+        }
+        ErrorCode::Version => "게임 내 전송 모듈의 버전이 맞지 않습니다. 앱을 다시 시작해 주세요.",
+    }
+}
+
+/// Everything that can stop a send; `Display` is the one Korean sentence the ui shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SendError {
+    SettingOff,
+    Game(GameError),
+    NoPin,
+    DllMissing,
+    PinMismatch,
+    OpenFailed,
+    LoadFailed,
+    PipeCreate,
+    NoConnect,
+    Broken,
+    StaleModule,
+    /// The DLL answered with an error.
+    Dll(ErrorCode),
+    /// The text rules or the spacing rule.
+    Text(SendTextError),
+}
+
+impl fmt::Display for SendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self {
+            SendError::SettingOff => "게임 내 채팅 보내기가 꺼져 있습니다. 설정에서 켜 주세요.",
+            SendError::Game(GameError::NotRunning) => "게임이 실행 중이 아닙니다.",
+            SendError::Game(GameError::Several) => "게임이 둘 이상 실행 중입니다.",
+            SendError::Game(GameError::Is32Bit) => "32비트 게임은 지원하지 않습니다.",
+            SendError::NoPin => "이 앱에는 게임 내 전송 모듈이 들어 있지 않습니다.",
+            SendError::DllMissing => {
+                "게임 내 전송 모듈 파일을 찾을 수 없습니다. 앱을 다시 설치해 주세요."
+            }
+            SendError::PinMismatch => {
+                "게임 내 전송 모듈 파일이 변경되어 불러오지 않았습니다. 앱을 다시 설치해 주세요."
+            }
+            SendError::OpenFailed => "게임 프로세스에 접근하지 못했습니다.",
+            SendError::LoadFailed => "게임에 전송 모듈을 불러오지 못했습니다.",
+            SendError::PipeCreate => {
+                "게임 내 전송 모듈과 통신할 수 없습니다. 앱을 다시 시작해 주세요."
+            }
+            SendError::NoConnect => "게임 내 전송 모듈이 연결되지 않았습니다.",
+            SendError::Broken => "게임 내 전송 모듈이 응답하지 않습니다. 설정에서 껐다 켜 주세요.",
+            SendError::StaleModule => {
+                "이전 전송 모듈이 아직 게임에 남아 있습니다. 잠시 후 다시 시도해 주세요."
+            }
+            SendError::Dll(code) => code_text(*code),
+            SendError::Text(e) => return write!(f, "{e}"),
+        };
+        f.write_str(text)
+    }
+}
+
+impl std::error::Error for SendError {}
+
+impl From<GameError> for SendError {
+    fn from(e: GameError) -> Self {
+        SendError::Game(e)
+    }
+}
+
+impl From<SendTextError> for SendError {
+    fn from(e: SendTextError) -> Self {
+        SendError::Text(e)
+    }
+}
+
+impl From<PinError> for SendError {
+    fn from(e: PinError) -> Self {
+        match e {
+            PinError::NoPin => SendError::NoPin,
+            PinError::Mismatch => SendError::PinMismatch,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12,7 +249,12 @@ mod tests {
 
     #[test]
     fn game_exe_names_match_by_prefix_and_extension() {
-        for name in ["StarSEA.exe", "StarSEA_STEAM.exe", "StarASIA.exe", "starasia.EXE"] {
+        for name in [
+            "StarSEA.exe",
+            "StarSEA_STEAM.exe",
+            "StarASIA.exe",
+            "starasia.EXE",
+        ] {
             assert!(is_game_exe(name), "{name}");
         }
         for name in ["StarSEA", "notepad.exe", "MyStarSEA.exe", ""] {
@@ -25,7 +267,10 @@ mod tests {
         let list = [proc(1, "notepad.exe")];
         let got = pick_game(&list, || panic!("asked"), |_| false);
         assert_eq!(got, Err(GameError::NotRunning));
-        assert_eq!(pick_game(&[], || panic!("asked"), |_| false), Err(GameError::NotRunning));
+        assert_eq!(
+            pick_game(&[], || panic!("asked"), |_| false),
+            Err(GameError::NotRunning)
+        );
     }
 
     #[test]
@@ -38,7 +283,10 @@ mod tests {
     fn pick_game_with_two_matches_takes_the_port_owner() {
         let list = [proc(10, "StarSEA.exe"), proc(20, "StarASIA.exe")];
         assert_eq!(pick_game(&list, || vec![20], |_| false), Ok(20));
-        assert_eq!(pick_game(&list, Vec::new, |_| false), Err(GameError::Several));
+        assert_eq!(
+            pick_game(&list, Vec::new, |_| false),
+            Err(GameError::Several)
+        );
         assert_eq!(
             pick_game(&list, || vec![10, 20], |_| false),
             Err(GameError::Several)
@@ -96,7 +344,10 @@ mod tests {
         assert_eq!(check_pin(None, PIN), Err(PinError::NoPin));
         assert_eq!(check_pin(Some(""), PIN), Err(PinError::NoPin));
         assert_eq!(check_pin(Some(&PIN[..63]), PIN), Err(PinError::NoPin));
-        assert_eq!(check_pin(Some(&PIN.replace('a', "z")), PIN), Err(PinError::NoPin));
+        assert_eq!(
+            check_pin(Some(&PIN.replace('a', "z")), PIN),
+            Err(PinError::NoPin)
+        );
     }
 
     #[test]
@@ -135,11 +386,26 @@ mod tests {
     #[test]
     fn every_send_error_displays_its_sentence() {
         let table = [
-            (SendError::SettingOff, "게임 내 채팅 보내기가 꺼져 있습니다. 설정에서 켜 주세요."),
-            (SendError::Game(GameError::NotRunning), "게임이 실행 중이 아닙니다."),
-            (SendError::Game(GameError::Several), "게임이 둘 이상 실행 중입니다."),
-            (SendError::Game(GameError::Is32Bit), "32비트 게임은 지원하지 않습니다."),
-            (SendError::NoPin, "이 앱에는 게임 내 전송 모듈이 들어 있지 않습니다."),
+            (
+                SendError::SettingOff,
+                "게임 내 채팅 보내기가 꺼져 있습니다. 설정에서 켜 주세요.",
+            ),
+            (
+                SendError::Game(GameError::NotRunning),
+                "게임이 실행 중이 아닙니다.",
+            ),
+            (
+                SendError::Game(GameError::Several),
+                "게임이 둘 이상 실행 중입니다.",
+            ),
+            (
+                SendError::Game(GameError::Is32Bit),
+                "32비트 게임은 지원하지 않습니다.",
+            ),
+            (
+                SendError::NoPin,
+                "이 앱에는 게임 내 전송 모듈이 들어 있지 않습니다.",
+            ),
             (
                 SendError::DllMissing,
                 "게임 내 전송 모듈 파일을 찾을 수 없습니다. 앱을 다시 설치해 주세요.",
@@ -148,13 +414,22 @@ mod tests {
                 SendError::PinMismatch,
                 "게임 내 전송 모듈 파일이 변경되어 불러오지 않았습니다. 앱을 다시 설치해 주세요.",
             ),
-            (SendError::OpenFailed, "게임 프로세스에 접근하지 못했습니다."),
-            (SendError::LoadFailed, "게임에 전송 모듈을 불러오지 못했습니다."),
+            (
+                SendError::OpenFailed,
+                "게임 프로세스에 접근하지 못했습니다.",
+            ),
+            (
+                SendError::LoadFailed,
+                "게임에 전송 모듈을 불러오지 못했습니다.",
+            ),
             (
                 SendError::PipeCreate,
                 "게임 내 전송 모듈과 통신할 수 없습니다. 앱을 다시 시작해 주세요.",
             ),
-            (SendError::NoConnect, "게임 내 전송 모듈이 연결되지 않았습니다."),
+            (
+                SendError::NoConnect,
+                "게임 내 전송 모듈이 연결되지 않았습니다.",
+            ),
             (
                 SendError::Broken,
                 "게임 내 전송 모듈이 응답하지 않습니다. 설정에서 껐다 켜 주세요.",
