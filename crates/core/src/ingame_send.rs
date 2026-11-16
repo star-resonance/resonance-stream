@@ -742,12 +742,16 @@ mod tests {
                 "이 앱에는 게임 내 전송 모듈이 들어 있지 않습니다.",
             ),
             (
+                SendError::DllDownloading,
+                "게임 내 전송 모듈을 내려받는 중입니다. 끝나면 보낼 수 있습니다.",
+            ),
+            (
                 SendError::DllMissing,
-                "게임 내 전송 모듈 파일을 찾을 수 없습니다. 앱을 다시 설치해 주세요.",
+                "게임 내 전송 모듈 파일이 없습니다. 설정에서 껐다 켜면 다시 내려받습니다.",
             ),
             (
                 SendError::PinMismatch,
-                "게임 내 전송 모듈 파일이 변경되어 불러오지 않았습니다. 앱을 다시 설치해 주세요.",
+                "게임 내 전송 모듈 파일이 변경되어 불러오지 않았습니다. 설정에서 껐다 켜면 다시 내려받습니다.",
             ),
             (
                 SendError::OpenFailed,
@@ -1099,6 +1103,7 @@ mod tests {
         for err in [
             SendError::NoPin,
             SendError::DllMissing,
+            SendError::DllDownloading,
             SendError::PinMismatch,
         ] {
             let mut host = FakeHost::happy();
