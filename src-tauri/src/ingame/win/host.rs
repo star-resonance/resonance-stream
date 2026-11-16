@@ -1,11 +1,11 @@
 //! The Windows [`Host`]: ties the process lookup, the pipe and the remote load
 //! into the sequence `resonance_core::ingame_send::connect` runs.
 
-use super::{loader, pipe::Pipe, process, tcp};
+use super::{loader, pipe::Pipe};
 use crate::ingame::pin;
 use resonance_core::ingame_send::{
-    accept_game, check_pin, exchange, pick_game, sha256_hex, Host, PinError, SendError,
-    CONNECT_WAIT, DLL_NAME, UNLOAD_WAIT,
+    accept_game, check_pin, exchange, sha256_hex, Host, PinError, SendError, CONNECT_WAIT,
+    DLL_NAME, UNLOAD_WAIT,
 };
 use resonance_types::ingame_pipe::{Reply, Request, APP_WAIT_MS, PIPE_PROTOCOL_VERSION};
 use std::fs::{File, OpenOptions};
@@ -19,7 +19,6 @@ const SHARE_READ_ONLY: u32 = 1;
 /// A connection in the making; after a successful `connect` its pipe and id
 /// counter move into a `Session`.
 pub struct WinHost {
-    pub(super) pid: Option<u32>,
     pub(super) pipe: Option<Pipe>,
     /// The DLL file, held open from the hash until the load has finished.
     file: Option<File>,
@@ -29,7 +28,6 @@ pub struct WinHost {
 impl WinHost {
     pub fn new() -> Self {
         WinHost {
-            pid: None,
             pipe: None,
             file: None,
             next_id: 1,
@@ -62,13 +60,6 @@ impl Default for WinHost {
 }
 
 impl Host for WinHost {
-    fn find_game(&mut self) -> Result<u32, SendError> {
-        let processes = process::list_processes();
-        let pid = pick_game(&processes, tcp::chat_port_owners, process::is_32bit)?;
-        self.pid = Some(pid);
-        Ok(pid)
-    }
-
     fn create_pipe(&mut self, pid: u32) -> Result<(), SendError> {
         // A pipe of an earlier try is closed first so its name is free.
         self.pipe = None;
