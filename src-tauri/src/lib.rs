@@ -26,6 +26,7 @@ pub use click_through::*;
 pub use commands::*;
 pub use config::*;
 pub use events::*;
+pub use ingame::*;
 pub use io::*;
 pub use protocol::types::*;
 pub use services::downloader::*;
@@ -223,6 +224,7 @@ pub fn run() {
             update_global_tab_shortcut,
             ensure_firewall_rule_command,
             restart_sniffer_command,
+            send_chat,
         ]));
     // `--no-window-state`: neither restore nor save the windows' size and place.
     if !test_env::no_window_state() {
@@ -242,6 +244,7 @@ pub fn run() {
     app.run(|_app_handle, event| {
         if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
             log::info!("Application closing. Cleaning AI Server...");
+            ingame::shutdown();
             // The tray's Quit ends the app without a close request.
             window::restore_grown_window(_app_handle);
 

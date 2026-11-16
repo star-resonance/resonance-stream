@@ -9,8 +9,8 @@
 
 use crate::{
     AppConfig, ChatMessage, ClickThroughHoldKey, DictionaryStatus, FavoritesState, FolderStatus,
-    GuildRelayStatePayload, NetworkInterface, PopupKind, RubySpan, ServiceStates, SystemMessage,
-    UpdateCheckResult, UpdateTarget, WindowRect,
+    GuildRelayStatePayload, NetworkInterface, PopupKind, RubySpan, SendChatChannel, ServiceStates,
+    SystemMessage, UpdateCheckResult, UpdateTarget, WindowRect,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,9 @@ commands! {
     OpenCapturesFolder = "open_captures_folder" {} -> ();
     BlockUser = "block_user_command" { uid: u64, nickname: String } -> ();
     UnblockUser = "unblock_user_command" { uid: u64 } -> ();
+
+    // Chat sending (through the in-game module). The error is one Korean sentence.
+    SendChat = "send_chat" { channel: SendChatChannel, text: String } -> ();
 
     // Translator.
     LaunchTranslator = "launch_translator" {} -> ();
