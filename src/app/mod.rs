@@ -5,8 +5,8 @@ mod setup_flow;
 use crate::components::settings::Settings;
 use crate::components::title_bar::TitleBar;
 use crate::components::{
-    AddToDictionaryModal, AppUpdateModal, ChatContainer, DictionaryModal, ModelUpdateModal, NavBar,
-    SetupWizard, Troubleshooter,
+    AddToDictionaryModal, AppUpdateModal, ChatComposer, ChatContainer, DictionaryModal,
+    ModelUpdateModal, NavBar, SetupWizard, Troubleshooter,
 };
 use crate::config_signals::ConfigSignals;
 use crate::hooks::use_tray::{setup_tray_listeners, sync_tray_menu};
@@ -128,6 +128,10 @@ pub fn App() -> impl IntoView {
                 <NavBar />
 
                 <ChatContainer />
+
+                <Show when=move || signals.config.ingame_send.get()>
+                    <ChatComposer />
+                </Show>
             </Show>
 
 
