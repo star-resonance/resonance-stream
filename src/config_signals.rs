@@ -96,6 +96,8 @@ pub struct ConfigSignals {
     pub set_raw_capture: WriteSignal<bool>,
     pub ingame_send: ReadSignal<bool>,
     pub set_ingame_send: WriteSignal<bool>,
+    pub send_channel: ReadSignal<String>,
+    pub set_send_channel: WriteSignal<String>,
     pub guild_relay: ReadSignal<GuildRelayConfig>,
     pub set_guild_relay: WriteSignal<GuildRelayConfig>,
     pub nav_tabs: ReadSignal<Vec<String>>,
@@ -150,6 +152,7 @@ impl ConfigSignals {
         let (chat_log_retention_days, set_chat_log_retention_days) = signal::<u32>(0);
         let (raw_capture, set_raw_capture) = signal::<bool>(false);
         let (ingame_send, set_ingame_send) = signal::<bool>(false);
+        let (send_channel, set_send_channel) = signal::<String>("world".to_owned());
         let (guild_relay, set_guild_relay) = signal(GuildRelayConfig::default());
         let (nav_tabs, set_nav_tabs) = signal::<Vec<String>>(resonance_types::default_nav_tabs());
         let (click_through_hold_key, set_click_through_hold_key) =
@@ -227,6 +230,8 @@ impl ConfigSignals {
             set_raw_capture,
             ingame_send,
             set_ingame_send,
+            send_channel,
+            set_send_channel,
             guild_relay,
             set_guild_relay,
             nav_tabs,
@@ -275,6 +280,7 @@ impl ConfigSignals {
             chat_log_retention_days: self.chat_log_retention_days.get_untracked(),
             raw_capture: self.raw_capture.get_untracked(),
             ingame_send: self.ingame_send.get_untracked(),
+            send_channel: self.send_channel.get_untracked(),
             guild_relay: self.guild_relay.get_untracked(),
             nav_tabs: self.nav_tabs.get_untracked(),
             click_through_hold_key: self.click_through_hold_key.get_untracked(),
@@ -339,6 +345,7 @@ impl ConfigSignals {
             chat_log_retention_days,
             raw_capture,
             ingame_send,
+            send_channel,
             guild_relay,
             nav_tabs,
             click_through_hold_key,
@@ -396,6 +403,7 @@ impl ConfigSignals {
             .set(chat_log_retention_days);
         self.set_raw_capture.set(raw_capture);
         self.set_ingame_send.set(ingame_send);
+        self.set_send_channel.set(send_channel);
         self.set_guild_relay.set(guild_relay);
         self.set_nav_tabs.set(nav_tabs);
         self.set_click_through_hold_key.set(click_through_hold_key);

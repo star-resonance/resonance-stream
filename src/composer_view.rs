@@ -54,6 +54,25 @@ pub fn preselect(tab_label: &str) -> Option<SendChatChannel> {
     }
 }
 
+/// The channel a saved wire name (`send_channel` in the config) stands for; an exact match, else
+/// World (a missing, hand-edited or unknown value).
+pub fn stored_channel(s: &str) -> SendChatChannel {
+    SendChatChannel::ALL
+        .into_iter()
+        .find(|c| c.as_str() == s)
+        .unwrap_or(SendChatChannel::ALL[0])
+}
+
+/// What the preselect Effect does: the channel to switch to, or `None`. Not on the first run
+/// (the saved channel wins on start), and not when the tab's channel is already the stored one
+/// (no change, no save).
+pub fn tab_pick(first_run: bool, tab_label: &str, stored: &str) -> Option<SendChatChannel> {
+    if first_run {
+        return None;
+    }
+    preselect(tab_label).filter(|c| *c != stored_channel(stored))
+}
+
 /// Whether a key press sends: a plain Enter, not Shift+Enter, and not one an
 /// input method handles (`is_composing`, or key code 229 as Chromium reports it).
 pub fn enter_sends(key: &str, shift: bool, composing: bool, key_code: u32) -> bool {
