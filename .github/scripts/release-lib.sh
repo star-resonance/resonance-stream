@@ -98,7 +98,7 @@ release_manifest() {
 
 # Would the app update from release <tag>? The release's asset names (one per
 # line) and the live latest.json (stdin) are checked the way the app reads
-# them: the three files exist, the feed is for this version, points at this
+# them: the release files exist (exe, .sig, latest.json), the feed is for this version, points at this
 # release's exe and carries a signature. Prints the reason and returns 1 when
 # something is off; prints nothing and returns 0 when it is fine. <slug> is
 # the repository, "owner/name". The in-game DLL and its .sig are both there or

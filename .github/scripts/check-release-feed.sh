@@ -10,8 +10,9 @@
 # must be that very release. The feed may take a moment to appear on GitHub's
 # side, so it is tried FEED_ATTEMPTS times (default 5), FEED_PAUSE seconds
 # apart (default 6). With <expected-tag> the in-game DLL and its .sig are required
-# too (strict); without it a release lacking both is accepted, but one with only
-# one of them, or a feed that disagrees with the assets, fails. Needs gh (GH_TOKEN), curl and jq. Tested by
+# too (strict); without it a release with neither is accepted, but one with only
+# one of them, or a feed that disagrees with the assets, fails.
+# Needs gh (GH_TOKEN), curl and jq. Tested by
 # release-lib.test.sh with gh and curl faked.
 set -euo pipefail
 # shellcheck source=release-lib.sh source-path=SCRIPTDIR
