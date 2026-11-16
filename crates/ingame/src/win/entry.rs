@@ -77,7 +77,7 @@ enum HookState {
 type Hook = Rc<RefCell<HookState>>;
 
 /// This DLL's image, for the removal's "no thread inside the DLL" check.
-fn dll_range() -> std::ops::Range<usize> {
+fn dll_range() -> Option<std::ops::Range<usize>> {
     let module = MODULE.load(Ordering::SeqCst) as HMODULE;
     // SAFETY: an all-integer struct.
     let mut info: MODULEINFO = unsafe { std::mem::zeroed() };
@@ -91,10 +91,10 @@ fn dll_range() -> std::ops::Range<usize> {
         )
     };
     if ok == 0 {
-        return 0..0;
+        return None;
     }
     let base = info.lpBaseOfDll as usize;
-    base..base + info.SizeOfImage as usize
+    Some(base..base + info.SizeOfImage as usize)
 }
 
 /// The queue the send service uses: installs the hook on first use, then hands the frame to
@@ -131,8 +131,16 @@ impl HookingQueue {
             Ok(targets) => targets,
             Err(e) => return fail(SendOutcome::Unsupported(e.detail()), true, &self.hook),
         };
+        // Without the DLL's own range a removal cannot tell a thread is inside it.
+        let Some(dll) = dll_range() else {
+            return fail(
+                SendOutcome::HookFailed("dll_range".into()),
+                true,
+                &self.hook,
+            );
+        };
         set_ops(il2cpp.unattached());
-        match PumpHook::install(&targets, dll_range(), &mut log) {
+        match PumpHook::install(&targets, dll, &mut log) {
             Ok(hook) => {
                 *self.hook.borrow_mut() = HookState::Installed(hook);
                 Ok(())

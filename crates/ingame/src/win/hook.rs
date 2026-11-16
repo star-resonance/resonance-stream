@@ -101,12 +101,14 @@ impl PumpHook {
         let state = Arc::new(SuspendState::new(addr..addr + WINDOW_LEN, dll, &IN_DETOUR));
         // SAFETY: plain calls.
         let (pid, tid) = unsafe { (GetCurrentProcessId(), GetCurrentThreadId()) };
-        state
+        let skipped = state
             .prepare(pid, tid)
             .map_err(|_| InstallError::Unsupported("too_many_threads".into()))?;
-        let main_tid = state
-            .main_thread()
-            .ok_or_else(|| InstallError::Unsupported("no_main_thread".into()))?;
+        if skipped > 0 {
+            log.warn(&format!("hook: {skipped} thread(s) could not be opened"));
+        }
+        // No thread to pick from may pass; try again rather than caching a failure.
+        let main_tid = state.main_thread().ok_or(InstallError::Transient)?;
         MAIN_TID.store(main_tid, Ordering::Release);
         let hooker = Hooker::new(
             addr,
@@ -145,9 +147,12 @@ impl PumpHook {
         let mut window = [0u8; WINDOW_LEN];
         // SAFETY: the 14 bytes at the hooked address are readable (we patched them).
         unsafe { copy_nonoverlapping(self.addr as *const u8, window.as_mut_ptr(), WINDOW_LEN) };
-        if let Some(tramp) = decode_jmp_target(&window, self.addr) {
-            self.state.set_tramp(tramp);
-        }
+        // Without the trampoline's address a thread inside it cannot be found: do not remove.
+        let Some(tramp) = decode_jmp_target(&window, self.addr) else {
+            log.warn("unhook: cannot tell where the patch jumps to; keeping the hook");
+            return Err(self);
+        };
+        self.state.set_tramp(tramp);
         let (mut old, mut scratch) = (0u32, 0u32);
         // SAFETY: the page of the hooked code; protection is restored below.
         let writable = unsafe {

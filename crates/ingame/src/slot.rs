@@ -120,7 +120,7 @@ impl SendSlot {
 
     /// No new job is accepted (the pump panicked).
     pub fn disable(&self) {
-        self.closed.store(true, Ordering::Release);
+        self.close();
     }
 
     /// Worker side: waits for the pump's answer to the job pushed just before. A job the

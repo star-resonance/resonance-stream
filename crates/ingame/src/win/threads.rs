@@ -78,9 +78,10 @@ impl SuspendState {
         self.refused.swap(false, Ordering::AcqRel)
     }
 
-    /// Opens a handle to every other thread of this process (the worker's own is left out).
-    /// Allocates: never call it between `stop` and `resume`.
-    pub fn prepare(&self, pid: u32, own_tid: u32) -> Result<(), TooManyThreads> {
+    /// Opens a handle to every other thread of this process (the worker's own is left out);
+    /// the result is how many could not be opened (and so are neither suspended nor
+    /// checked). Allocates: never call it between `stop` and `resume`.
+    pub fn prepare(&self, pid: u32, own_tid: u32) -> Result<usize, TooManyThreads> {
         self.close_handles();
         let mut entries: Vec<(u32, u32)> = Vec::new();
         // SAFETY: a thread snapshot; the handle is closed below.
@@ -101,6 +102,7 @@ impl SuspendState {
         }
         let tids = threads_of(&entries, pid, own_tid, MAX_SUSPEND_THREADS)?;
         let mut n = 0;
+        let mut skipped = 0;
         for tid in tids {
             // SAFETY: plain call; a null result (thread gone, access denied) is skipped.
             let handle = unsafe {
@@ -111,6 +113,7 @@ impl SuspendState {
                 )
             };
             if handle.is_null() {
+                skipped += 1;
                 continue;
             }
             self.handles[n].store(handle as usize, Ordering::Release);
@@ -118,7 +121,7 @@ impl SuspendState {
             n += 1;
         }
         self.count.store(n, Ordering::Release);
-        Ok(())
+        Ok(skipped)
     }
 
     /// The prepared thread created first: the process's first thread, taken to be the
