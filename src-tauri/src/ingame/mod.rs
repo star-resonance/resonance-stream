@@ -2,3 +2,6 @@
 //! `resonance_core::ingame_send` for the logic and `docs/ingame-design.md`.
 
 pub mod pin;
+
+#[cfg(windows)]
+pub mod win;
