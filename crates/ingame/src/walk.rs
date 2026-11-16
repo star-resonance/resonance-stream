@@ -16,6 +16,12 @@ pub type Handle = usize;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Arg {
     U64(u64),
+    /// A `ReadOnlySpan<byte>` over `len` bytes at `ptr` (the caller keeps them alive until
+    /// the invoke returns).
+    Span {
+        ptr: usize,
+        len: usize,
+    },
 }
 
 /// A managed exception thrown inside an invoke.
@@ -35,8 +41,21 @@ pub trait Il2cppOps {
     fn object_class(&mut self, object: usize) -> Handle;
     /// Calls `method` on `this` (0 for a static one); the result is the returned object, 0 for null.
     fn invoke(&mut self, method: Handle, this: usize, args: &[Arg]) -> Result<usize, Exception>;
+    /// The native code address of `method` (the first field of il2cpp's `MethodInfo`);
+    /// 0 when it has none.
+    fn method_pointer(&mut self, method: Handle) -> usize;
     /// Reads the pointer at `address`.
     fn read_ptr(&mut self, address: usize) -> usize;
+}
+
+/// A method to hook: where its code is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PumpTarget {
+    /// `Class.Method`, for the log.
+    pub name: String,
+    pub method: Handle,
+    /// The native address of the method's code.
+    pub address: usize,
 }
 
 /// What a successful walk found.
@@ -155,6 +174,44 @@ impl<O: Il2cppOps> Walker<O> {
             handle,
             send_method: r.send_method,
         })
+    }
+
+    /// The first of [`HOOK_CANDIDATES`] that resolves and has native code. Makes no invoke
+    /// and patches nothing; resolution only.
+    pub fn resolve_pump(&mut self, log: &mut dyn LogSink) -> Result<PumpTarget, StepError> {
+        let mut no_code = false;
+        for candidate in HOOK_CANDIDATES {
+            let label = candidate.label();
+            let Some(class) = candidate
+                .namespaces
+                .iter()
+                .find_map(|ns| self.ops.class_from_name(ns, candidate.class))
+            else {
+                log.info(&format!("hook candidate {label}: class missing"));
+                continue;
+            };
+            let Ok(method) = self.find_method(class, candidate.method, candidate.argc, log) else {
+                log.info(&format!("hook candidate {label}: method missing"));
+                continue;
+            };
+            let address = self.ops.method_pointer(method);
+            if address == 0 {
+                log.info(&format!("hook candidate {label}: no native code"));
+                no_code = true;
+                continue;
+            }
+            log.info(&format!("hook candidate {label}: code at {address:#x}"));
+            return Ok(PumpTarget {
+                name: label,
+                method,
+                address,
+            });
+        }
+        Err(StepError::method(if no_code {
+            "pump.code"
+        } else {
+            "pump"
+        }))
     }
 
     fn resolve(&mut self, log: &mut dyn LogSink) -> Result<Resolved, StepError> {

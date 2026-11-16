@@ -9,6 +9,7 @@ use super::{wide, GlobalLog};
 use crate::error::{ProbeFailure, StepError};
 use crate::log::LogSink;
 use crate::names::{OPTIONAL_EXPORTS, REQUIRED_EXPORTS};
+use crate::send_ops::SpanBytes;
 use crate::session::Probe;
 use crate::walk::{Arg, Exception, Handle, Il2cppOps, Walker};
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -224,14 +225,34 @@ impl Il2cppOps for Il2cpp {
     }
 
     fn invoke(&mut self, method: Handle, this: usize, args: &[Arg]) -> Result<usize, Exception> {
-        // A value-type argument is passed as a pointer to the value.
-        let values: Vec<u64> = args
+        // A value-type argument is passed as a pointer to the value; the values live in
+        // these vectors until the call returns.
+        let numbers: Vec<u64> = args
             .iter()
             .map(|a| match a {
                 Arg::U64(v) => *v,
+                Arg::Span { .. } => 0,
             })
             .collect();
-        let mut params: Vec<Ptr> = values.iter().map(|v| v as *const u64 as Ptr).collect();
+        let spans: Vec<SpanBytes> = args
+            .iter()
+            .map(|a| match a {
+                Arg::Span { ptr, len } => SpanBytes {
+                    reference: *ptr as *const u8,
+                    length: *len as i32,
+                    _pad: 0,
+                },
+                Arg::U64(_) => SpanBytes::over(&[]),
+            })
+            .collect();
+        let mut params: Vec<Ptr> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| match a {
+                Arg::U64(_) => &numbers[i] as *const u64 as Ptr,
+                Arg::Span { .. } => &spans[i] as *const SpanBytes as Ptr,
+            })
+            .collect();
         let mut exception: Ptr = std::ptr::null_mut();
         // SAFETY: `method` is a method pointer, `this` is null or an object of its class,
         // `params` holds one pointer per argument and outlives the call.
@@ -248,6 +269,13 @@ impl Il2cppOps for Il2cpp {
         } else {
             Err(Exception)
         }
+    }
+
+    fn method_pointer(&mut self, method: Handle) -> usize {
+        // SAFETY: `method` is a `MethodInfo*` from `il2cpp_class_get_method_from_name`; its
+        // first field is the native code pointer (public il2cpp layout, estimated, NOT
+        // VERIFIED: it is not in this repository and was not read from a header).
+        unsafe { std::ptr::read_unaligned(method as *const usize) }
     }
 
     fn read_ptr(&mut self, address: usize) -> usize {

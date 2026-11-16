@@ -59,6 +59,39 @@ pub const FIELD_CONN: &str = "conn_";
 pub const FIELD_CLIENT: &str = "client_";
 pub const FIELD_HANDLE: &str = "handle_";
 
+/// A per-frame method of the game's main thread the pump can hook (investigation a of the
+/// plan: the names are inferred from Stellar's notes, NOT VERIFIED until Kade's run). The
+/// first that resolves, has a native pointer and can be patched is used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HookCandidate {
+    pub class: &'static str,
+    pub namespaces: &'static [&'static str],
+    pub method: &'static str,
+    pub argc: i32,
+}
+
+impl HookCandidate {
+    /// `Class.Method`, for the log and the install detail.
+    pub fn label(&self) -> String {
+        format!("{}.{}", self.class, self.method)
+    }
+}
+
+pub const HOOK_CANDIDATES: [HookCandidate; 2] = [
+    HookCandidate {
+        class: ZRPC_CTRL,
+        namespaces: &NAMESPACES,
+        method: "Update",
+        argc: 0,
+    },
+    HookCandidate {
+        class: "Game",
+        namespaces: &["Panda.Core"],
+        method: "Update",
+        argc: 0,
+    },
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

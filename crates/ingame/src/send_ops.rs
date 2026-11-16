@@ -1,3 +1,88 @@
+//! `ZTcpClient.Send(ReadOnlySpan<byte>)` called through `il2cpp_runtime_invoke`, as the
+//! pump's [`SendOps`]. The span's layout is the one place the ABI shows.
+//!
+//! NOT VERIFIED (only a run in the game settles it): that this build's `ReadOnlySpan<byte>`
+//! is a pointer then an `i32` length, that it is passed by reference to `runtime_invoke`,
+//! that the bytes may live outside a managed array, and what `Send` returns.
+
+use crate::error::ProbeFailure;
+use crate::log::LogSink;
+use crate::pump::SendOps;
+use crate::send::SendOutcome;
+use crate::walk::{Arg, Il2cppOps, Walked, Walker};
+
+/// A `ReadOnlySpan<byte>` as a 16-byte struct: a reference and an `int` length (plus
+/// padding to 16).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SpanBytes {
+    pub reference: *const u8,
+    pub length: i32,
+    pub _pad: u32,
+}
+
+impl SpanBytes {
+    /// Over `bytes`, which must stay alive and unmoved while the span is used.
+    pub fn over(bytes: &[u8]) -> Self {
+        Self {
+            reference: bytes.as_ptr(),
+            length: bytes.len() as i32,
+            _pad: 0,
+        }
+    }
+}
+
+/// [`SendOps`] over the walk: each `live_client` walks again from the singleton.
+pub struct Il2cppSendOps<O, L> {
+    walker: Walker<O>,
+    log: L,
+    walked: Option<Walked>,
+}
+
+impl<O: Il2cppOps, L: LogSink> Il2cppSendOps<O, L> {
+    pub fn new(walker: Walker<O>, log: L) -> Self {
+        Self {
+            walker,
+            log,
+            walked: None,
+        }
+    }
+
+    pub fn walker(&self) -> &Walker<O> {
+        &self.walker
+    }
+}
+
+impl<O: Il2cppOps, L: LogSink> SendOps for Il2cppSendOps<O, L> {
+    fn live_client(&mut self) -> Result<usize, SendOutcome> {
+        self.walked = None;
+        match self.walker.walk(&mut self.log) {
+            Ok(walked) => {
+                self.walked = Some(walked);
+                Ok(walked.client)
+            }
+            Err(ProbeFailure::NoClient(detail)) => Err(SendOutcome::NoClient(detail)),
+            Err(ProbeFailure::Unsupported(e)) => Err(SendOutcome::Unsupported(e.detail())),
+        }
+    }
+
+    fn send(&mut self, client: usize, frame: &[u8]) -> Result<(), SendOutcome> {
+        let Some(walked) = self.walked else {
+            return Err(SendOutcome::NoClient("no walk".into()));
+        };
+        let span = Arg::Span {
+            ptr: frame.as_ptr() as usize,
+            len: frame.len(),
+        };
+        // The return value is ignored: what it means is not known.
+        self.walker
+            .ops_mut()
+            .invoke(walked.send_method, client, &[span])
+            .map(|_| ())
+            .map_err(|_| SendOutcome::NotSent("exception:Send".into()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
