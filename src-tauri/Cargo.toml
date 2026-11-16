@@ -24,6 +24,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Hashes the in-game DLL for the pin (build.rs); already in the lock through resonance-core.
+sha2 = "0.11"
 
 [dependencies]
 resonance-core = { path = "../crates/core" }

@@ -11,6 +11,7 @@ pub mod click_through;
 pub mod commands;
 pub mod config;
 pub mod events;
+pub mod ingame;
 pub mod io;
 pub mod logging;
 pub mod panic_hook;
