@@ -3,7 +3,7 @@
 //! two sides cannot drift apart. Field names and serde attributes ARE the wire
 //! format — renaming one is a protocol change.
 //!
-//! Dependencies stay minimal (serde, serde_with): this crate compiles to wasm for the UI.
+//! Dependencies stay minimal (serde, serde_with, serde_json): this crate compiles to wasm for the UI.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,6 +11,7 @@ use std::collections::HashMap;
 mod app_config;
 mod send_chat;
 pub use send_chat::{prepare_text, SendChatChannel, SendTextError, MAX_TEXT_UTF16};
+pub mod ingame_pipe;
 pub mod ipc;
 pub use app_config::{AppConfig, GuildRelayConfig};
 

@@ -22,7 +22,7 @@ gloo-timers = { version = "0.4.0", features = ["futures"] }
 chrono = "0.4.44"
 
 [workspace]
-members = ["src-tauri", "crates/core", "crates/frame", "crates/llama", "crates/types"]
+members = ["src-tauri", "crates/core", "crates/frame", "crates/ingame", "crates/llama", "crates/types"]
 
 # The one place the app version is set. src-tauri inherits it, and
 # tauri.conf.json has no "version", so Tauri falls back to src-tauri's.
@@ -38,6 +38,15 @@ codegen-units = 1    # 컴파일 단위를 하나로 합쳐 최적화 극대화
 lto = true           # Link Time Optimization 활성화
 opt-level = "s"      # 실행 파일 크기 최적화 (z도 가능)
 strip = true         # 바이너리 내 디버그 심볼 강제 제거
+
+# The in-game DLL (crates/ingame) is built ONLY with this profile:
+# `cargo build -p resonance-ingame --profile ingame`. It runs inside the game's
+# process, where a panic that aborts would kill the game; `unwind` lets the DLL's
+# `catch_unwind` guards turn a panic into an error reply. The release profile's
+# `panic = "abort"` cannot be overridden per package, hence a profile of its own.
+[profile.ingame]
+inherits = "release"
+panic = "unwind"
 
 # The capture and text hot path: speed over size.
 [profile.release.package.resonance-core]
