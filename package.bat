@@ -34,10 +34,16 @@ echo Finalizing Release...
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 set FOUND_INSTALLER=0
-for /r "src-tauri\target\release\bundle\nsis" %%f in (*-setup.exe) do (
+for /r "target\release\bundle\nsis" %%f in (*-setup.exe) do (
     echo Found: %%f
     move /Y "%%f" "%OUTPUT_DIR%\"
     set FOUND_INSTALLER=1
+)
+
+if %FOUND_INSTALLER%==0 (
+    echo ERROR: no installer found in target\release\bundle\nsis.
+    pause
+    exit /b 1
 )
 
 echo.
