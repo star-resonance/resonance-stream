@@ -15,14 +15,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: The installer bundles that DLL: the overlay config maps it, and the app's build script
-:: requires it at this path.
+:: The app pins this DLL's hash (its build script requires it at this path); the DLL itself is
+:: not bundled: the app downloads its own version's DLL into APPDATA.
 set RESONANCE_INGAME_DLL=%CD%\target\x86_64-pc-windows-msvc\ingame\resonance_ingame.dll
 set RESONANCE_INGAME_REQUIRED=1
 
 :: [2/2] Build Tauri Installer
 echo [2/2] Building Windows Installer...
-call cargo tauri build --config src-tauri\tauri.ingame.conf.json
+call cargo tauri build
 if errorlevel 1 (
     echo ERROR: the installer build failed.
     pause
