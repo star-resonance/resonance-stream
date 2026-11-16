@@ -1,11 +1,13 @@
 mod app_updater;
 mod fetch;
 mod gist;
+mod ingame_module;
 pub mod model;
 pub mod server;
 
 pub use self::app_updater::*;
 pub use self::gist::*;
+pub use self::ingame_module::{cancel_module, ensure_module, module_running};
 pub use self::model::*;
 pub use self::server::*;
 pub use resonance_types::{FolderStatus, ProgressPayload};

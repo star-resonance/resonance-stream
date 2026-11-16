@@ -295,7 +295,7 @@ fn apply_config(
     }
 
     if old_config.ingame_send != config.ingame_send {
-        crate::ingame::apply_setting(config.ingame_send);
+        crate::ingame::apply_setting(&app, config.ingame_send);
     }
 
     if old_config.chat_log_retention_days != config.chat_log_retention_days {

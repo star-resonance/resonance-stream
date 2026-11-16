@@ -5,7 +5,7 @@ use super::{loader, pipe::Pipe};
 use crate::ingame::pin;
 use resonance_core::ingame_send::{
     accept_game, check_pin, exchange, sha256_hex, Host, PinError, SendError, CONNECT_WAIT,
-    DLL_NAME, UNLOAD_WAIT,
+    UNLOAD_WAIT,
 };
 use resonance_types::ingame_pipe::{Reply, Request, APP_WAIT_MS, PIPE_PROTOCOL_VERSION};
 use std::fs::{File, OpenOptions};
@@ -23,23 +23,18 @@ pub struct WinHost {
     /// The DLL file, held open from the hash until the load has finished.
     file: Option<File>,
     pub(super) next_id: u32,
+    /// The module file to load.
+    dll: PathBuf,
 }
 
 impl WinHost {
-    pub fn new() -> Self {
+    pub fn new(dll: PathBuf) -> Self {
         WinHost {
+            dll,
             pipe: None,
             file: None,
             next_id: 1,
         }
-    }
-
-    fn dll_path() -> Option<PathBuf> {
-        if let Some(path) = pin::dll_path_override() {
-            return Some(PathBuf::from(path));
-        }
-        let exe = std::env::current_exe().ok()?;
-        Some(exe.parent()?.join("ingame").join(DLL_NAME))
     }
 
     fn id(&mut self) -> u32 {
@@ -50,12 +45,6 @@ impl WinHost {
 
     fn pipe(&mut self) -> Result<&mut Pipe, SendError> {
         self.pipe.as_mut().ok_or(SendError::PipeCreate)
-    }
-}
-
-impl Default for WinHost {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -79,12 +68,11 @@ impl Host for WinHost {
         if check_pin(pin::INGAME_DLL_SHA256, "") == Err(PinError::NoPin) {
             return Err(SendError::NoPin);
         }
-        let path = Self::dll_path().ok_or(SendError::DllMissing)?;
         self.file = None;
         let file = OpenOptions::new()
             .read(true)
             .share_mode(SHARE_READ_ONLY)
-            .open(&path)
+            .open(&self.dll)
             .map_err(|_| SendError::DllMissing)?;
         let hash = sha256_hex(&file).map_err(|_| SendError::DllMissing)?;
         check_pin(pin::INGAME_DLL_SHA256, &hash)?;
@@ -93,10 +81,9 @@ impl Host for WinHost {
     }
 
     fn load_dll(&mut self, pid: u32) -> Result<(), SendError> {
-        let path = Self::dll_path().ok_or(SendError::DllMissing)?;
         // The verified file is still held open here: nothing can replace it
         // between the hash and the load. It is released once the load is over.
-        let result = loader::load_remote(pid, &path);
+        let result = loader::load_remote(pid, &self.dll);
         self.file = None;
         result
     }
