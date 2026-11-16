@@ -22,7 +22,8 @@
 #     version's lower rc/ branches.
 # The in-game DLL (crates/ingame) is built first, with --profile ingame, and hashed; the shipping
 # build pins that hash into the exe (RESONANCE_INGAME_DLL, src-tauri/build.rs) and a packaging check
-# proves the DLL beside the exe is the pinned one before signing. The DLL is then signed like the
+# proves the exe embeds the pinned hash and that no copy of the DLL is bundled before signing. The app
+# downloads its own version's DLL (APPDATA), so the installer and the exe do not carry it. The DLL is then signed like the
 # exe (same key, same --app-version), verified the way the app will, listed in SHA256SUMS with its
 # .sig and carried by the prerelease; Promote re-checks all four files and carries them to the stable
 # release, and latest.json announces the DLL (ingame_url, ingame_signature).
@@ -183,22 +184,22 @@ jobs:
           tool: trunk
       # beforeBuildCommand runs `trunk build`; --no-bundle: the plain exe only. No test flags:
       # these are the bytes users get. Release builds embed src-tauri/app.manifest (Administrator).
-      # --config adds only the DLL as a bundle resource (src-tauri/tauri.ingame.conf.json); the env is
-      # for this step alone, so signing and verifying never see it.
+      # The env pins the DLL's hash into the exe; the DLL is not a bundle resource. The env is for
+      # this step alone, so signing and verifying never see it.
       - name: Build
         env:
           RESONANCE_INGAME_DLL: ${{ steps.dll.outputs.path }}
           RESONANCE_INGAME_REQUIRED: '1'
-        run: npx --yes @tauri-apps/cli@2 build --no-bundle --config src-tauri/tauri.ingame.conf.json
-      # Nothing writes the DLL after it was hashed; Sign signs the bundled copy this check just proved identical.
-      - name: The shipped DLL is the pinned one
+        run: npx --yes @tauri-apps/cli@2 build --no-bundle
+      # Nothing writes the DLL after it was hashed; Sign signs the built file this check just proved unchanged.
+      - name: The DLL is the pinned one and is not bundled
         shell: bash
         env:
           DLL: ${{ steps.dll.outputs.path }}
           SHA: ${{ steps.dll.outputs.sha }}
         run: |
           bash .github/scripts/check-ingame-package.sh "$DLL" "$SHA" \
-            target/release/resonance-stream.exe target/release/ingame/resonance_ingame.dll target
+            target/release/resonance-stream.exe target
       # The signature is over the exact bytes, so nothing may touch the file after this.
       # --app-version puts the version into the signed comment: the app refuses an exe signed
       # for another version.
@@ -215,9 +216,9 @@ jobs:
             exit 1
           fi
           npx --yes @tauri-apps/cli@2 signer sign --app-version "$VERSION" target/release/resonance-stream.exe
-          npx --yes @tauri-apps/cli@2 signer sign --app-version "$VERSION" target/release/ingame/resonance_ingame.dll
+          npx --yes @tauri-apps/cli@2 signer sign --app-version "$VERSION" target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll
           ls -l target/release/resonance-stream.exe target/release/resonance-stream.exe.sig \
-            target/release/ingame/resonance_ingame.dll target/release/ingame/resonance_ingame.dll.sig
+            target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll.sig
       # The app's own check on the file about to be published: catches a private key that is not
       # the one whose public half is in the app, and a wrong version.
       - name: Verify the signature the way the app will
@@ -229,13 +230,13 @@ jobs:
           cargo run --release -p resonance-core --example verify_update -- \
             target/release/resonance-stream.exe target/release/resonance-stream.exe.sig "$VERSION"
           cargo run --release -p resonance-core --example verify_update -- \
-            target/release/ingame/resonance_ingame.dll target/release/ingame/resonance_ingame.dll.sig "$VERSION"
+            target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll.sig "$VERSION"
       - uses: actions/upload-artifact@v7
         with:
           name: ingame-dll
           path: |
-            target/release/ingame/resonance_ingame.dll
-            target/release/ingame/resonance_ingame.dll.sig
+            target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll
+            target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll.sig
           if-no-files-found: error
           retention-days: 3
       - uses: actions/upload-artifact@v7
@@ -364,7 +365,7 @@ jobs:
             printf '2. 실행하면 관리자 권한을 요청합니다 (패킷 캡처에 필요) → **예**.\n'
             printf '3. 설치된 앱과 같은 설정·번역 모델·채팅 기록 폴더를 함께 씁니다. 두 앱을 동시에 켜지 마세요.\n'
             printf '4. `latest.json` 은 이 후보의 업데이트 피드입니다. 시험용 빌드(`--feed-url`)에 지정해 업데이트 경로를 시험합니다.\n'
-            printf '5. `%s` 는 게임 안 전송 기능(실험적, 선택 사항)을 시험할 때만 필요합니다. 앱 옆에 `ingame\\resonance_ingame.dll` 로 저장하세요. 앱이 SHA-256 을 확인합니다.\n\n' "$dll"
+            printf '5. `%s` 는 앱이 게임 안 전송 기능을 켤 때 스스로 내려받는 파일입니다 (APPDATA 의 bin\\ingame 폴더). 직접 저장할 필요는 없습니다. 앱이 서명과 SHA-256 을 확인합니다.\n\n' "$dll"
             printf '### 빌드 정보\n'
             printf -- '- main 커밋: `%s`\n' "$GITHUB_SHA"
             printf -- '- 실행: %s\n' "$RUN_URL"

@@ -30,7 +30,7 @@ Opt-in setting (off by default, terms-of-service warning); the app loads `resona
 sends to World, Guild, Party and Local (`say`), at most 140 UTF-16 units, 1.5 s apart; the DLL builds the frame
 (ChitChat service `1321197368`, `SendChitChatMsg` method `1`) and calls `ZTcpClient.Send`. The Candidate run
 builds the DLL first, the app pins its SHA-256, and the DLL is signed like the exe and listed in
-`SHA256SUMS`, and the prerelease and the stable release carry it; the app loads it in place from `<exe dir>/ingame/`.
+`SHA256SUMS`, and the prerelease and the stable release carry it; the app downloads it into `<app data>/bin/ingame/<version>/` and loads it from there.
 
 **Wave 2 tasks:**
 - R3 frame builder
