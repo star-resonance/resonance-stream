@@ -332,10 +332,24 @@ mod tests {
     }
 
     #[test]
+    fn game_clients_answers_a_target_and_a_name() {
+        assert_eq!(GameClients::NAME, "game_clients");
+        assert!(COMMAND_NAMES.contains(&"game_clients"));
+        assert_eq!(
+            serde_json::to_value(GameClient {
+                target: 7,
+                name: "Aria".into()
+            })
+            .unwrap(),
+            json!({ "target": 7, "name": "Aria" })
+        );
+    }
+
+    #[test]
     fn the_backend_registers_exactly_the_commands_listed_here() {
         let listed: BTreeSet<String> = COMMAND_NAMES.iter().map(|n| n.to_string()).collect();
         let registered = registered_commands();
-        assert_eq!(registered.len(), 47, "{registered:?}");
+        assert_eq!(registered.len(), 48, "{registered:?}");
         assert_eq!(listed, registered);
     }
 

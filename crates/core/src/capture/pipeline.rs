@@ -844,4 +844,97 @@ mod tests {
             }]
         );
     }
+
+    // ---- the roster of game clients (F-MC-2) ----
+
+    /// A live chat frame from sender `uid` named `nick`: { 1: seq, 2: { 1: uid, 2: nick }, 4: text }.
+    fn chat_segment_by(uid: u64, nick: &str, seq: u8, text: &str) -> Vec<u8> {
+        let mut msg = vec![0x1A, text.len() as u8];
+        msg.extend_from_slice(text.as_bytes());
+        let sender = [pb_int(1, uid), pb_msg(2, nick.as_bytes())].concat();
+        let mut payload = vec![0x08, seq];
+        payload.extend(pb_msg(2, &sender));
+        payload.extend([0x22, msg.len() as u8]);
+        payload.extend(msg);
+        let root = pb_msg(1, &pb_msg(2, &payload));
+        frame(&root)
+    }
+
+    /// Feeds `frame` as sent to `client`:`port`; `seqs` keeps each connection's sequence number.
+    fn feed_to(
+        pipeline: &mut ChatPipeline,
+        seqs: &mut HashMap<u16, u32>,
+        port: u16,
+        frame: &[u8],
+    ) -> Vec<PipelineAction> {
+        let seq = seqs.entry(port).or_insert(1);
+        let packet = tcp_from_5003_to([10, 0, 0, 5], port, *seq, frame);
+        *seq += frame.len() as u32;
+        pipeline.feed_network_packet(&packet, |_| false, || 1, || {})
+    }
+
+    fn named(port: u16, nick: Option<&str>) -> crate::game_clients::ClientFact {
+        crate::game_clients::ClientFact {
+            local: crate::game_clients::Endpoint {
+                addr: [10, 0, 0, 5],
+                port,
+            },
+            nickname: nick.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_line_dropped_as_a_duplicate_still_names_the_client() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seqs = HashMap::new();
+        // The history from disk already holds Bob's line (uid 9, sequence 5).
+        pipeline.remember(&[chat_from(9, 0, 5, "hello")]);
+        feed_to(&mut pipeline, &mut seqs, 51001, &own_record_frame(9, None));
+        let actions = feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51001,
+            &chat_segment_by(9, "Bob", 5, "hello"),
+        );
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, PipelineAction::EmitNewMessage(..))),
+            "the line is a duplicate"
+        );
+        assert_eq!(
+            pipeline.take_clients(),
+            Some(vec![named(51001, Some("Bob"))])
+        );
+    }
+
+    #[test]
+    fn two_clients_are_named_each_by_its_own_character() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seqs = HashMap::new();
+        for _ in 0..2 {
+            feed_to(&mut pipeline, &mut seqs, 51000, &own_record_frame(7, None));
+            feed_to(&mut pipeline, &mut seqs, 51001, &own_record_frame(9, None));
+        }
+        feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51000,
+            &chat_segment_by(7, "Aria", 1, "a"),
+        );
+        feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51001,
+            &chat_segment_by(9, "Bob", 2, "b"),
+        );
+        assert_eq!(
+            pipeline.take_clients(),
+            Some(vec![named(51000, Some("Aria")), named(51001, Some("Bob"))])
+        );
+        // The same state frames again, alternating (the own-player slot flaps): nothing changes.
+        feed_to(&mut pipeline, &mut seqs, 51000, &own_record_frame(7, None));
+        feed_to(&mut pipeline, &mut seqs, 51001, &own_record_frame(9, None));
+        assert_eq!(pipeline.take_clients(), None);
+    }
 }
