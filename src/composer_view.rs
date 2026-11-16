@@ -75,6 +75,22 @@ mod tests {
     }
 
     #[test]
+    fn the_module_download_shows_a_line_below_100_percent_only() {
+        let label = "게임 내 전송 모듈 내려받는 중...";
+        assert_eq!(
+            module_line(label, 40).as_deref(),
+            Some("게임 내 전송 모듈을 내려받는 중... 40%")
+        );
+        assert_eq!(
+            module_line(label, 0).as_deref(),
+            Some("게임 내 전송 모듈을 내려받는 중... 0%")
+        );
+        assert_eq!(module_line(label, 100), None);
+        assert_eq!(module_line("앱 업데이트", 50), None);
+        assert_eq!(module_line("AI 모델 다운로드", 10), None);
+    }
+
+    #[test]
     fn the_counter_counts_the_prepared_text() {
         assert_eq!(counter_text(""), "0/140");
         assert_eq!(counter_text("   "), "0/140");
