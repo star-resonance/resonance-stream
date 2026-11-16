@@ -1,3 +1,246 @@
+//! The walk from the game's `ZRpcCtrl` singleton to the live chat connection's native
+//! handle (design doc, section 1, option A). Everything goes through [`Il2cppOps`], so the
+//! steps are tested against a scripted game; `win/il2cpp.rs` is the real one.
+//!
+//! Classes, methods and fields are resolved once and cached (a patched game is a new
+//! process); objects are never cached, each `walk` starts from the singleton.
+
+use crate::error::{ProbeFailure, StepError};
+use crate::log::LogSink;
+use crate::names::*;
+
+/// An il2cpp class, method or field pointer.
+pub type Handle = usize;
+
+/// An argument of `il2cpp_runtime_invoke`; a value type is passed by pointer to the value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Arg {
+    U64(u64),
+}
+
+/// A managed exception thrown inside an invoke.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Exception;
+
+/// What the walk needs from the game. Lookups are direct (they may or may not search
+/// parent classes: the walker does that itself).
+pub trait Il2cppOps {
+    /// The class in `namespace`, over every assembly of the domain.
+    fn class_from_name(&mut self, namespace: &str, name: &str) -> Option<Handle>;
+    fn class_parent(&mut self, class: Handle) -> Option<Handle>;
+    fn class_name(&mut self, class: Handle) -> Option<String>;
+    fn method(&mut self, class: Handle, name: &str, argc: i32) -> Option<Handle>;
+    fn field(&mut self, class: Handle, name: &str) -> Option<Handle>;
+    fn field_offset(&mut self, field: Handle) -> usize;
+    fn object_class(&mut self, object: usize) -> Handle;
+    /// Calls `method` on `this` (0 for a static one); the result is the returned object, 0 for null.
+    fn invoke(&mut self, method: Handle, this: usize, args: &[Arg]) -> Result<usize, Exception>;
+    /// Reads the pointer at `address`.
+    fn read_ptr(&mut self, address: usize) -> usize;
+}
+
+/// What a successful walk found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Walked {
+    /// The live `ZTcpClient` object.
+    pub client: usize,
+    /// Its non-zero native handle.
+    pub handle: usize,
+    /// `ZTcpClient.Send(1 argument)`.
+    pub send_method: Handle,
+}
+
+#[derive(Clone, Copy)]
+struct Resolved {
+    get_instance: Handle,
+    get_rpc: Handle,
+    get_transfer: Handle,
+    get_transport: Handle,
+    send_method: Handle,
+    tcp_connection: Handle,
+    conn_offset: usize,
+    client_offset: usize,
+    handle_offset: usize,
+}
+
+pub struct Walker<O> {
+    ops: O,
+    resolved: Option<Result<Resolved, StepError>>,
+}
+
+/// A parent chain longer than this is a loop.
+const MAX_CHAIN: usize = 16;
+
+impl<O: Il2cppOps> Walker<O> {
+    pub fn new(ops: O) -> Self {
+        Self {
+            ops,
+            resolved: None,
+        }
+    }
+
+    pub fn ops(&self) -> &O {
+        &self.ops
+    }
+
+    pub fn ops_mut(&mut self) -> &mut O {
+        &mut self.ops
+    }
+
+    /// Walks to the live `ZTcpClient`. Resolves (and logs) on the first call only.
+    pub fn walk(&mut self, log: &mut dyn LogSink) -> Result<Walked, ProbeFailure> {
+        let r = match &self.resolved {
+            Some(r) => r.clone(),
+            None => {
+                let r = self.resolve(log);
+                if let Err(e) = &r {
+                    log.warn(&format!("resolution failed: {e}"));
+                }
+                self.resolved = Some(r.clone());
+                r
+            }
+        };
+        let r = r.map_err(ProbeFailure::Unsupported)?;
+
+        let ops = &mut self.ops;
+        let step = |ops: &mut O, method, this, args: &[Arg], name: &str| {
+            ops.invoke(method, this, args)
+                .map_err(|Exception| ProbeFailure::NoClient(format!("exception:{name}")))
+        };
+        let no_client = |detail: &str| ProbeFailure::NoClient(detail.into());
+
+        let singleton = step(ops, r.get_instance, 0, &[], METHOD_GET_INSTANCE)?;
+        if singleton == 0 {
+            return Err(no_client("singleton null"));
+        }
+        let rpc = step(
+            ops,
+            r.get_rpc,
+            singleton,
+            &[Arg::U64(PROXY_ID_CHITCHAT)],
+            METHOD_GET_RPC_BY_PROXY_ID,
+        )?;
+        if rpc == 0 {
+            return Err(no_client("rpc null"));
+        }
+        let transfer = step(ops, r.get_transfer, rpc, &[], METHOD_GET_TRANSFER)?;
+        if transfer == 0 {
+            return Err(no_client("transfer null"));
+        }
+        let transport = step(ops, r.get_transport, transfer, &[], METHOD_GET_TRANSPORT)?;
+        if transport == 0 {
+            return Err(no_client("transport null"));
+        }
+        let conn = ops.read_ptr(transport + r.conn_offset);
+        if conn == 0 {
+            return Err(no_client("connection null"));
+        }
+        let class = ops.object_class(conn);
+        if class != r.tcp_connection {
+            return Err(match ops.class_name(class) {
+                Some(name) => ProbeFailure::NoClient(format!("udp: {name}")),
+                None => no_client("udp"),
+            });
+        }
+        let client = ops.read_ptr(conn + r.client_offset);
+        if client == 0 {
+            return Err(no_client("client null"));
+        }
+        let handle = ops.read_ptr(client + r.handle_offset);
+        if handle == 0 {
+            return Err(no_client("handle zero"));
+        }
+        Ok(Walked {
+            client,
+            handle,
+            send_method: r.send_method,
+        })
+    }
+
+    fn resolve(&mut self, log: &mut dyn LogSink) -> Result<Resolved, StepError> {
+        let mut classes = [0; CLASSES.len()];
+        for (slot, name) in classes.iter_mut().zip(CLASSES) {
+            *slot = NAMESPACES
+                .iter()
+                .find_map(|ns| {
+                    let class = self.ops.class_from_name(ns, name)?;
+                    log.info(&format!("class {ns}.{name} found"));
+                    Some(class)
+                })
+                .ok_or_else(|| StepError::class(name))?;
+        }
+        let [ctrl, rpc_impl, transfer, transport, tcp_connection, tcp_client] = classes;
+
+        let singleton = self
+            .ops
+            .class_parent(ctrl)
+            .ok_or_else(|| StepError::class(format!("{ZRPC_CTRL}.parent")))?;
+        let get_instance = self.find_method(singleton, METHOD_GET_INSTANCE, 0, log)?;
+        let get_rpc = self.find_method(ctrl, METHOD_GET_RPC_BY_PROXY_ID, 1, log)?;
+        let get_transfer = self.find_method(rpc_impl, METHOD_GET_TRANSFER, 0, log)?;
+        let get_transport = self.find_method(transfer, METHOD_GET_TRANSPORT, 0, log)?;
+        let send_method = self.find_method(tcp_client, METHOD_SEND, 1, log)?;
+        let conn_offset = self.field_offset(transport, FIELD_CONN, log)?;
+        let client_offset = self.field_offset(tcp_connection, FIELD_CLIENT, log)?;
+        let handle_offset = self.field_offset(tcp_client, FIELD_HANDLE, log)?;
+        Ok(Resolved {
+            get_instance,
+            get_rpc,
+            get_transfer,
+            get_transport,
+            send_method,
+            tcp_connection,
+            conn_offset,
+            client_offset,
+            handle_offset,
+        })
+    }
+
+    /// The method on `class` or the nearest parent that declares it.
+    fn find_method(
+        &mut self,
+        class: Handle,
+        name: &str,
+        argc: i32,
+        log: &mut dyn LogSink,
+    ) -> Result<Handle, StepError> {
+        let mut at = class;
+        for _ in 0..MAX_CHAIN {
+            if let Some(m) = self.ops.method(at, name, argc) {
+                log.info(&format!("method {name}({argc}) found"));
+                return Ok(m);
+            }
+            match self.ops.class_parent(at) {
+                Some(parent) => at = parent,
+                None => break,
+            }
+        }
+        Err(StepError::method(name))
+    }
+
+    /// The offset of the field on `class` or the nearest parent that declares it.
+    fn field_offset(
+        &mut self,
+        class: Handle,
+        name: &str,
+        log: &mut dyn LogSink,
+    ) -> Result<usize, StepError> {
+        let mut at = class;
+        for _ in 0..MAX_CHAIN {
+            if let Some(f) = self.ops.field(at, name) {
+                let offset = self.ops.field_offset(f);
+                log.info(&format!("field {name} found at offset {offset:#x}"));
+                return Ok(offset);
+            }
+            match self.ops.class_parent(at) {
+                Some(parent) => at = parent,
+                None => break,
+            }
+        }
+        Err(StepError::field(name))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
