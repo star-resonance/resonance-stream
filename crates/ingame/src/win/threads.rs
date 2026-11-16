@@ -238,3 +238,40 @@ impl ThreadCallback for Callback {
         self.0.resume();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use windows_sys::Win32::System::Threading::GetThreadId;
+
+    #[test]
+    fn context_buf_is_16_byte_aligned() {
+        assert_eq!(std::mem::align_of::<ContextBuf>(), 16);
+    }
+
+    #[test]
+    fn reads_the_rip_of_a_suspended_thread() {
+        use std::os::windows::io::AsRawHandle;
+        let (park_tx, park_rx) = mpsc::channel::<()>();
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let join = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let _ = park_rx.recv();
+        });
+        ready_rx.recv().unwrap();
+        // SAFETY: plain calls on the helper thread's own handle.
+        let tid = unsafe { GetThreadId(join.as_raw_handle() as HANDLE) };
+        let handle = unsafe {
+            OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, 0, tid)
+        };
+        assert!(!handle.is_null());
+        assert_ne!(unsafe { SuspendThread(handle) }, u32::MAX);
+        let rip = read_rip(handle);
+        unsafe { ResumeThread(handle) };
+        unsafe { CloseHandle(handle) };
+        park_tx.send(()).unwrap();
+        join.join().unwrap();
+        assert!(matches!(rip, Ok(r) if r != 0), "{rip:?}");
+    }
+}

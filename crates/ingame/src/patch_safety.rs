@@ -154,6 +154,26 @@ pub fn drain(in_detour: &dyn Fn() -> usize, clock: &dyn Clock) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refusal_is_kept_and_taken_once() {
+        let cell = RefusalCell::new();
+        assert_eq!(cell.take(), None);
+        cell.set_context(7, 998);
+        assert_eq!(cell.take(), Some(Refusal::Context { tid: 7, code: 998 }));
+        assert_eq!(cell.take(), None);
+        cell.set_inside();
+        assert_eq!(cell.take(), Some(Refusal::Inside));
+        assert_eq!(cell.take(), None);
+    }
+
+    #[test]
+    fn first_context_failure_wins() {
+        let cell = RefusalCell::new();
+        cell.set_context(7, 998);
+        cell.set_context(9, 5);
+        assert_eq!(cell.take(), Some(Refusal::Context { tid: 7, code: 998 }));
+    }
+
     use super::*;
     use crate::slot::fake_clock::FakeClock;
     use std::cell::{Cell, RefCell};
