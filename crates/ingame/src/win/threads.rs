@@ -11,8 +11,8 @@
 //! milliseconds causes no visible hitch, deadlock or anti-cheat reaction.
 
 use crate::patch_safety::{
-    patch_blocked, pick_main_thread, threads_of, unhook_blocked, TooManyThreads,
-    MAX_SUSPEND_THREADS,
+    patch_blocked, pick_main_thread, threads_of, unhook_blocked, Refusal, RefusalCell,
+    TooManyThreads, MAX_SUSPEND_THREADS,
 };
 use ilhook::x64::ThreadCallback;
 use std::mem::{size_of, zeroed};
@@ -20,7 +20,9 @@ use std::ops::Range;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
-use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::System::Diagnostics::Debug::{
     GetThreadContext, CONTEXT, CONTEXT_CONTROL_AMD64,
 };
@@ -31,6 +33,26 @@ use windows_sys::Win32::System::Threading::{
     GetThreadTimes, OpenThread, ResumeThread, SuspendThread, THREAD_GET_CONTEXT,
     THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
 };
+
+/// `GetThreadContext` on x86_64 fails (`ERROR_NOACCESS`) unless the `CONTEXT` is 16-byte
+/// aligned, and windows-sys declares it without `align(16)`.
+#[repr(C, align(16))]
+struct ContextBuf(CONTEXT);
+
+/// The suspended thread's instruction pointer, or `GetLastError()` when the read failed.
+/// No allocation: it runs while the game's threads are stopped.
+fn read_rip(handle: HANDLE) -> Result<usize, u32> {
+    // SAFETY: an all-integer struct, 16-aligned by `ContextBuf`.
+    let mut buf: ContextBuf = unsafe { zeroed() };
+    buf.0.ContextFlags = CONTEXT_CONTROL_AMD64;
+    // SAFETY: `handle` has THREAD_GET_CONTEXT and its thread is suspended.
+    if unsafe { GetThreadContext(handle, &mut buf.0) } != 0 {
+        Ok(buf.0.Rip as usize)
+    } else {
+        // SAFETY: plain call, right after the failure.
+        Err(unsafe { GetLastError() })
+    }
+}
 
 pub struct SuspendState {
     handles: [AtomicUsize; MAX_SUSPEND_THREADS],
@@ -45,8 +67,8 @@ pub struct SuspendState {
     in_detour: &'static AtomicUsize,
     /// Set once the code is restored: ilhook's own, later unhook then suspends nothing.
     unhooked: AtomicBool,
-    /// The last `stop` refused (a thread was in the way); the caller logs it.
-    refused: AtomicBool,
+    /// Why the last `stop` refused; the caller logs it after `resume`.
+    refused: RefusalCell,
 }
 
 impl SuspendState {
@@ -61,7 +83,7 @@ impl SuspendState {
             dll,
             in_detour,
             unhooked: AtomicBool::new(false),
-            refused: AtomicBool::new(false),
+            refused: RefusalCell::new(),
         }
     }
 
@@ -73,9 +95,9 @@ impl SuspendState {
         self.unhooked.store(true, Ordering::Release);
     }
 
-    /// Whether the last `stop` refused; clears the flag.
-    pub fn take_refused(&self) -> bool {
-        self.refused.swap(false, Ordering::AcqRel)
+    /// Why the last `stop` refused, once; clears it.
+    pub fn take_refused(&self) -> Option<Refusal> {
+        self.refused.take()
     }
 
     /// Opens a handle to every other thread of this process (the worker's own is left out);
@@ -160,15 +182,16 @@ impl SuspendState {
                 continue; // the thread is gone
             }
             self.suspended[i].store(true, Ordering::Release);
-            // SAFETY: an all-integer struct (16-aligned by its type).
-            let mut context: CONTEXT = unsafe { zeroed() };
-            context.ContextFlags = CONTEXT_CONTROL_AMD64;
-            // SAFETY: `handle` has THREAD_GET_CONTEXT and the thread is suspended.
-            if unsafe { GetThreadContext(handle, &mut context) } != 0 {
-                rips[known] = context.Rip as usize;
-                known += 1;
-            } else {
-                unknown = true;
+            match read_rip(handle) {
+                Ok(rip) => {
+                    rips[known] = rip;
+                    known += 1;
+                }
+                Err(code) => {
+                    unknown = true;
+                    self.refused
+                        .set_context(self.tids[i].load(Ordering::Acquire), code);
+                }
             }
         }
         let ips = &rips[..known];
@@ -186,7 +209,9 @@ impl SuspendState {
             };
         if blocked {
             self.resume();
-            self.refused.store(true, Ordering::Release);
+            if !unknown {
+                self.refused.set_inside();
+            }
         }
         !blocked
     }
@@ -236,5 +261,40 @@ impl ThreadCallback for Callback {
 
     fn post(&self) {
         self.0.resume();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+    use windows_sys::Win32::System::Threading::GetThreadId;
+
+    #[test]
+    fn context_buf_is_16_byte_aligned() {
+        assert_eq!(std::mem::align_of::<ContextBuf>(), 16);
+    }
+
+    #[test]
+    fn reads_the_rip_of_a_suspended_thread() {
+        use std::os::windows::io::AsRawHandle;
+        let (park_tx, park_rx) = mpsc::channel::<()>();
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
+        let join = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let _ = park_rx.recv();
+        });
+        ready_rx.recv().unwrap();
+        // SAFETY: plain calls on the helper thread's own handle.
+        let tid = unsafe { GetThreadId(join.as_raw_handle() as HANDLE) };
+        let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, 0, tid) };
+        assert!(!handle.is_null());
+        assert_ne!(unsafe { SuspendThread(handle) }, u32::MAX);
+        let rip = read_rip(handle);
+        unsafe { ResumeThread(handle) };
+        unsafe { CloseHandle(handle) };
+        park_tx.send(()).unwrap();
+        join.join().unwrap();
+        assert!(matches!(rip, Ok(r) if r != 0), "{rip:?}");
     }
 }

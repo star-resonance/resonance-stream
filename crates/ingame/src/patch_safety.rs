@@ -5,6 +5,7 @@
 
 use crate::slot::Clock;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Threads the DLL will suspend at most (more is refused: `hook_failed:too_many_threads`).
 pub const MAX_SUSPEND_THREADS: usize = 1024;
@@ -20,6 +21,69 @@ pub const DRAIN_GRACE_MS: u64 = 50;
 pub const DRAIN_MAX_MS: u64 = 2000;
 /// The longest detail an install failure carries (the pipe cuts at 256 anyway).
 const MAX_DETAIL: usize = 256;
+
+/// Why a `stop` refused to patch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// A thread's `Rip` was in the way.
+    Inside,
+    /// `GetThreadContext` failed for a thread (its id and `GetLastError`).
+    Context { tid: u32, code: u32 },
+}
+
+/// A refusal kept in atomics, so it can be set between `SuspendThread` and `ResumeThread`
+/// without allocating, and taken (once) after the threads are running again.
+pub struct RefusalCell {
+    /// 0 none, 1 inside, 2 context.
+    kind: AtomicU32,
+    tid: AtomicU32,
+    code: AtomicU32,
+}
+
+impl RefusalCell {
+    pub const fn new() -> Self {
+        Self {
+            kind: AtomicU32::new(0),
+            tid: AtomicU32::new(0),
+            code: AtomicU32::new(0),
+        }
+    }
+
+    pub fn set_inside(&self) {
+        self.kind.store(1, Ordering::Release);
+    }
+
+    /// Keeps the first failing thread's details.
+    pub fn set_context(&self, tid: u32, code: u32) {
+        if self
+            .kind
+            .compare_exchange(0, 3, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.tid.store(tid, Ordering::Release);
+            self.code.store(code, Ordering::Release);
+            self.kind.store(2, Ordering::Release);
+        }
+    }
+
+    /// The refusal, once; clears it.
+    pub fn take(&self) -> Option<Refusal> {
+        match self.kind.swap(0, Ordering::AcqRel) {
+            1 => Some(Refusal::Inside),
+            2 => Some(Refusal::Context {
+                tid: self.tid.load(Ordering::Acquire),
+                code: self.code.load(Ordering::Acquire),
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl Default for RefusalCell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Patching is unsafe while a suspended thread's `Rip` is inside the bytes being rewritten.
 pub fn patch_blocked(ips: &[usize], window: Range<usize>) -> bool {
@@ -154,6 +218,26 @@ pub fn drain(in_detour: &dyn Fn() -> usize, clock: &dyn Clock) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn refusal_is_kept_and_taken_once() {
+        let cell = RefusalCell::new();
+        assert_eq!(cell.take(), None);
+        cell.set_context(7, 998);
+        assert_eq!(cell.take(), Some(Refusal::Context { tid: 7, code: 998 }));
+        assert_eq!(cell.take(), None);
+        cell.set_inside();
+        assert_eq!(cell.take(), Some(Refusal::Inside));
+        assert_eq!(cell.take(), None);
+    }
+
+    #[test]
+    fn first_context_failure_wins() {
+        let cell = RefusalCell::new();
+        cell.set_context(7, 998);
+        cell.set_context(9, 5);
+        assert_eq!(cell.take(), Some(Refusal::Context { tid: 7, code: 998 }));
+    }
+
     use super::*;
     use crate::slot::fake_clock::FakeClock;
     use std::cell::{Cell, RefCell};
