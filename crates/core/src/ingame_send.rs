@@ -472,7 +472,14 @@ pub fn map_send_reply(reply: Reply) -> (Result<(), SendError>, bool) {
 
 /// What `send_chat` needs from the session: connect if needed, send, map the reply.
 pub trait SendBackend {
-    fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError>;
+    /// `target` is the game's pid (never shown to the user); `None` is allowed only
+    /// with one client.
+    fn send(
+        &mut self,
+        target: Option<u32>,
+        channel: SendChatChannel,
+        text: &str,
+    ) -> Result<(), SendError>;
 }
 
 /// The `send_chat` command's logic: setting, text rules, spacing, send. The spacing
@@ -483,6 +490,7 @@ pub fn send_chat_flow(
     setting_on: bool,
     spacing: &Mutex<SendSpacing>,
     backend: &mut impl SendBackend,
+    target: Option<u32>,
     channel: SendChatChannel,
     text: &str,
 ) -> Result<(), String> {
@@ -493,7 +501,7 @@ pub fn send_chat_flow(
         let prepared = prepare_text(text)?;
         let mut guard = spacing.lock().unwrap_or_else(PoisonError::into_inner);
         guard.allow(Instant::now())?;
-        backend.send(channel, &prepared)?;
+        backend.send(target, channel, &prepared)?;
         guard.record_success(Instant::now());
         log::debug!(
             "chat sent: channel {}, {} units",
