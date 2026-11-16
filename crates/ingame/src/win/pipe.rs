@@ -111,6 +111,14 @@ impl PipeClient {
             }
             // SAFETY: `event` is a valid event handle.
             if unsafe { WaitForSingleObject(self.event, INFINITE) } != WAIT_OBJECT_0 {
+                // The read is still pending and points at this stack: cancel it and wait
+                // for the cancel before `buf` and `overlapped` go out of scope.
+                let mut n = 0u32;
+                // SAFETY: cancels this handle's request; the wait settles it.
+                unsafe {
+                    CancelIoEx(self.handle, &overlapped);
+                    GetOverlappedResult(self.handle, &overlapped, &mut n, 1);
+                }
                 return Err(ReadError::Broken);
             }
         }
