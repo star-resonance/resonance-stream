@@ -18,6 +18,7 @@ crates/core/           resonance-core — pure logic, tested on any OS
   src/download.rs       download checks: HTTPS, length + SHA-256, progress, versions
   src/sniffer_net.rs    sniffer network setup: per-exe firewall rule name, adapter pick (route first)
   src/send_text.rs      SendSpacing: 1500 ms between sends (the text rules are in types)
+  src/ingame_send.rs    chat sending's pure logic: pick the game, pin check, pipe sentences, connect, send_chat_flow (src-tauri/src/ingame/ runs it)
 crates/frame/          resonance-frame — SendChitChatMsg frame builder, no_std, no dependencies, any OS
 crates/llama/          resonance-llama — llama-server HTTP client (/completion, /health), any OS
 crates/ingame/         resonance-ingame — the in-game DLL (cdylib, Windows; rules: .claude/rules/ingame.md)
