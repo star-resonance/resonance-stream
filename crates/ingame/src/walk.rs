@@ -16,6 +16,12 @@ pub type Handle = usize;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Arg {
     U64(u64),
+    /// A `ReadOnlySpan<byte>` over `len` bytes at `ptr` (the caller keeps them alive until
+    /// the invoke returns).
+    Span {
+        ptr: usize,
+        len: usize,
+    },
 }
 
 /// A managed exception thrown inside an invoke.
@@ -35,8 +41,21 @@ pub trait Il2cppOps {
     fn object_class(&mut self, object: usize) -> Handle;
     /// Calls `method` on `this` (0 for a static one); the result is the returned object, 0 for null.
     fn invoke(&mut self, method: Handle, this: usize, args: &[Arg]) -> Result<usize, Exception>;
+    /// The native code address of `method` (the first field of il2cpp's `MethodInfo`);
+    /// 0 when it has none.
+    fn method_pointer(&mut self, method: Handle) -> usize;
     /// Reads the pointer at `address`.
     fn read_ptr(&mut self, address: usize) -> usize;
+}
+
+/// A method to hook: where its code is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PumpTarget {
+    /// `Class.Method`, for the log.
+    pub name: String,
+    pub method: Handle,
+    /// The native address of the method's code.
+    pub address: usize,
 }
 
 /// What a successful walk found.
@@ -157,6 +176,54 @@ impl<O: Il2cppOps> Walker<O> {
         })
     }
 
+    /// The first of [`HOOK_CANDIDATES`] that resolves and has native code. Makes no invoke
+    /// and patches nothing; resolution only.
+    pub fn resolve_pump(&mut self, log: &mut dyn LogSink) -> Result<PumpTarget, StepError> {
+        self.resolve_pumps(log).map(|mut all| all.remove(0))
+    }
+
+    /// Every candidate that resolves and has native code, in order (never empty): the
+    /// hook tries the next one when ilhook refuses a prologue.
+    pub fn resolve_pumps(&mut self, log: &mut dyn LogSink) -> Result<Vec<PumpTarget>, StepError> {
+        let mut found = Vec::new();
+        let mut no_code = false;
+        for candidate in HOOK_CANDIDATES {
+            let label = candidate.label();
+            let Some(class) = candidate
+                .namespaces
+                .iter()
+                .find_map(|ns| self.ops.class_from_name(ns, candidate.class))
+            else {
+                log.info(&format!("hook candidate {label}: class missing"));
+                continue;
+            };
+            let Ok(method) = self.find_method(class, candidate.method, candidate.argc, log) else {
+                log.info(&format!("hook candidate {label}: method missing"));
+                continue;
+            };
+            let address = self.ops.method_pointer(method);
+            if address == 0 {
+                log.info(&format!("hook candidate {label}: no native code"));
+                no_code = true;
+                continue;
+            }
+            log.info(&format!("hook candidate {label}: code at {address:#x}"));
+            found.push(PumpTarget {
+                name: label,
+                method,
+                address,
+            });
+        }
+        if found.is_empty() {
+            return Err(StepError::method(if no_code {
+                "pump.code"
+            } else {
+                "pump"
+            }));
+        }
+        Ok(found)
+    }
+
     fn resolve(&mut self, log: &mut dyn LogSink) -> Result<Resolved, StepError> {
         let mut classes = [0; CLASSES.len()];
         for (slot, name) in classes.iter_mut().zip(CLASSES) {
@@ -242,14 +309,14 @@ impl<O: Il2cppOps> Walker<O> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::error::{ProbeFailure, StepError};
     use crate::log::RotatingLog;
     use std::collections::HashMap;
 
     #[derive(Clone, Debug, PartialEq)]
-    enum Call {
+    pub(crate) enum Call {
         ClassFromName(String, String),
         Method(Handle, String, i32),
         Field(Handle, String),
@@ -260,44 +327,45 @@ mod tests {
     /// A scripted game. Direct method and field lookups never search parents, so the walker
     /// must walk the parent chain itself.
     #[derive(Default)]
-    struct FakeOps {
-        classes: HashMap<(String, String), Handle>,
-        class_names: HashMap<Handle, String>,
-        parents: HashMap<Handle, Handle>,
-        methods: HashMap<(Handle, String, i32), Handle>,
-        fields: HashMap<(Handle, String), Handle>,
-        offsets: HashMap<Handle, usize>,
-        results: HashMap<Handle, Result<usize, ()>>,
-        memory: HashMap<usize, usize>,
-        object_classes: HashMap<usize, Handle>,
-        calls: Vec<Call>,
+    pub(crate) struct FakeOps {
+        pub(crate) classes: HashMap<(String, String), Handle>,
+        pub(crate) class_names: HashMap<Handle, String>,
+        pub(crate) parents: HashMap<Handle, Handle>,
+        pub(crate) methods: HashMap<(Handle, String, i32), Handle>,
+        pub(crate) fields: HashMap<(Handle, String), Handle>,
+        pub(crate) offsets: HashMap<Handle, usize>,
+        pub(crate) results: HashMap<Handle, Result<usize, ()>>,
+        pub(crate) memory: HashMap<usize, usize>,
+        pub(crate) object_classes: HashMap<usize, Handle>,
+        pub(crate) calls: Vec<Call>,
+        pub(crate) method_ptrs: HashMap<Handle, usize>,
     }
 
-    const CTRL: Handle = 1;
+    pub(crate) const CTRL: Handle = 1;
     const CONNECTION: Handle = 5;
-    const CLIENT: Handle = 6;
+    pub(crate) const CLIENT: Handle = 6;
     const SINGLETON_CLASS: Handle = 10;
     const NATIVE_PARENT: Handle = 11;
     const GET_INSTANCE: Handle = 100;
     const GET_RPC: Handle = 101;
     const GET_TRANSFER: Handle = 102;
     const GET_TRANSPORT: Handle = 103;
-    const SEND: Handle = 104;
+    pub(crate) const SEND: Handle = 104;
     const CONN_FIELD: Handle = 200;
     const CLIENT_FIELD: Handle = 201;
     const HANDLE_FIELD: Handle = 202;
-    const SINGLETON: usize = 0x1000;
+    pub(crate) const SINGLETON: usize = 0x1000;
     const RPC: usize = 0x2000;
     const TRANSFER: usize = 0x3000;
     const TRANSPORT: usize = 0x4000;
     const CONN: usize = 0x5000;
-    const CLIENT_OBJ: usize = 0x6000;
+    pub(crate) const CLIENT_OBJ: usize = 0x6000;
     const HANDLE: usize = 0xABCD;
 
     impl FakeOps {
         /// A complete world. `ZTransport` is in `ZCode.ZNet`, the others in `ZCode.ZRpc`;
         /// `get_Instance` is on `ZRpcCtrl`'s parent, `handle_` on `ZTcpClient`'s parent.
-        fn world() -> Self {
+        pub(crate) fn world() -> Self {
             let mut w = FakeOps::default();
             for (h, ns, name) in [
                 (1, "ZCode.ZRpc", "ZRpcCtrl"),
@@ -389,6 +457,9 @@ mod tests {
                 .copied()
                 .unwrap_or(Ok(0))
                 .map_err(|()| Exception)
+        }
+        fn method_pointer(&mut self, method: Handle) -> usize {
+            self.method_ptrs.get(&method).copied().unwrap_or(0)
         }
         fn read_ptr(&mut self, address: usize) -> usize {
             self.calls.push(Call::ReadPtr(address));
@@ -585,5 +656,95 @@ mod tests {
         w.ops_mut().calls.clear();
         assert_eq!(walk(&mut w), first);
         assert!(w.ops().calls.is_empty());
+    }
+
+    const PANDA_GAME: Handle = 20;
+    const CTRL_UPDATE: Handle = 300;
+    const GAME_UPDATE: Handle = 301;
+
+    /// `world()` plus `Panda.Core.Game` and an `Update` on it and on `ZRpcCtrl`'s parent.
+    fn with_pump_candidates() -> FakeOps {
+        let mut w = FakeOps::world();
+        w.classes
+            .insert(("Panda.Core".into(), "Game".into()), PANDA_GAME);
+        w.methods
+            .insert((SINGLETON_CLASS, "Update".into(), 0), CTRL_UPDATE);
+        w.methods
+            .insert((PANDA_GAME, "Update".into(), 0), GAME_UPDATE);
+        w.method_ptrs.insert(CTRL_UPDATE, 0x7000);
+        w.method_ptrs.insert(GAME_UPDATE, 0x8000);
+        w
+    }
+
+    fn pump(w: &mut Walker<FakeOps>) -> Result<PumpTarget, StepError> {
+        w.resolve_pump(&mut RotatingLog::inert())
+    }
+
+    #[test]
+    fn the_primary_pump_candidate_wins() {
+        let mut w = walker(with_pump_candidates());
+        let target = pump(&mut w).unwrap();
+        assert_eq!(
+            target,
+            PumpTarget {
+                name: "ZRpcCtrl.Update".into(),
+                method: CTRL_UPDATE,
+                address: 0x7000
+            }
+        );
+        assert_eq!(invokes(&w), 0);
+    }
+
+    #[test]
+    fn the_fallback_is_used_when_only_it_resolves() {
+        let mut ops = with_pump_candidates();
+        ops.methods.remove(&(SINGLETON_CLASS, "Update".into(), 0));
+        let mut w = walker(ops);
+        let target = pump(&mut w).unwrap();
+        assert_eq!(
+            (target.name.as_str(), target.method, target.address),
+            ("Game.Update", GAME_UPDATE, 0x8000)
+        );
+        assert_eq!(invokes(&w), 0);
+    }
+
+    #[test]
+    fn no_candidate_is_method_missing_pump() {
+        let mut w = walker(FakeOps::world());
+        assert_eq!(pump(&mut w), Err(StepError::method("pump")));
+    }
+
+    #[test]
+    fn a_zero_native_pointer_is_method_missing_pump_code() {
+        let mut ops = with_pump_candidates();
+        ops.method_ptrs.clear();
+        let mut w = walker(ops);
+        assert_eq!(pump(&mut w), Err(StepError::method("pump.code")));
+        assert_eq!(invokes(&w), 0);
+    }
+
+    #[test]
+    fn a_zero_pointer_on_the_primary_falls_to_the_next() {
+        let mut ops = with_pump_candidates();
+        ops.method_ptrs.remove(&CTRL_UPDATE);
+        let mut w = walker(ops);
+        assert_eq!(pump(&mut w).unwrap().name, "Game.Update");
+    }
+
+    #[test]
+    fn every_usable_candidate_is_listed_in_order() {
+        let mut w = walker(with_pump_candidates());
+        let names: Vec<String> = w
+            .resolve_pumps(&mut RotatingLog::inert())
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["ZRpcCtrl.Update", "Game.Update"]);
+        let mut w = walker(FakeOps::world());
+        assert_eq!(
+            w.resolve_pumps(&mut RotatingLog::inert()),
+            Err(StepError::method("pump"))
+        );
     }
 }

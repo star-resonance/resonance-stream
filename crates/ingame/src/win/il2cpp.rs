@@ -9,6 +9,7 @@ use super::{wide, GlobalLog};
 use crate::error::{ProbeFailure, StepError};
 use crate::log::LogSink;
 use crate::names::{OPTIONAL_EXPORTS, REQUIRED_EXPORTS};
+use crate::send_ops::SpanBytes;
 use crate::session::Probe;
 use crate::walk::{Arg, Exception, Handle, Il2cppOps, Walker};
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -34,6 +35,7 @@ type ThreadDetach = unsafe extern "C" fn(Ptr);
 
 /// The resolved exports. The twelve required ones are all there or [`Api::load`] fails.
 #[allow(dead_code)] // field_static_get_value is resolved (the doc lists it) but not called yet
+#[derive(Clone, Copy)]
 pub struct Api {
     domain_get: DomainGet,
     domain_get_assemblies: DomainGetAssemblies,
@@ -136,6 +138,16 @@ impl Il2cpp {
         }
     }
 
+    /// The same binding without attaching a thread: for the pump, which runs on a thread the
+    /// game attached itself.
+    pub fn unattached(&self) -> Il2cpp {
+        Il2cpp {
+            api: self.api,
+            domain: self.domain,
+            thread: std::ptr::null_mut(),
+        }
+    }
+
     /// Detaches the thread attached by [`Il2cpp::attach`], if the game exports detach.
     pub fn detach(&mut self) {
         if let Some(detach) = self.api.thread_detach {
@@ -224,14 +236,34 @@ impl Il2cppOps for Il2cpp {
     }
 
     fn invoke(&mut self, method: Handle, this: usize, args: &[Arg]) -> Result<usize, Exception> {
-        // A value-type argument is passed as a pointer to the value.
-        let values: Vec<u64> = args
+        // A value-type argument is passed as a pointer to the value; the values live in
+        // these vectors until the call returns.
+        let numbers: Vec<u64> = args
             .iter()
             .map(|a| match a {
                 Arg::U64(v) => *v,
+                Arg::Span { .. } => 0,
             })
             .collect();
-        let mut params: Vec<Ptr> = values.iter().map(|v| v as *const u64 as Ptr).collect();
+        let spans: Vec<SpanBytes> = args
+            .iter()
+            .map(|a| match a {
+                Arg::Span { ptr, len } => SpanBytes {
+                    reference: *ptr as *const u8,
+                    length: *len as i32,
+                    _pad: 0,
+                },
+                Arg::U64(_) => SpanBytes::over(&[]),
+            })
+            .collect();
+        let mut params: Vec<Ptr> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| match a {
+                Arg::U64(_) => &numbers[i] as *const u64 as Ptr,
+                Arg::Span { .. } => &spans[i] as *const SpanBytes as Ptr,
+            })
+            .collect();
         let mut exception: Ptr = std::ptr::null_mut();
         // SAFETY: `method` is a method pointer, `this` is null or an object of its class,
         // `params` holds one pointer per argument and outlives the call.
@@ -248,6 +280,13 @@ impl Il2cppOps for Il2cpp {
         } else {
             Err(Exception)
         }
+    }
+
+    fn method_pointer(&mut self, method: Handle) -> usize {
+        // SAFETY: `method` is a `MethodInfo*` from `il2cpp_class_get_method_from_name`; its
+        // first field is the native code pointer (public il2cpp layout, estimated, NOT
+        // VERIFIED: it is not in this repository and was not read from a header).
+        unsafe { std::ptr::read_unaligned(method as *const usize) }
     }
 
     fn read_ptr(&mut self, address: usize) -> usize {
@@ -273,6 +312,25 @@ impl GameProbe {
                 log.warn(&format!("resolution failed: {e}"));
                 GameProbe::Failed(e)
             }
+        }
+    }
+
+    /// The hook candidates that resolve (resolution only: nothing is patched).
+    pub fn resolve_pumps(
+        &mut self,
+        log: &mut dyn LogSink,
+    ) -> Result<Vec<crate::walk::PumpTarget>, StepError> {
+        match self {
+            GameProbe::Ready(w) => w.resolve_pumps(log),
+            GameProbe::Failed(e) => Err(e.clone()),
+        }
+    }
+
+    /// An il2cpp binding for the pump, if the exports resolved.
+    pub fn pump_il2cpp(&self) -> Option<Il2cpp> {
+        match self {
+            GameProbe::Ready(w) => Some(w.ops().unattached()),
+            GameProbe::Failed(_) => None,
         }
     }
 

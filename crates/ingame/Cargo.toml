@@ -10,16 +10,23 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+resonance-frame = { path = "../frame" }
 resonance-types = { path = "../types" }
 
 [target.'cfg(windows)'.dependencies]
+ilhook = "2.3.0"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
+    "Win32_System_Kernel",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
     "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
     "Win32_System_SystemServices",
     "Win32_System_Threading",
 ] }

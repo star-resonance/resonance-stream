@@ -1,14 +1,16 @@
 //! The DLL's side of the pipe protocol: one request line in, one reply and what to do
-//! next out. Pure: the probe and the log are passed in.
+//! next out. Pure: the probe, the sender and the log are passed in.
 
 use crate::error::ProbeFailure;
 use crate::log::LogSink;
+use crate::send::Sender;
 use resonance_types::ingame_pipe::{
     decode_request, encode_reply, ErrorCode, Reply, Request, PIPE_PROTOCOL_VERSION,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-/// The walk to the live `ZTcpClient`; run at `hello` and on each `send`, never on a timer.
+/// The walk to the live `ZTcpClient`; run at `hello` only, never on a timer (each `send`
+/// walks again on the game's main thread, inside the pump).
 pub trait Probe {
     fn probe(&mut self) -> Result<(), ProbeFailure>;
 }
@@ -45,6 +47,7 @@ impl Session {
         &mut self,
         line: &[u8],
         probe: &mut dyn Probe,
+        sender: &mut dyn Sender,
         log: &mut dyn LogSink,
     ) -> Outcome {
         let request = match decode_request(line) {
@@ -52,7 +55,9 @@ impl Session {
             Err(e) => return error(e.id, e.code, "unreadable request", Next::Continue),
         };
         let id = request.id();
-        match catch_unwind(AssertUnwindSafe(|| self.dispatch(request, probe, log))) {
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.dispatch(request, probe, sender, log)
+        })) {
             Ok(outcome) => outcome,
             Err(_) => {
                 log.warn("a request handler panicked");
@@ -71,6 +76,7 @@ impl Session {
         &mut self,
         request: Request,
         probe: &mut dyn Probe,
+        sender: &mut dyn Sender,
         log: &mut dyn LogSink,
     ) -> Outcome {
         let id = request.id();
@@ -103,28 +109,18 @@ impl Session {
                 log.info("bye");
                 reply(Reply::Ack { id }, Next::Unload)
             }
-            Request::Send { text, .. } => {
-                let channel = match request.send_channel() {
-                    Ok(c) => c,
-                    Err(code) => return error(id, code, "unknown channel", Next::Continue),
-                };
+            Request::Send { channel, text, .. } => {
                 // Channel and length only: chat text is never logged.
-                let note = format!("send channel={} text_len={}", channel.as_str(), text.len());
-                match probe.probe() {
-                    Err(f) => {
-                        log.info(&format!("{note}: probe failed: {}", f.detail()));
-                        error(id, f.error_code(), &f.detail(), Next::Continue)
+                let shown = request.send_channel().map_or("?", |c| c.as_str());
+                let note = format!("send channel={shown} text_len={}", text.len());
+                let answer = sender.send(id, channel, text);
+                match &answer {
+                    Reply::Error { code, detail, .. } => {
+                        log.info(&format!("{note}: {}: {detail}", code.as_str()));
                     }
-                    Ok(()) => {
-                        log.info(&format!("{note}: probe walked: ok; send not built"));
-                        error(
-                            id,
-                            ErrorCode::Unsupported,
-                            "send not built (R4)",
-                            Next::Continue,
-                        )
-                    }
+                    _ => log.info(&format!("{note}: sent")),
                 }
+                reply(answer, Next::Continue)
             }
         }
     }
@@ -153,25 +149,13 @@ mod tests {
     use super::*;
     use crate::error::{ProbeFailure, StepError};
     use crate::log::{Level, LogSink};
+    use crate::send::Sender;
     use resonance_types::ingame_pipe::{decode_reply, ErrorCode, Reply};
 
     struct FakeProbe {
         calls: usize,
         result: Result<(), ProbeFailure>,
         panics: bool,
-    }
-
-    impl FakeProbe {
-        fn ok() -> Self {
-            Self::with(Ok(()))
-        }
-        fn with(result: Result<(), ProbeFailure>) -> Self {
-            Self {
-                calls: 0,
-                result,
-                panics: false,
-            }
-        }
     }
 
     impl Probe for FakeProbe {
@@ -181,6 +165,25 @@ mod tests {
                 panic!("probe panic");
             }
             self.result.clone()
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeSender {
+        calls: Vec<(u32, String, String)>,
+        panics: bool,
+    }
+
+    impl Sender for FakeSender {
+        fn send(&mut self, id: u32, channel: &str, text: &str) -> Reply {
+            self.calls.push((id, channel.into(), text.into()));
+            if self.panics {
+                panic!("sender panic");
+            }
+            Reply::Send {
+                id,
+                call_id: 0x8000_0007,
+            }
         }
     }
 
@@ -195,6 +198,42 @@ mod tests {
 
     const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+    struct Rig {
+        session: Session,
+        probe: FakeProbe,
+        sender: FakeSender,
+        log: FakeLog,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            Self::with_probe(Ok(()))
+        }
+        fn with_probe(result: Result<(), ProbeFailure>) -> Self {
+            Self {
+                session: Session::new(),
+                probe: FakeProbe {
+                    calls: 0,
+                    result,
+                    panics: false,
+                },
+                sender: FakeSender::default(),
+                log: FakeLog::default(),
+            }
+        }
+        fn line(&mut self, line: &[u8]) -> Outcome {
+            self.session
+                .handle_line(line, &mut self.probe, &mut self.sender, &mut self.log)
+        }
+        fn hello(&mut self) -> Outcome {
+            self.line(br#"{"op":"hello","id":1,"version":1}"#)
+        }
+        fn send(&mut self, channel: &str, text: &str) -> Outcome {
+            let line = format!(r#"{{"op":"send","id":2,"channel":"{channel}","text":"{text}"}}"#);
+            self.line(line.as_bytes())
+        }
+    }
+
     fn reply(o: &Outcome) -> Reply {
         decode_reply(o.reply.strip_suffix(b"\n").expect("one line")).unwrap()
     }
@@ -207,16 +246,11 @@ mod tests {
         }
     }
 
-    fn hello(s: &mut Session, p: &mut FakeProbe, l: &mut FakeLog) -> Outcome {
-        s.handle_line(br#"{"op":"hello","id":1,"version":1}"#, p, l)
-    }
-
     #[test]
     fn hello_runs_the_probe_once_even_when_it_fails() {
         for result in [Ok(()), Err(ProbeFailure::NoClient("singleton null".into()))] {
-            let (mut s, mut p, mut l) =
-                (Session::new(), FakeProbe::with(result), FakeLog::default());
-            let o = hello(&mut s, &mut p, &mut l);
+            let mut r = Rig::with_probe(result);
+            let o = r.hello();
             assert_eq!(
                 reply(&o),
                 Reply::Hello {
@@ -226,25 +260,32 @@ mod tests {
                 }
             );
             assert_eq!(o.next, Next::Continue);
-            assert_eq!(p.calls, 1);
+            assert_eq!(r.probe.calls, 1);
         }
     }
 
     #[test]
+    fn hello_logs_a_failed_probe() {
+        let mut r = Rig::with_probe(Err(ProbeFailure::Unsupported(StepError::method("Send"))));
+        r.hello();
+        assert!(r.log.0.iter().any(|m| m.contains("method_missing:Send")));
+    }
+
+    #[test]
     fn ping_needs_hello_first() {
-        let (mut s, mut p, mut l) = (Session::new(), FakeProbe::ok(), FakeLog::default());
-        let o = s.handle_line(br#"{"op":"ping","id":8}"#, &mut p, &mut l);
+        let mut r = Rig::new();
+        let o = r.line(br#"{"op":"ping","id":8}"#);
         assert_eq!(reply(&o), err(8, ErrorCode::BadRequest, "hello first"));
         assert_eq!(o.next, Next::Continue);
-        hello(&mut s, &mut p, &mut l);
-        let o = s.handle_line(br#"{"op":"ping","id":9}"#, &mut p, &mut l);
+        r.hello();
+        let o = r.line(br#"{"op":"ping","id":9}"#);
         assert_eq!(reply(&o), Reply::Ack { id: 9 });
     }
 
     #[test]
     fn version_mismatch() {
-        let (mut s, mut p, mut l) = (Session::new(), FakeProbe::ok(), FakeLog::default());
-        let o = s.handle_line(br#"{"op":"hello","id":1,"version":2}"#, &mut p, &mut l);
+        let mut r = Rig::new();
+        let o = r.line(br#"{"op":"hello","id":1,"version":2}"#);
         assert_eq!(
             reply(&o),
             err(1, ErrorCode::Version, "dll speaks 1, app sent 2")
@@ -252,19 +293,75 @@ mod tests {
         assert_eq!(o.next, Next::Continue);
     }
 
-    fn send(s: &mut Session, p: &mut FakeProbe, l: &mut FakeLog, channel: &str) -> Outcome {
-        let line = format!(r#"{{"op":"send","id":2,"channel":"{channel}","text":"secret text"}}"#);
-        s.handle_line(line.as_bytes(), p, l)
+    #[test]
+    fn send_goes_to_the_sender_and_its_reply_is_written() {
+        let mut r = Rig::new();
+        r.hello();
+        let o = r.send("world", "hi");
+        assert_eq!(
+            reply(&o),
+            Reply::Send {
+                id: 2,
+                call_id: 0x8000_0007
+            }
+        );
+        assert_eq!(o.next, Next::Continue);
+        assert_eq!(r.sender.calls, vec![(2, "world".into(), "hi".into())]);
+        // The probe ran at hello only.
+        assert_eq!(r.probe.calls, 1);
     }
 
     #[test]
-    fn send_checks_the_channel_before_the_probe() {
-        let (mut s, mut p, mut l) = (Session::new(), FakeProbe::ok(), FakeLog::default());
-        hello(&mut s, &mut p, &mut l);
-        let before = p.calls;
-        let o = send(&mut s, &mut p, &mut l, "whisper");
-        assert_eq!(code_of(&o), (2, ErrorCode::BadChannel));
-        assert_eq!(p.calls, before);
+    fn send_before_hello_never_reaches_the_sender() {
+        let mut r = Rig::new();
+        let o = r.send("world", "hi");
+        assert_eq!(reply(&o), err(2, ErrorCode::BadRequest, "hello first"));
+        assert!(r.sender.calls.is_empty());
+    }
+
+    #[test]
+    fn chat_text_is_never_logged() {
+        let mut r = Rig::new();
+        r.hello();
+        r.send("world", "secret text");
+        assert!(r.log.0.iter().all(|m| !m.contains("secret")));
+        assert!(r
+            .log
+            .0
+            .iter()
+            .any(|m| m.contains("world") && m.contains("11")));
+    }
+
+    #[test]
+    fn a_panicking_sender_is_an_error_reply_and_the_session_lives() {
+        let mut r = Rig::new();
+        r.hello();
+        r.sender.panics = true;
+        let o = r.send("world", "hi");
+        assert_eq!(reply(&o), err(2, ErrorCode::Unsupported, "internal error"));
+        assert_eq!(o.next, Next::Continue);
+        let o = r.line(br#"{"op":"ping","id":3}"#);
+        assert_eq!(reply(&o), Reply::Ack { id: 3 });
+    }
+
+    #[test]
+    fn a_panicking_probe_at_hello_is_an_error_reply() {
+        let mut r = Rig::new();
+        r.probe.panics = true;
+        let o = r.hello();
+        assert_eq!(reply(&o), err(1, ErrorCode::Unsupported, "internal error"));
+        let o = r.line(br#"{"op":"ping","id":3}"#);
+        assert_eq!(reply(&o), Reply::Ack { id: 3 });
+    }
+
+    #[test]
+    fn bye_unloads_even_after_a_send() {
+        let mut r = Rig::new();
+        r.hello();
+        r.send("say", "hi");
+        let o = r.line(br#"{"op":"bye","id":4}"#);
+        assert_eq!(reply(&o), Reply::Ack { id: 4 });
+        assert_eq!(o.next, Next::Unload);
     }
 
     fn code_of(o: &Outcome) -> (u32, ErrorCode) {
@@ -275,78 +372,16 @@ mod tests {
     }
 
     #[test]
-    fn send_answers_from_the_probe() {
-        let cases = [
-            (
-                Err(ProbeFailure::NoClient("singleton null".into())),
-                err(2, ErrorCode::NoClient, "singleton null"),
-            ),
-            (
-                Err(ProbeFailure::Unsupported(StepError::method("GetTransport"))),
-                err(2, ErrorCode::Unsupported, "method_missing:GetTransport"),
-            ),
-            (
-                Ok(()),
-                err(2, ErrorCode::Unsupported, "send not built (R4)"),
-            ),
-        ];
-        for (result, expected) in cases {
-            let (mut s, mut p, mut l) =
-                (Session::new(), FakeProbe::with(result), FakeLog::default());
-            hello(&mut s, &mut p, &mut l);
-            let before = p.calls;
-            let o = send(&mut s, &mut p, &mut l, "world");
-            assert_eq!(reply(&o), expected);
-            assert_eq!(o.next, Next::Continue);
-            assert_eq!(p.calls, before + 1);
-        }
-    }
-
-    #[test]
-    fn bye_unloads() {
-        let (mut s, mut p, mut l) = (Session::new(), FakeProbe::ok(), FakeLog::default());
-        let o = s.handle_line(br#"{"op":"bye","id":4}"#, &mut p, &mut l);
-        assert_eq!(reply(&o), Reply::Ack { id: 4 });
-        assert_eq!(o.next, Next::Unload);
-    }
-
-    #[test]
     fn bad_lines() {
-        let (mut s, mut p, mut l) = (Session::new(), FakeProbe::ok(), FakeLog::default());
-        let o = s.handle_line(br#"{"op":"nope","id":5}"#, &mut p, &mut l);
+        let mut r = Rig::new();
+        let o = r.line(br#"{"op":"nope","id":5}"#);
         assert_eq!(code_of(&o), (5, ErrorCode::BadRequest));
         assert_eq!(o.next, Next::Continue);
-        let o = s.handle_line(&[0xff, 0xfe], &mut p, &mut l);
+        let o = r.line(&[0xff, 0xfe]);
         assert_eq!(code_of(&o), (0, ErrorCode::BadRequest));
         assert_eq!(o.next, Next::Continue);
-        let o = s.line_too_long(&mut l);
+        let o = r.session.line_too_long(&mut r.log);
         assert_eq!(code_of(&o), (0, ErrorCode::BadRequest));
         assert_eq!(o.next, Next::Close);
-    }
-
-    #[test]
-    fn a_panicking_probe_is_an_error_reply_and_the_session_lives() {
-        let (mut s, mut p, mut l) = (Session::new(), FakeProbe::ok(), FakeLog::default());
-        hello(&mut s, &mut p, &mut l);
-        p.panics = true;
-        let o = send(&mut s, &mut p, &mut l, "world");
-        assert_eq!(reply(&o), err(2, ErrorCode::Unsupported, "internal error"));
-        assert_eq!(o.next, Next::Continue);
-        let o = s.handle_line(br#"{"op":"ping","id":3}"#, &mut p, &mut l);
-        assert_eq!(reply(&o), Reply::Ack { id: 3 });
-    }
-
-    #[test]
-    fn chat_text_is_never_replied_or_logged() {
-        for result in [Ok(()), Err(ProbeFailure::NoClient("udp".into()))] {
-            let (mut s, mut p, mut l) =
-                (Session::new(), FakeProbe::with(result), FakeLog::default());
-            hello(&mut s, &mut p, &mut l);
-            let o = send(&mut s, &mut p, &mut l, "world");
-            assert!(!String::from_utf8_lossy(&o.reply).contains("secret"));
-            assert!(!l.0.is_empty());
-            assert!(l.0.iter().all(|m| !m.contains("secret")));
-            assert!(l.0.iter().any(|m| m.contains("world") && m.contains("11")));
-        }
     }
 }
