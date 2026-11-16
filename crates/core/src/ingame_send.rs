@@ -398,6 +398,22 @@ pub fn connect(host: &mut impl Host) -> Result<u32, SendError> {
 
 // ---- the send flow ------------------------------------------------------------
 
+/// Maps the DLL's reply to a `send` request to the result and whether the session
+/// must be dropped (`bad_request` and `version` mean the two ends no longer
+/// understand each other; so does any reply that is no answer to a send). The
+/// `detail` goes to the log with the code, never the chat text.
+pub fn map_send_reply(reply: Reply) -> (Result<(), SendError>, bool) {
+    match reply {
+        Reply::Send { .. } | Reply::Ack { .. } => (Ok(()), false),
+        Reply::Error { code, detail, .. } => {
+            log::warn!("in-game send refused: {} ({detail})", code.as_str());
+            let drop = matches!(code, ErrorCode::BadRequest | ErrorCode::Version);
+            (Err(SendError::Dll(code)), drop)
+        }
+        Reply::Hello { .. } => (Err(SendError::Broken), true),
+    }
+}
+
 /// What `send_chat` needs from the session: connect if needed, send, map the reply.
 pub trait SendBackend {
     fn send(&mut self, channel: SendChatChannel, text: &str) -> Result<(), SendError>;
@@ -1137,5 +1153,35 @@ mod tests {
         let got = send_chat_flow(true, &spacing, &mut backend, SendChatChannel::Say, "hi");
         assert_eq!(got, Ok(()));
         let _ = Instant::now();
+    }
+
+    #[test]
+    fn a_send_reply_maps_to_a_result_and_whether_to_drop_the_session() {
+        let error = |code| Reply::Error {
+            id: 1,
+            code,
+            detail: "d".into(),
+        };
+        assert_eq!(
+            map_send_reply(Reply::Send { id: 1, call_id: 9 }),
+            (Ok(()), false)
+        );
+        assert_eq!(map_send_reply(Reply::Ack { id: 1 }), (Ok(()), false));
+        assert_eq!(
+            map_send_reply(error(ErrorCode::NoClient)),
+            (Err(SendError::Dll(ErrorCode::NoClient)), false)
+        );
+        for code in [ErrorCode::BadRequest, ErrorCode::Version] {
+            assert_eq!(
+                map_send_reply(error(code)),
+                (Err(SendError::Dll(code)), true)
+            );
+        }
+        let hello = Reply::Hello {
+            id: 1,
+            version: 1,
+            dll: String::new(),
+        };
+        assert_eq!(map_send_reply(hello), (Err(SendError::Broken), true));
     }
 }
