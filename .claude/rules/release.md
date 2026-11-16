@@ -16,13 +16,21 @@ Releases follow the global `release-flow` skill (D-33, D-34). Here: Candidate ru
 are `scripts/release.py` (tests: `python3 -m unittest discover -s scripts -p 'test_*.py'`) and
 `.github/scripts/release-lib.sh`.
 
-**The signed exe is built and signed once, in Candidate, which alone holds the signing secrets**
-(`TAURI_SIGNING_PRIVATE_KEY`, `..._PASSWORD`). It carries the final version and no test flags; the
-`test-env` exe exists only as a workflow artifact for the smoke test and is in no release. Promote
-downloads the files, checks `SHA256SUMS` and the signature against the app's public keys, reuses the
-exe and its `.sig`, and writes only the stable `latest.json`: the app installs an update only if a key
-in `TRUSTED_UPDATE_KEYS` (`crates/core/src/update_signature.rs`) signed those bytes for that version, and
-the feed's URL is not part of that. The private keys are never committed; the backup key stays offline.
+**The signed exe and the signed DLL are built once, in Candidate, which alone holds the signing secrets**
+(`TAURI_SIGNING_PRIVATE_KEY`, `..._PASSWORD`). The exe carries the final version and no test flags; the
+`test-env` exe exists only as a workflow artifact for the smoke test and is in no release. Candidate builds the
+DLL first (`just ingame-build`), pins its hash into the exe, proves the shipped DLL is the pinned one, then signs
+it like the exe (same key), verifies it, and lists the exe, the DLL (`Resonance-Stream-v<version>-ingame.dll`,
+`release_dll_asset`) and both `.sig` in `SHA256SUMS`; the prerelease's `latest.json` carries `ingame_url` and
+`ingame_signature`. Promote downloads the four files (an rc made before the DLL was signed fails early: run
+Candidate again), checks `SHA256SUMS` lists exactly those names and the signatures against the app's public keys,
+re-proves the pin, reuses the exe, the DLL and their `.sig` without a rebuild, and writes only the stable
+`latest.json` (`ingame_url` and `ingame_signature` both or neither, `release_manifest`): the app installs an
+update only if a key in `TRUSTED_UPDATE_KEYS` (`crates/core/src/update_signature.rs`) signed those bytes for that
+version, and the feed's URL is not part of that. The app ignores `ingame_url`/`ingame_signature`: it
+downloads the DLL from the release by tag (see `.claude/rules/app.md`). The feed check
+(`check-release-feed.sh`) fails when the DLL files and those two fields disagree. The private keys are never
+committed; the backup key stays offline.
 The prerelease's `latest.json` is the candidate-channel entry: try it with `--feed-url` on a test-env build.
 
 **Build-time settings come from repository variables.** `GUILD_RELAY_BROKER_URL` (the guild

@@ -19,7 +19,8 @@ The DLL runs inside the game's process. Design: `docs/ingame-design.md`, D-35.
 - **Build only with `--profile ingame`** (`just ingame-build`; root `[profile.ingame]`,
   `panic = "unwind"`). Never `cargo build --workspace --release`: its profile is `panic = "abort"`, and the
   `compile_error!` under `cfg(all(windows, panic = "abort"))` in `crates/ingame/src/lib.rs` stops it;
-  never remove or `allow` that guard. The app bundles only the DLL from that profile.
+  never remove or `allow` that guard. The installer never carries the DLL: the app downloads the DLL
+  built from that profile, signed, per version into APPDATA (`.claude/rules/app.md`).
 - **No allocation, no locks, no logging between suspending the game's other threads and resuming them**
   (the hook install, DS-0003: `ilhook`, the DLL's own suspend/resume via `windows-sys`): a suspended
   thread may hold the allocator or a lock, so either can deadlock the game. Prepare everything before
