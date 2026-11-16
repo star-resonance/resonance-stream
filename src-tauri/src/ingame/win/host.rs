@@ -16,8 +16,8 @@ use std::time::Duration;
 /// `FILE_SHARE_READ`: others may read the DLL file but not write or delete it.
 const SHARE_READ_ONLY: u32 = 1;
 
-/// A connection in the making; after a successful `connect` it becomes a
-/// [`Session`]`Session`.
+/// A connection in the making; after a successful `connect` its pipe and id
+/// counter move into a `Session`.
 pub struct WinHost {
     pub(super) pid: Option<u32>,
     pub(super) pipe: Option<Pipe>,

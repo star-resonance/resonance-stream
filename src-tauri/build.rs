@@ -23,6 +23,10 @@ fn write_ingame_pin() {
                         .iter()
                         .map(|b| format!("{b:02x}"))
                         .collect();
+                    // Absolute, so a debug build finds the file from any working folder.
+                    let path = fs::canonicalize(&path)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or(path);
                     Some((hex, path))
                 }
                 Err(e) if required => {

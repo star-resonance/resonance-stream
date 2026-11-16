@@ -6,7 +6,8 @@ use resonance_core::ingame_send::{pipe_sddl, Listener, SendError, Wire, WireErro
 use resonance_types::ingame_pipe::pipe_name;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
-    GetLastError, LocalFree, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    GetLastError, LocalFree, ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -201,6 +202,9 @@ impl Listener for Pipe {
             // SAFETY: reads the calling thread's last error.
             match unsafe { GetLastError() } {
                 ERROR_PIPE_CONNECTED => {}
+                // A client connected and is already gone: report an unknown client,
+                // which the caller drops before it waits on.
+                ERROR_NO_DATA => return Ok(Some(0)),
                 ERROR_IO_PENDING => match self.complete(&mut ov, wait) {
                     Ok(_) => {}
                     Err(IoEnd::Timeout) => return Ok(None),

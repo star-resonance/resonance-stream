@@ -10,6 +10,7 @@ use crate::AppState;
 use resonance_core::ingame_send::{send_chat_flow, SendBackend, SendError};
 use resonance_core::send_text::SendSpacing;
 use resonance_types::SendChatChannel;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use tauri::State;
 
@@ -19,6 +20,10 @@ static SPACING: LazyLock<Mutex<SendSpacing>> = LazyLock::new(|| Mutex::new(SendS
 /// The connection to the game, if one is up.
 #[cfg(windows)]
 static SESSION: parking_lot::Mutex<Option<win::Session>> = parking_lot::Mutex::new(None);
+
+/// What the setting last said; checked under the session lock, so a load that
+/// was queued by "on" does not run after "off".
+static WANTED: AtomicBool = AtomicBool::new(false);
 
 struct AppBackend;
 
@@ -61,6 +66,7 @@ pub fn send_chat(
 /// The setting changed: on loads the module now (a game that is not running is not
 /// an error here, the first send tries again), off unloads it. Runs on its own thread.
 pub(crate) fn apply_setting(on: bool) {
+    WANTED.store(on, Ordering::SeqCst);
     std::thread::spawn(move || {
         if !on {
             shutdown();
@@ -69,7 +75,7 @@ pub(crate) fn apply_setting(on: bool) {
         #[cfg(windows)]
         {
             let mut slot = SESSION.lock();
-            if slot.is_none() {
+            if slot.is_none() && WANTED.load(Ordering::SeqCst) {
                 match win::Session::connect() {
                     Ok(session) => *slot = Some(session),
                     Err(e) => log::info!("in-game module not loaded yet: {e}"),

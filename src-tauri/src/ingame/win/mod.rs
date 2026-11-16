@@ -89,7 +89,11 @@ impl Session {
     pub fn unload(mut self) {
         let id = self.id();
         let wait = Duration::from_millis(u64::from(APP_WAIT_MS));
-        let _ = exchange(&mut self.pipe, &Request::Bye { id }, wait);
+        if exchange(&mut self.pipe, &Request::Bye { id }, wait).is_err() {
+            // No answer: the DLL unloads itself when it sees the pipe close, so
+            // close it before waiting rather than after.
+            self.pipe.disconnect();
+        }
         if !loader::wait_module_gone(self.pid, UNLOAD_WAIT) {
             log::warn!("the in-game module is still loaded after bye");
         }

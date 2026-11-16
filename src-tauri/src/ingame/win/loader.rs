@@ -163,7 +163,9 @@ pub fn load_remote(pid: u32, dll: &Path) -> Result<(), SendError> {
     let mut code: u32 = 0;
     // SAFETY: the thread has finished; `code` is valid for writes.
     let got = unsafe { GetExitCodeThread(thread.raw(), &mut code) };
-    if got == 0 || code == 0 {
+    // The code is a truncated HMODULE: zero can also be a module based at a multiple
+    // of 4 GiB, so a zero is checked against the module list.
+    if got == 0 || (code == 0 && !module_loaded(pid)) {
         return Err(SendError::LoadFailed);
     }
     Ok(())
