@@ -1,10 +1,11 @@
 # Agent Operating Rules — resonance-stream
 
 Resonance Stream is a Windows desktop app: it sniffs Blue Protocol: Star Resonance
-chat packets (raw socket, no client hooking), translates Japanese chat to Korean
-through a local llama.cpp server, and shows it in a Tauri overlay.
+chat packets (raw socket; the sniffer hooks nothing), translates Japanese chat to Korean
+through a local llama.cpp server, and shows it in a Tauri overlay. It can also send chat from
+a composer, through an opt-in in-game DLL (D-35).
 
-One Cargo workspace in five crates, three parts, plus the runbook (treated as docs).
+One Cargo workspace in seven crates (core, llama, types, frame, ingame, ui, app), four parts, plus the runbook (treated as docs).
 **Which part you touch decides which gate applies** -- the most important thing on this page.
 
 Current state: the organization Project "Resonance" (star-resonance), read as `STATUS.md` on the
@@ -13,11 +14,13 @@ Current state: the organization Project "Resonance" (star-resonance), read as `S
 | tree | part | builds on | gate |
 |---|---|---|---|
 | `crates/core/` `crates/llama/` `crates/types/` | **core** — packet → chat pipeline, protocol decoding, translation text processing; llama-server HTTP client; DTOs shared by app and ui | any OS | `just core-check` |
+| `crates/frame/` | **frame** — SendChitChatMsg frame builder (`no_std`, no dependencies) | any OS | `just core-check` |
+| `crates/ingame/` | **ingame** — `resonance_ingame.dll`, the in-game DLL (Windows code; `cdylib`) | DLL needs the **Windows** target | `just core-check` (its pure modules) and `just ingame-check` (Windows: `cargo check`; Linux: `just ingame-cross-check`, compile only) · `just ingame-build` and the in-game check are **Windows / Kade only** (the game cannot run in CI or a cloud session) |
 | `src/` | **ui** — Leptos 0.8 CSR frontend (wasm); pure modules unit-tested on the host | any OS | `just ui-check` |
 | `src-tauri/` | **app** — Tauri 2 backend: sockets, translator server, downloader, windows, tray | **Windows only** | `just app-check` (Windows) · `just app-cross-check` (Linux, compile only) |
 | `runbook/` | **runbook** — Jupyter notebooks + Python helpers that Kade runs by hand on Windows (`runbook/README.md`) | any OS (dry runs) | **none — treated as docs** (see `.claude/rules/runbook.md`) |
 
-`just check` (`pip install rust-just`) runs `fmt-check`, then every gate this OS can run. On Linux
+`just check` (`pip install rust-just`) runs `fmt-check`, then every gate this OS can run (`ingame-check` included). On Linux
 the app gate is a **compile-only** cross-check against `x86_64-pc-windows-gnu` (rustup target +
 `gcc-mingw-w64-x86-64`), so the app's own tests run only on Windows. CI (`ci.yml`) runs core + ui
 on Linux and the full app gate on `windows-latest`, on every push and PR.
@@ -42,7 +45,7 @@ the app owns the file and the real defaults, the ui re-exports the same type).
 .claude/              rules/ (path-scoped), skills/: ui-preview
 .memory/              working memory; see .memory/README.md
 .github/ justfile     CI (gates per OS; candidate, promote, metadata workflows); the gates as commands
-crates/               core, llama, types — pure logic, tested on any OS
+crates/               core, frame, llama, types — pure logic, tested on any OS; ingame — the in-game DLL
 src/                  ui crate (resonance-stream-ui)
 src-tauri/            app crate (resonance-stream, lib resonance_stream_lib)
 metadata/ release-notes/  signed metadata source; release notes per version
@@ -53,6 +56,11 @@ style/ public/        CSS source; static assets
 
 ## Guardrails
 
+- **No hooking, no injection -- except D-35.** The sniffer hooks nothing (raw socket, D-17). The app
+  may load **only its own `resonance_ingame.dll`** into the game, **only when the user has opted in**
+  (off by default, with the terms-of-service warning), and the DLL **only sends chat** (the game's
+  `ZTcpClient.Send`). Any other hook, injection, other DLL, game-file change or use of the DLL stays
+  forbidden. The DLL's rules: `.claude/rules/ingame.md`.
 - **Protocol.** `ChatMessage`/`SystemMessage` serialize as camelCase across the Tauri boundary:
   renaming a field is a protocol change, not a refactor.
 - **Gist and release URLs are public**; none of them is a secret.
