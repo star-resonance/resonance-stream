@@ -13,21 +13,21 @@ has() { # has <name> <substring> <text>
 }
 
 built=target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll
-bundled=target/release/ingame/resonance_ingame.dll
+bundled=target/release/ingame/resonance_ingame.dll   # must NOT exist
+beside=target/release/resonance_ingame.dll            # must NOT exist
 
 # fixture <dir>: a consistent tree; sets $sha. The "exe" is random bytes with the DLL's hash spliced in.
 fixture() {
   local t=$1
-  mkdir -p "$t/target/x86_64-pc-windows-msvc/ingame" "$t/target/release/ingame"
+  mkdir -p "$t/target/x86_64-pc-windows-msvc/ingame" "$t/target/release"
   head -c 2048 /dev/urandom > "$t/$built"
-  cp "$t/$built" "$t/$bundled"
   sha=$(sha256sum "$t/$built" | cut -d' ' -f1)
   { head -c 512 /dev/urandom; printf '%s' "$sha"; head -c 512 /dev/urandom; } > "$t/target/release/app.exe"
 }
-# run <dir> [<dll> [<sha> [<bundled>]]]: prints "<exit>|<output>"
+# run <dir> [<dll> [<sha>]]: prints "<exit>|<output>"
 run() {
   local t=$1 out rc
-  out=$(bash "$script" "${2:-$t/$built}" "${3:-$sha}" "$t/target/release/app.exe" "${4:-$t/$bundled}" "$t/target" 2>&1); rc=$?
+  out=$(bash "$script" "${2:-$t/$built}" "${3:-$sha}" "$t/target/release/app.exe" "$t/target" 2>&1); rc=$?
   echo "$rc|$out"
 }
 code() { echo "${1%%|*}"; }
@@ -36,8 +36,14 @@ msg() { echo "${1#*|}"; }
 t=$(mktemp -d)
 fixture "$t/a"; r=$(run "$t/a"); eq "all consistent" 0 "$(code "$r")"
 
-fixture "$t/b"; printf 'x' | dd of="$t/b/$bundled" bs=1 seek=7 conv=notrunc 2>/dev/null
-r=$(run "$t/b"); eq "bundled copy differs: exit" 1 "$(code "$r")"; has "bundled copy differs: names the file" "$bundled" "$(msg "$r")"
+fixture "$t/b"; mkdir -p "$t/b/target/release/ingame"; cp "$t/b/$built" "$t/b/$bundled"
+r=$(run "$t/b"); eq "identical bundled copy: exit" 1 "$(code "$r")"; has "identical bundled copy: message" "bundled beside the exe" "$(msg "$r")"
+
+fixture "$t/b2"; mkdir -p "$t/b2/target/release/ingame"; head -c 100 /dev/urandom > "$t/b2/$bundled"
+r=$(run "$t/b2"); eq "different bundled copy: exit" 1 "$(code "$r")"
+
+fixture "$t/b3"; cp "$t/b3/$built" "$t/b3/$beside"
+r=$(run "$t/b3"); eq "DLL beside the exe: exit" 1 "$(code "$r")"; has "DLL beside the exe: message" "bundled beside the exe" "$(msg "$r")"
 
 fixture "$t/c"; echo changed >> "$t/c/$built"
 r=$(run "$t/c"); eq "built DLL rewritten: exit" 1 "$(code "$r")"; has "built DLL rewritten: message" "changed after it was hashed" "$(msg "$r")"
@@ -55,12 +61,10 @@ fixture "$t/g"; mkdir -p "$t/g/target/x86_64-pc-windows-msvc/release"; cp "$t/g/
 r=$(run "$t/g" "$t/g/target/x86_64-pc-windows-msvc/release/resonance_ingame.dll")
 eq "DLL path outside the ingame profile: exit" 1 "$(code "$r")"; has "DLL path outside the ingame profile: message" "ingame profile" "$(msg "$r")"
 
-fixture "$t/h"; rm "$t/h/$bundled"
-r=$(run "$t/h"); eq "bundled file missing: exit" 1 "$(code "$r")"; has "bundled file missing: message" "missing" "$(msg "$r")"
-
 fixture "$t/i"
 r=$(run "$t/i" "" "${sha:0:63}"); eq "63-digit sha: exit 2" 2 "$(code "$r")"
 r=$(run "$t/i" "" "${sha^^}"); eq "upper-case sha: exit 2" 2 "$(code "$r")"
+r=$(bash "$script" "$t/i/$built" "$sha" "$t/i/target/release/app.exe" "$t/i/$bundled" "$t/i/target" 2>&1); eq "the old five-argument call: exit 2" 2 "$?"
 rm -rf "$t"
 
 [ "$fails" -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

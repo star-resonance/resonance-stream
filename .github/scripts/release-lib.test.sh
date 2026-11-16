@@ -324,8 +324,9 @@ for f in release.yml release-checks.yml release-candidate.yml; do
 done
 eq "rc-lib.sh is gone" "no" "$([ -e ./rc-lib.sh ] && echo yes || echo no)"
 # Test flags (src-tauri `test-env` feature): the signed shipping exe is built without them; one separate build has them.
-eq "candidate builds the shipping exe once, without test-env" "1" "$(grep -c 'tauri-apps/cli@2 build --no-bundle --config src-tauri/tauri.ingame.conf.json$' "$workflows/candidate.yml")"
-eq "the shipping build line carries no test flags" "0" "$(grep 'tauri-apps/cli@2 build --no-bundle --config' "$workflows/candidate.yml" | grep -c 'test-env')"
+eq "candidate builds the shipping exe once, without test-env" "1" "$(grep -c 'tauri-apps/cli@2 build --no-bundle$' "$workflows/candidate.yml")"
+eq "no workflow builds the app with --config" "0" "$(cat "$workflows"/*.yml | grep -c 'tauri-apps/cli@2 build .*--config')"
+eq "the shipping build line carries no test flags" "0" "$(grep 'tauri-apps/cli@2 build --no-bundle$' "$workflows/candidate.yml" | grep -c 'test-env')"
 eq "candidate builds one test-env exe" "1" "$(grep -c 'tauri-apps/cli@2 build .*--features test-env' "$workflows/candidate.yml")"
 eq "promote never builds or mentions test-env" "0" "$(grep -c 'test-env\|tauri-apps/cli' "$workflows/promote.yml")"
 eq "only candidate signs the exe" "1" "$(grep -l 'signer sign .*resonance-stream\.exe' "$workflows"/*.yml | wc -l | tr -d ' ')"
@@ -364,7 +365,7 @@ eq "ci: the app job is the Windows one" "1" "$(grep -c 'runs-on: windows-latest'
 eq "ci: the abort guard is proven" "1" "$(grep -c -- "grep -F -- '--profile ingame' guard.log" <<<"$ci_app")"
 eq "ci: the packaging check's tests run once" "1" "$(grep -c 'check-ingame-package.test.sh' "$workflows/ci.yml")"
 build_line=$(grep -n 'run: just ingame-build$' "$workflows/candidate.yml" | cut -d: -f1)
-ship_line=$(grep -n 'tauri-apps/cli@2 build --no-bundle --config' "$workflows/candidate.yml" | cut -d: -f1)
+ship_line=$(grep -n 'tauri-apps/cli@2 build --no-bundle$' "$workflows/candidate.yml" | cut -d: -f1)
 build_job_line=$(grep -n '^  build:$' "$workflows/candidate.yml" | cut -d: -f1)
 eq "candidate: the DLL is built after the build job starts and before the app" "yes" "$([ "${build_line:-0}" -gt "${build_job_line:-0}" ] && [ "${build_line:-0}" -lt "${ship_line:-0}" ] && echo yes || echo no)"
 eq "candidate: the DLL is built once" "1" "$(grep -c 'run: just ingame-build$' <<<"$cand_build")"
@@ -373,8 +374,8 @@ eq "candidate: the app build is told the DLL's path" "1" "$(grep -c 'RESONANCE_I
 eq "candidate: the test-env build has no DLL env" "0" "$(grep -c 'RESONANCE_INGAME' <<<"$cand_testexe")"
 eq "candidate: the packaging check runs once, in the build job" "1" "$(grep -c 'check-ingame-package.sh' <<<"$cand_build")"
 eq "candidate: the packaging check runs once in all" "1" "$(grep -c 'bash .github/scripts/check-ingame-package.sh' "$workflows/candidate.yml")"
-eq "overlay: maps the DLL to ingame/resonance_ingame.dll once" "1" "$(grep -c '"ingame/resonance_ingame.dll"' "$overlay")"
-eq "overlay: its source is the ingame profile's DLL" "1" "$(grep -c '"../target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll"' "$overlay")"
+eq "overlay: the file is gone" "no" "$([ -e "$overlay" ] && echo yes || echo no)"
+eq "overlay: nothing refers to tauri.ingame" "0" "$(cat "$workflows"/*.yml ../../package.bat | grep -c 'tauri.ingame')"
 eq "tauri.conf.json has no static DLL mapping" "0" "$(grep -c 'resonance_ingame' ../../src-tauri/tauri.conf.json)"
 eq "the test-env build has no --config" "1" "$(grep -c 'build --no-bundle --features test-env$' "$workflows/candidate.yml")"
 # --- the DLL on the stable path (F-R8a-1): signed like the exe in Candidate, listed in SHA256SUMS, carried and re-checked by Promote ---
@@ -397,7 +398,9 @@ eq "promote re-proves the exe's pin on the files it publishes" "1" "$(grep -c 'r
 eq "candidate proves the pin on the files it publishes" "1" "$(grep -c 'release_pin_problem' "$workflows/candidate.yml")"
 eq "promote downloads four patterns and SHA256SUMS" "5" "$(grep -o -- '--pattern' "$workflows/promote.yml" | wc -l | tr -d ' ')"
 eq "latest.json gets the DLL url in both" "2" "$(cat "$workflows/candidate.yml" "$workflows/promote.yml" | grep -c 'release_dll_url')"
-eq "the ingame-dll artifact lists the DLL signature" "1" "$(grep -c '^ *target/release/ingame/resonance_ingame.dll.sig$' "$workflows/candidate.yml")"
+eq "the ingame-dll artifact lists the DLL signature" "1" "$(grep -c '^ *target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll.sig$' "$workflows/candidate.yml")"
+eq "no workflow line mentions target/release/ingame" "0" "$(cat "$workflows"/*.yml | grep -c 'target/release/ingame')"
+eq "the DLL is signed from the ingame profile path" "1" "$(grep -c 'signer sign .*target/x86_64-pc-windows-msvc/ingame/resonance_ingame\.dll' "$workflows/candidate.yml")"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
