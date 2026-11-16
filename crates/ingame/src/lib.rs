@@ -17,3 +17,4 @@ pub mod log;
 pub mod names;
 pub mod session;
 pub mod unload;
+pub mod walk;
