@@ -1,5 +1,75 @@
 //! One in-game session per game process, kept in a map by pid.
 
+use crate::ingame_send::SendError;
+use std::collections::BTreeMap;
+
+/// The sessions, by game pid. `S` is the app's session type.
+#[derive(Debug)]
+pub struct Sessions<S> {
+    map: BTreeMap<u32, S>,
+}
+
+impl<S> Sessions<S> {
+    /// Empty, usable in a `static`.
+    pub const fn new() -> Self {
+        Sessions {
+            map: BTreeMap::new(),
+        }
+    }
+
+    /// The session of `pid`, connecting it first when there is none. A failed
+    /// connect stores nothing, so the next call tries again.
+    pub fn get_or_connect(
+        &mut self,
+        pid: u32,
+        connect: impl FnOnce() -> Result<S, SendError>,
+    ) -> Result<&mut S, SendError> {
+        use std::collections::btree_map::Entry;
+        match self.map.entry(pid) {
+            Entry::Occupied(e) => Ok(e.into_mut()),
+            Entry::Vacant(e) => Ok(e.insert(connect()?)),
+        }
+    }
+
+    pub fn contains(&self, pid: u32) -> bool {
+        self.map.contains_key(&pid)
+    }
+
+    /// Forgets (and drops) the session of `pid`.
+    pub fn drop_pid(&mut self, pid: u32) {
+        self.map.remove(&pid);
+    }
+
+    /// Drops the sessions whose pid is not in `live`; returns those pids.
+    pub fn retain_live(&mut self, live: &[u32]) -> Vec<u32> {
+        let gone: Vec<u32> = self
+            .map
+            .keys()
+            .copied()
+            .filter(|p| !live.contains(p))
+            .collect();
+        for pid in &gone {
+            self.map.remove(pid);
+        }
+        gone
+    }
+
+    /// Every session in pid order, leaving the map empty.
+    pub fn take_all(&mut self) -> Vec<(u32, S)> {
+        std::mem::take(&mut self.map).into_iter().collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+impl<S> Default for Sessions<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Sessions;

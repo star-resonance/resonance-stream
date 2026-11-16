@@ -359,8 +359,6 @@ pub fn accept_game(
 /// The steps of connecting to the game, so the order can be tested; the Windows
 /// implementation is in `src-tauri/src/ingame/win/`.
 pub trait Host {
-    /// The game's pid ([`pick_game`] over the live process list).
-    fn find_game(&mut self) -> Result<u32, SendError>;
     /// Creates the pipe (first instance) for `pid`; before any load.
     fn create_pipe(&mut self, pid: u32) -> Result<(), SendError>;
     /// Whether the DLL module is in the game's module list.
@@ -407,14 +405,12 @@ impl Resident {
     }
 }
 
-/// Finds the game, creates the pipe, loads the DLL and says `hello`; returns the
-/// game's pid. A DLL of another protocol version (a stale module: the file name is
+/// Creates the pipe for `pid`, loads the DLL and says `hello`; returns `pid`. A DLL of another protocol version (a stale module: the file name is
 /// fixed, so the old one must leave first) gets one `bye`, a wait and a second try.
 ///
 /// A module that is still in the game after [`UNLOAD_WAIT`] is resident: it is
 /// noted in `resident`, and `connect` returns `ResidentModule` without loading again.
-pub fn connect(host: &mut impl Host, resident: &mut Resident) -> Result<u32, SendError> {
-    let pid = host.find_game()?;
+pub fn connect(host: &mut impl Host, resident: &mut Resident, pid: u32) -> Result<u32, SendError> {
     if resident.holds(pid) {
         if host.module_loaded(pid) {
             return Err(SendError::ResidentModule);
