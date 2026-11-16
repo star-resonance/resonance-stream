@@ -668,9 +668,9 @@ pub(crate) mod tests {
         w.classes
             .insert(("Panda.Core".into(), "Game".into()), PANDA_GAME);
         w.methods
-            .insert((SINGLETON_CLASS, "Update".into(), 0), CTRL_UPDATE);
+            .insert((SINGLETON_CLASS, "Update".into(), 1), CTRL_UPDATE);
         w.methods
-            .insert((PANDA_GAME, "Update".into(), 0), GAME_UPDATE);
+            .insert((PANDA_GAME, "Update".into(), 1), GAME_UPDATE);
         w.method_ptrs.insert(CTRL_UPDATE, 0x7000);
         w.method_ptrs.insert(GAME_UPDATE, 0x8000);
         w
@@ -698,7 +698,7 @@ pub(crate) mod tests {
     #[test]
     fn the_fallback_is_used_when_only_it_resolves() {
         let mut ops = with_pump_candidates();
-        ops.methods.remove(&(SINGLETON_CLASS, "Update".into(), 0));
+        ops.methods.remove(&(SINGLETON_CLASS, "Update".into(), 1));
         let mut w = walker(ops);
         let target = pump(&mut w).unwrap();
         assert_eq!(

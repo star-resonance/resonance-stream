@@ -77,18 +77,19 @@ impl HookCandidate {
     }
 }
 
+/// The game's `Update` takes the frame time (`Update(float)`), so argc is 1; the hook never reads it.
 pub const HOOK_CANDIDATES: [HookCandidate; 2] = [
     HookCandidate {
         class: ZRPC_CTRL,
         namespaces: &NAMESPACES,
         method: "Update",
-        argc: 0,
+        argc: 1,
     },
     HookCandidate {
         class: "Game",
         namespaces: &["Panda.Core"],
         method: "Update",
-        argc: 0,
+        argc: 1,
     },
 ];
 
