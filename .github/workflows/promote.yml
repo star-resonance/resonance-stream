@@ -5,10 +5,11 @@
 # is not released yet and is above the latest release, Cargo.toml at that commit has that version and
 # its prerelease exists (scripts/release.py rc-branch, check-promote).
 # Nothing is built or signed again, and this workflow holds no signing key: it downloads the
-# prerelease's files, checks them against SHA256SUMS and the app's public keys, tags the same commit
-# v<version>, makes the release with the same exe and .sig, and writes only the stable feed entry
-# (latest.json: the same signature, the final release's exe URL; the app checks the file's signature,
-# not the URL). It then reads the live feed back the way the app does and deletes the rc/ branches
+# prerelease's four files (the exe and the in-game DLL, each with its .sig), checks them against
+# SHA256SUMS, the exe's pin of the DLL and the app's public keys, tags the same commit v<version>,
+# makes the release with the same files, and writes only the stable feed entry (latest.json: the
+# same signatures, the final release's exe and DLL URLs; the app checks each file's signature, not
+# the URL). A candidate made before the DLL was signed is refused before anything is tagged. It then reads the live feed back the way the app does and deletes the rc/ branches
 # of that version and every older one; a failed run before the release deletes nothing and can run
 # again. Only the publish job can write, and it runs none of the repository's code.
 name: Promote
@@ -105,17 +106,32 @@ jobs:
           set -euo pipefail
           source .github/scripts/release-lib.sh
           exe=$(release_asset "$FINAL")
+          dll=$(release_dll_asset "$FINAL")
           mkdir files
           gh release download "$RC" --repo "$REPO" --dir files \
-            --pattern "$exe" --pattern "$exe.sig" --pattern SHA256SUMS
+            --pattern "$exe" --pattern "$exe.sig" --pattern "$dll" --pattern "$dll.sig" --pattern SHA256SUMS
+          # A candidate made before the DLL was signed has no DLL files: fail here, before anything is tagged.
+          for f in "$exe" "$exe.sig" "$dll" "$dll.sig"; do
+            if [ ! -f "files/$f" ]; then
+              echo "::error::$RC has no $f: it was made before the DLL was signed; run Candidate again"
+              exit 1
+            fi
+          done
           (cd files && sha256sum -c SHA256SUMS)
-          # SHA256SUMS names exactly the exe and its signature, no more and no less.
-          if [ "$(awk '{print $2}' files/SHA256SUMS | sort | tr '\n' ' ')" != "$exe $exe.sig " ]; then
-            echo "::error::SHA256SUMS of $RC does not list exactly $exe and $exe.sig"
+          # SHA256SUMS names exactly the four files (exe, DLL and their signatures), no more and no less.
+          want=$(printf '%s\n' "$exe" "$exe.sig" "$dll" "$dll.sig" | sort | tr '\n' ' ')
+          if [ "$(awk '{print $2}' files/SHA256SUMS | sort | tr '\n' ' ')" != "$want" ]; then
+            echo "::error::SHA256SUMS of $RC does not list exactly $exe, $exe.sig, $dll and $dll.sig"
             exit 1
           fi
-          # Public keys only: the signature is for these bytes and for this version.
+          # The exe still pins this very DLL.
+          if ! problem=$(release_pin_problem "files/$exe" "files/$dll"); then
+            echo "::error::$problem"
+            exit 1
+          fi
+          # Public keys only: the signatures are for these bytes and for this version.
           cargo run -p resonance-core --example verify_update -- "files/$exe" "files/$exe.sig" "$VERSION"
+          cargo run -p resonance-core --example verify_update -- "files/$dll" "files/$dll.sig" "$VERSION"
       - name: Write the stable latest.json and the release page
         env:
           REPO: ${{ github.repository }}
@@ -126,6 +142,7 @@ jobs:
           set -euo pipefail
           source .github/scripts/release-lib.sh
           exe=$(release_asset "$FINAL")
+          dll=$(release_dll_asset "$FINAL")
           notes_src="release-notes/$FINAL.md"
           if ! problem=$(release_notes_problem 12 < "$notes_src"); then
             echo "::error::$notes_src: $problem"
@@ -133,7 +150,8 @@ jobs:
           fi
           release_notes_user_part < "$notes_src" > user-notes.md
           release_manifest "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "$(release_download_url "$REPO" "$FINAL")" "$(cat "files/$exe.sig")" < user-notes.md > files/latest.json
+            "$(release_download_url "$REPO" "$FINAL")" "$(cat "files/$exe.sig")" \
+            "$(release_dll_url "$REPO" "$FINAL")" "$(cat "files/$dll.sig")" < user-notes.md > files/latest.json
           cat files/latest.json
           # The commit list starts at the previous stable release (rc tags and test tags are not one).
           # The "Release vX.Y.Z" commit Candidate may have made on top of main is not a change.
@@ -179,12 +197,13 @@ jobs:
             exit 1
           fi
           exe="Resonance-Stream-$FINAL.exe"
+          dll="Resonance-Stream-$FINAL-ingame.dll"
           object=$(jq -n --arg tag "$FINAL" --arg sha "$COMMIT" \
                      '{tag: $tag, message: $tag, object: $sha, type: "commit"}' \
                    | gh api "repos/$REPO/git/tags" --input - --jq .sha)
           gh api "repos/$REPO/git/refs" -f ref="refs/tags/$FINAL" -f sha="$object" > /dev/null
           cd files
-          gh release create "$FINAL" "$exe" "$exe.sig" SHA256SUMS latest.json \
+          gh release create "$FINAL" "$exe" "$exe.sig" "$dll" "$dll.sig" SHA256SUMS latest.json \
             --repo "$REPO" --verify-tag --latest --title "$FINAL" --notes-file body.md
           for b in $RELEASED; do
             gh api -X DELETE "repos/$REPO/git/refs/heads/$b" > /dev/null || echo "::warning::could not delete $b"
