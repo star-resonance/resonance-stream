@@ -11,3 +11,9 @@ compile_error!(
     "resonance-ingame must be built with `--profile ingame` (panic = \"unwind\"): \
      `cargo build -p resonance-ingame --profile ingame`"
 );
+
+mod error;
+mod log;
+mod names;
+mod session;
+mod unload;
