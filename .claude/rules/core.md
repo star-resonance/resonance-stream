@@ -17,6 +17,11 @@ crates/core/           resonance-core — pure logic, tested on any OS
   src/workers.rs        worker decisions: translator on/off/restart, stale jobs, port
   src/download.rs       download checks: HTTPS, length + SHA-256, progress, versions
   src/sniffer_net.rs    sniffer network setup: per-exe firewall rule name, adapter pick (route first)
+  src/send_text.rs      SendSpacing: 1500 ms between sends (the text rules are in types)
+crates/frame/          resonance-frame — SendChitChatMsg frame builder, no_std, no dependencies, any OS
 crates/llama/          resonance-llama — llama-server HTTP client (/completion, /health), any OS
-crates/types/          resonance-types — DTOs shared across the Tauri boundary (serde only)
+crates/ingame/         resonance-ingame — the in-game DLL (cdylib, Windows; rules: .claude/rules/ingame.md)
+crates/types/          resonance-types — DTOs shared across the Tauri boundary (serde, serde_json)
+  src/send_chat.rs      SendChatChannel, prepare_text, SendTextError: what the composer may send (ui and app share it)
+  src/ingame_pipe.rs    the app-DLL pipe: names, ErrorCode, Request, LineBuffer
 ```
