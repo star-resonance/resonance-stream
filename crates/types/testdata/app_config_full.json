@@ -37,6 +37,7 @@
   "chat_log_retention_days": 30,
   "raw_capture": true,
   "ingame_send": true,
+  "send_channel": "guild",
   "guild_relay": { "enabled": true, "broker_url": "https://relay.example" },
   "nav_tabs": ["길드", "파티", "커스텀"],
   "click_through_hold_key": "Ctrl"

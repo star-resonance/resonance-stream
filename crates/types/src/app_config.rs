@@ -276,6 +276,17 @@ mod tests {
     }
 
     #[test]
+    fn send_channel_is_world_when_missing_and_an_odd_value_costs_nothing_else() {
+        assert_eq!(AppConfig::default().send_channel, "world");
+        let old: AppConfig = serde_json::from_str(r#"{"init_done": true}"#).unwrap();
+        assert_eq!(old.send_channel, "world");
+        let odd: AppConfig =
+            serde_json::from_str(r#"{"send_channel": "whisper", "theme": "light"}"#).unwrap();
+        assert_eq!(odd.send_channel, "whisper"); // kept as written; the ui falls back
+        assert_eq!(odd.theme, Theme::Light);
+    }
+
+    #[test]
     fn favorite_tabs_are_empty_when_missing_and_round_trip() {
         assert!(AppConfig::default().favorite_tabs.is_empty());
         let old: AppConfig = serde_json::from_str(r#"{"init_done": true}"#).unwrap();
