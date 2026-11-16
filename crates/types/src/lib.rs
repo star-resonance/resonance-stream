@@ -11,6 +11,7 @@ use std::collections::HashMap;
 mod app_config;
 mod send_chat;
 pub use send_chat::{prepare_text, SendChatChannel, SendTextError, MAX_TEXT_UTF16};
+pub mod ingame_pipe;
 pub mod ipc;
 pub use app_config::{AppConfig, GuildRelayConfig};
 
