@@ -1,8 +1,9 @@
 # Agent Operating Rules — resonance-stream
 
 Resonance Stream is a Windows desktop app: it sniffs Blue Protocol: Star Resonance
-chat packets (raw socket, no client hooking), translates Japanese chat to Korean
-through a local llama.cpp server, and shows it in a Tauri overlay.
+chat packets (raw socket; the sniffer hooks nothing), translates Japanese chat to Korean
+through a local llama.cpp server, and shows it in a Tauri overlay. It can also send chat from
+a composer, through an opt-in in-game DLL (D-35).
 
 One Cargo workspace in five crates, three parts, plus the runbook (treated as docs).
 **Which part you touch decides which gate applies** -- the most important thing on this page.
@@ -53,6 +54,11 @@ style/ public/        CSS source; static assets
 
 ## Guardrails
 
+- **No hooking, no injection -- except D-35.** The sniffer hooks nothing (raw socket, D-17). The app
+  may load **only its own `resonance_ingame.dll`** into the game, **only when the user has opted in**
+  (off by default, with the terms-of-service warning), and the DLL **only sends chat** (the game's
+  `ZTcpClient.Send`). Any other hook, injection, other DLL, game-file change or use of the DLL stays
+  forbidden. The DLL's rules: `.claude/rules/ingame.md`.
 - **Protocol.** `ChatMessage`/`SystemMessage` serialize as camelCase across the Tauri boundary:
   renaming a field is a protocol change, not a refactor.
 - **Gist and release URLs are public**; none of them is a secret.
