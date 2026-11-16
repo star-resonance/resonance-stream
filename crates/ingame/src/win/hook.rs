@@ -194,7 +194,7 @@ impl PumpHook {
         if !restored {
             return Err(self);
         }
-        log.info("unhook: original bytes restored");
+        log.info(&format!("unhook: original bytes restored on {}", self.name));
         self.state.mark_unhooked();
         // SAFETY: the code is restored and no thread was in the trampoline or the DLL when
         // it was; ilhook's `Drop` rewrites the same bytes and frees the trampoline.

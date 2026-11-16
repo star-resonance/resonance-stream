@@ -1,14 +1,16 @@
 //! The DLL's side of the pipe protocol: one request line in, one reply and what to do
-//! next out. Pure: the probe and the log are passed in.
+//! next out. Pure: the probe, the sender and the log are passed in.
 
 use crate::error::ProbeFailure;
 use crate::log::LogSink;
+use crate::send::Sender;
 use resonance_types::ingame_pipe::{
     decode_request, encode_reply, ErrorCode, Reply, Request, PIPE_PROTOCOL_VERSION,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-/// The walk to the live `ZTcpClient`; run at `hello` and on each `send`, never on a timer.
+/// The walk to the live `ZTcpClient`; run at `hello` only, never on a timer (each `send`
+/// walks again on the game's main thread, inside the pump).
 pub trait Probe {
     fn probe(&mut self) -> Result<(), ProbeFailure>;
 }
@@ -45,6 +47,7 @@ impl Session {
         &mut self,
         line: &[u8],
         probe: &mut dyn Probe,
+        sender: &mut dyn Sender,
         log: &mut dyn LogSink,
     ) -> Outcome {
         let request = match decode_request(line) {
@@ -52,7 +55,9 @@ impl Session {
             Err(e) => return error(e.id, e.code, "unreadable request", Next::Continue),
         };
         let id = request.id();
-        match catch_unwind(AssertUnwindSafe(|| self.dispatch(request, probe, log))) {
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.dispatch(request, probe, sender, log)
+        })) {
             Ok(outcome) => outcome,
             Err(_) => {
                 log.warn("a request handler panicked");
@@ -71,6 +76,7 @@ impl Session {
         &mut self,
         request: Request,
         probe: &mut dyn Probe,
+        sender: &mut dyn Sender,
         log: &mut dyn LogSink,
     ) -> Outcome {
         let id = request.id();
@@ -103,28 +109,18 @@ impl Session {
                 log.info("bye");
                 reply(Reply::Ack { id }, Next::Unload)
             }
-            Request::Send { text, .. } => {
-                let channel = match request.send_channel() {
-                    Ok(c) => c,
-                    Err(code) => return error(id, code, "unknown channel", Next::Continue),
-                };
+            Request::Send { channel, text, .. } => {
                 // Channel and length only: chat text is never logged.
-                let note = format!("send channel={} text_len={}", channel.as_str(), text.len());
-                match probe.probe() {
-                    Err(f) => {
-                        log.info(&format!("{note}: probe failed: {}", f.detail()));
-                        error(id, f.error_code(), &f.detail(), Next::Continue)
+                let shown = request.send_channel().map_or("?", |c| c.as_str());
+                let note = format!("send channel={shown} text_len={}", text.len());
+                let answer = sender.send(id, channel, text);
+                match &answer {
+                    Reply::Error { code, detail, .. } => {
+                        log.info(&format!("{note}: {}: {detail}", code.as_str()));
                     }
-                    Ok(()) => {
-                        log.info(&format!("{note}: probe walked: ok; send not built"));
-                        error(
-                            id,
-                            ErrorCode::Unsupported,
-                            "send not built (R4)",
-                            Next::Continue,
-                        )
-                    }
+                    _ => log.info(&format!("{note}: sent")),
                 }
+                reply(answer, Next::Continue)
             }
         }
     }
