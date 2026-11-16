@@ -82,6 +82,9 @@ pub struct AppConfig {
     /// Debug: append the game's raw port-5003 packets to `captures/`. Applies live.
     #[serde(default)]
     pub raw_capture: bool,
+    /// Opt-in, off by default: load a module into the game to send chat from the app.
+    #[serde(default)]
+    pub ingame_send: bool,
     /// Sending guild chat to the guild's Discord channel through a broker (#367).
     #[serde(default)]
     pub guild_relay: GuildRelayConfig,
@@ -149,6 +152,7 @@ impl Default for AppConfig {
             favorite_tabs: Vec::new(),
             chat_log_retention_days: 0,
             raw_capture: false,
+            ingame_send: false,
             guild_relay: GuildRelayConfig::default(),
             nav_tabs: default_nav_tabs(),
             click_through_hold_key: ClickThroughHoldKey::default(),
