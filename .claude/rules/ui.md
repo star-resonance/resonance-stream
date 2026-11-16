@@ -26,6 +26,16 @@ paths:
   change as its `generate_handler!` entry (and the count that test asserts), or the types test
   `the_backend_registers_exactly_the_commands_listed_here` fails. Events are named through `ipc::event`.
 
+## Chat composer (R7)
+
+- Shown only while `ingame_send` is on (a `<Show>` after `<ChatContainer />`): turning it off drops the draft and error.
+- The draft goes out exactly as typed (no prefix, D-35 DS-0001); the backend prepares it (`SendChat { channel, text }`).
+  Ok clears draft and error; Err keeps the draft and shows the backend's sentence unchanged; the input is read-only while sending.
+- Enter sends only when plain: not Shift, not `is_composing`, not key code 229 (IME commit). A 길드/파티/월드/로컬 tab preselects the channel.
+- The counter counts UTF-16 units of the prepared text, `n/140` (an emoji is 2).
+- While the DLL downloads it shows `게임 내 전송 모듈을 내려받는 중... N%` from `download-progress`, matched by label prefix (`module_line`).
+- Logic that can be a pure function goes in `composer_view.rs` with a test; the component only wires signals and events.
+
 ## Behaviour check for UI changes
 
 UI changes are screenshotted in a browser with the `ui-preview` skill
@@ -43,7 +53,8 @@ src/                  ui crate (resonance-stream-ui)
   status_signals.rs     ServiceSignals / SetupSignals / UpdateSignals: backend status, wizard, update dialogs
   view_signals.rs       ChatSignals / UiSignals: chat list, system log, scroll + unread, open dialogs
   chat_view.rs          chat list: per-tab views + limits (ChatStore), filter, paging -- pure, host-tested
-  components/           views; settings/ is one file per settings section
+  composer_view.rs      chat composer logic (counter, can_send, Enter, channel preselect) -- pure, host-tested
+  components/           views; settings/ is one file per settings section; chat_composer.rs is the composer's wiring
   hooks/                backend event, config and tray wiring
   ui_types.rs           ui-only types + re-export of resonance-types (AppConfig included)
 ```
