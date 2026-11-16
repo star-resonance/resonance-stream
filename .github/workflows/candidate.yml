@@ -16,14 +16,16 @@
 #   - tags v<final>-rc.N: the main commit itself when nothing was stamped, else a release commit
 #     "Release v<final>" whose parent is the main commit, made through the API with the very
 #     blobs and tree that were built (the tag job refuses any other); makes a prerelease with the
-#     exe, its .sig, SHA256SUMS, latest.json (the candidate-channel feed entry: the same signature,
+#     exe, its .sig, the DLL, its .sig, SHA256SUMS, latest.json (the candidate-channel feed entry: the same signature,
 #     the prerelease's exe URL; try it with --feed-url on a test-env build of your own), makes the
 #     branch rc/<rc tag> at the tagged commit for Promote (promote.yml) to run from, and deletes the
 #     version's lower rc/ branches.
 # The in-game DLL (crates/ingame) is built first, with --profile ingame, and hashed; the shipping
 # build pins that hash into the exe (RESONANCE_INGAME_DLL, src-tauri/build.rs) and a packaging check
-# proves the DLL beside the exe is the pinned one before signing. The DLL goes to the prerelease
-# only, as an extra asset outside SHA256SUMS (Promote and the stable release are unchanged).
+# proves the DLL beside the exe is the pinned one before signing. The DLL is then signed like the
+# exe (same key, same --app-version), verified the way the app will, listed in SHA256SUMS with its
+# .sig and carried by the prerelease; Promote re-checks all four files and carries them to the stable
+# release, and latest.json announces the DLL (ingame_url, ingame_signature).
 # The binary carries the final version and never knows it is a candidate. Promote reuses these files.
 # A push to main during the run changes nothing: the run keeps its commit. main itself is never
 # written. Only the tag job can write, and it runs none of the repository's code.
@@ -188,7 +190,7 @@ jobs:
           RESONANCE_INGAME_DLL: ${{ steps.dll.outputs.path }}
           RESONANCE_INGAME_REQUIRED: '1'
         run: npx --yes @tauri-apps/cli@2 build --no-bundle --config src-tauri/tauri.ingame.conf.json
-      # Nothing writes the DLL after it was hashed: it is not signed (Sign covers the exe only).
+      # Nothing writes the DLL after it was hashed; Sign signs the bundled copy this check just proved identical.
       - name: The shipped DLL is the pinned one
         shell: bash
         env:
@@ -213,7 +215,9 @@ jobs:
             exit 1
           fi
           npx --yes @tauri-apps/cli@2 signer sign --app-version "$VERSION" target/release/resonance-stream.exe
-          ls -l target/release/resonance-stream.exe target/release/resonance-stream.exe.sig
+          npx --yes @tauri-apps/cli@2 signer sign --app-version "$VERSION" target/release/ingame/resonance_ingame.dll
+          ls -l target/release/resonance-stream.exe target/release/resonance-stream.exe.sig \
+            target/release/ingame/resonance_ingame.dll target/release/ingame/resonance_ingame.dll.sig
       # The app's own check on the file about to be published: catches a private key that is not
       # the one whose public half is in the app, and a wrong version.
       - name: Verify the signature the way the app will
@@ -224,10 +228,14 @@ jobs:
           set -euo pipefail
           cargo run --release -p resonance-core --example verify_update -- \
             target/release/resonance-stream.exe target/release/resonance-stream.exe.sig "$VERSION"
+          cargo run --release -p resonance-core --example verify_update -- \
+            target/release/ingame/resonance_ingame.dll target/release/ingame/resonance_ingame.dll.sig "$VERSION"
       - uses: actions/upload-artifact@v7
         with:
           name: ingame-dll
-          path: target/release/ingame/resonance_ingame.dll
+          path: |
+            target/release/ingame/resonance_ingame.dll
+            target/release/ingame/resonance_ingame.dll.sig
           if-no-files-found: error
           retention-days: 3
       - uses: actions/upload-artifact@v7
@@ -326,18 +334,23 @@ jobs:
           mkdir files
           mv signed/resonance-stream.exe "files/$exe"
           mv signed/resonance-stream.exe.sig "files/$exe.sig"
-          (cd files && sha256sum "$exe" "$exe.sig" > SHA256SUMS)
-          sum=$(sha256sum "files/$exe" | cut -d' ' -f1)
-          # The in-game DLL: a prerelease-only asset, deliberately outside SHA256SUMS (Promote requires
-          # that file to list exactly the exe and its .sig). The very bytes the exe pins.
-          dll="Resonance-Stream-$FINAL-ingame.dll"
+          # The in-game DLL: signed like the exe, the very bytes the exe pins.
+          dll=$(release_dll_asset "$FINAL")
           mv ingame-dll/resonance_ingame.dll "files/$dll"
+          mv ingame-dll/resonance_ingame.dll.sig "files/$dll.sig"
+          if ! problem=$(release_pin_problem "files/$exe" "files/$dll"); then
+            echo "::error::$problem"
+            exit 1
+          fi
+          (cd files && sha256sum "$exe" "$exe.sig" "$dll" "$dll.sig" > SHA256SUMS)
+          sum=$(sha256sum "files/$exe" | cut -d' ' -f1)
           dllsum=$(sha256sum "files/$dll" | cut -d' ' -f1)
 
-          # The candidate-channel feed entry: the final version and the signature, the prerelease's exe.
+          # The candidate-channel feed entry: the final version and the signatures, the prerelease's exe and DLL.
           release_notes_user_part < "release-notes/$FINAL.md" > user-notes.md
           release_manifest "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "https://github.com/$REPO/releases/download/$RC/$exe" "$(cat "files/$exe.sig")" < user-notes.md > files/latest.json
+            "https://github.com/$REPO/releases/download/$RC/$exe" "$(cat "files/$exe.sig")" \
+            "$(release_dll_url "$REPO" "$RC" "$FINAL")" "$(cat "files/$dll.sig")" < user-notes.md > files/latest.json
           cat files/latest.json
 
           prev=$(release_previous_stable_tag "$GITHUB_SHA")
@@ -351,7 +364,7 @@ jobs:
             printf '2. 실행하면 관리자 권한을 요청합니다 (패킷 캡처에 필요) → **예**.\n'
             printf '3. 설치된 앱과 같은 설정·번역 모델·채팅 기록 폴더를 함께 씁니다. 두 앱을 동시에 켜지 마세요.\n'
             printf '4. `latest.json` 은 이 후보의 업데이트 피드입니다. 시험용 빌드(`--feed-url`)에 지정해 업데이트 경로를 시험합니다.\n'
-            printf '5. `%s` 는 게임 안 전송 기능(실험적, 선택 사항)을 시험할 때만 필요합니다. 앱 옆에 `ingame\\resonance_ingame.dll` 로 저장하세요. 앱이 SHA-256 을 확인합니다 (SHA256SUMS 에는 없습니다).\n\n' "$dll"
+            printf '5. `%s` 는 게임 안 전송 기능(실험적, 선택 사항)을 시험할 때만 필요합니다. 앱 옆에 `ingame\\resonance_ingame.dll` 로 저장하세요. 앱이 SHA-256 을 확인합니다.\n\n' "$dll"
             printf '### 빌드 정보\n'
             printf -- '- main 커밋: `%s`\n' "$GITHUB_SHA"
             printf -- '- 실행: %s\n' "$RUN_URL"
@@ -440,7 +453,7 @@ jobs:
                    | gh api "repos/$REPO/git/tags" --input - --jq .sha)
           gh api "repos/$REPO/git/refs" -f ref="refs/tags/$RC" -f sha="$object" > /dev/null
           cd files
-          gh release create "$RC" "$exe" "$exe.sig" SHA256SUMS latest.json "$dll" \
+          gh release create "$RC" "$exe" "$exe.sig" "$dll" "$dll.sig" SHA256SUMS latest.json \
             --repo "$REPO" --verify-tag --prerelease --latest=false --title "$RC (테스트용)" --notes-file notes.md
           gh api "repos/$REPO/git/refs" -f ref="refs/heads/rc/$RC" -f sha="$commit" > /dev/null
           for b in $SUPERSEDED; do

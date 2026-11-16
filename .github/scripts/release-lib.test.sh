@@ -397,7 +397,7 @@ eq "promote re-proves the exe's pin on the files it publishes" "1" "$(grep -c 'r
 eq "candidate proves the pin on the files it publishes" "1" "$(grep -c 'release_pin_problem' "$workflows/candidate.yml")"
 eq "promote downloads four patterns and SHA256SUMS" "5" "$(grep -c -- '--pattern' "$workflows/promote.yml")"
 eq "latest.json gets the DLL url in both" "2" "$(cat "$workflows/candidate.yml" "$workflows/promote.yml" | grep -c 'release_dll_url')"
-eq "the ingame-dll artifact lists the DLL signature" "1" "$(grep -c 'target/release/ingame/resonance_ingame.dll.sig' "$workflows/candidate.yml")"
+eq "the ingame-dll artifact lists the DLL signature" "1" "$(grep -c '^ *target/release/ingame/resonance_ingame.dll.sig$' "$workflows/candidate.yml")"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi
