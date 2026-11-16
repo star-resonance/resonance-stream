@@ -45,15 +45,55 @@ release_download_url() {
   printf 'https://github.com/%s/releases/download/%s/%s\n' "$1" "$2" "$(release_asset "$2")"
 }
 
+# The in-game DLL's file name on a release: the DLL on disk is resonance_ingame.dll,
+# the asset carries the final version. Its signature is <name>.sig.
+release_dll_asset() {
+  printf 'Resonance-Stream-%s-ingame.dll\n' "$1"
+}
+
+# Where the DLL is downloaded from: <repo> is "owner/name", <tag> the release
+# (a candidate's tag for the prerelease), <final> the version in the file name
+# (default: <tag>, as for a stable release).
+release_dll_url() {
+  printf 'https://github.com/%s/releases/download/%s/%s\n' "$1" "$2" "$(release_dll_asset "${3:-$2}")"
+}
+
+# Does the exe pin this DLL? Prints the reason and returns 1 unless the lowercase
+# hex SHA-256 of <dll> occurs in <exe> (the check check-ingame-package.sh makes in
+# the build tree, repeated on the very files that get published).
+release_pin_problem() {
+  local exe=$1 dll=$2 f hex
+  for f in "$exe" "$dll"; do
+    if [ ! -f "$f" ]; then
+      printf '%s 파일이 없습니다\n' "$f"
+      return 1
+    fi
+  done
+  hex=$(sha256sum "$dll" | cut -d' ' -f1)
+  if ! grep -a -F -q -- "$hex" "$exe"; then
+    printf '%s에 %s의 SHA-256(%s)이 없습니다: exe가 이 DLL을 핀하지 않습니다\n' "$exe" "$dll" "$hex"
+    return 1
+  fi
+}
+
 # latest.json, the app's update feed: version, notes (stdin), pub_date, the exe's
 # url and the base64 signature (as `tauri signer sign` writes it). The five
 # field names are the updater's "dynamic" manifest format, so the official
-# plugin could read this file too.
+# plugin could read this file too. Optional 5th and 6th arguments, both or
+# neither: the in-game DLL's url and signature, written as ingame_url and
+# ingame_signature (old apps ignore them). Only one of the two: returns 1.
 release_manifest() {
-  local version=$1 pub_date=$2 url=$3 signature=$4
+  local version=$1 pub_date=$2 url=$3 signature=$4 ingame_url=${5:-} ingame_signature=${6:-}
+  if { [ -n "$ingame_url" ] && [ -z "$ingame_signature" ]; } || { [ -z "$ingame_url" ] && [ -n "$ingame_signature" ]; }; then
+    printf 'ingame_url와 ingame_signature는 함께 있거나 함께 없어야 합니다\n' >&2
+    return 1
+  fi
   jq -n --arg version "$version" --arg pub_date "$pub_date" --arg url "$url" \
-    --arg signature "${signature//[$'\r\n']/}" --rawfile notes /dev/stdin \
-    '{version: $version, notes: $notes, pub_date: $pub_date, url: $url, signature: $signature}'
+    --arg signature "${signature//[$'\r\n']/}" \
+    --arg ingame_url "$ingame_url" --arg ingame_signature "${ingame_signature//[$'\r\n']/}" \
+    --rawfile notes /dev/stdin \
+    '{version: $version, notes: $notes, pub_date: $pub_date, url: $url, signature: $signature}
+     + (if $ingame_url != "" then {ingame_url: $ingame_url, ingame_signature: $ingame_signature} else {} end)'
 }
 
 # Would the app update from release <tag>? The release's asset names (one per
@@ -61,9 +101,12 @@ release_manifest() {
 # them: the three files exist, the feed is for this version, points at this
 # release's exe and carries a signature. Prints the reason and returns 1 when
 # something is off; prints nothing and returns 0 when it is fine. <slug> is
-# the repository, "owner/name".
+# the repository, "owner/name". The in-game DLL and its .sig are both there or
+# both absent; when there, the feed's ingame_url is this release's DLL and
+# ingame_signature is set; when absent, the feed has neither field. With the
+# literal fourth argument "strict" the two DLL assets are required.
 release_feed_problem() {
-  local tag=$1 assets=$2 slug=$3 feed version exe want got
+  local tag=$1 assets=$2 slug=$3 strict=${4:-} feed version exe dll want got have_dll=0 have_sig=0
   feed=$(cat)
   if ! version=$(release_version "$tag" 2>/dev/null); then
     printf '%s는 정식 릴리스 태그(vX.Y.Z)가 아닙니다\n' "$tag"
@@ -93,6 +136,38 @@ release_feed_problem() {
   fi
   if [ -z "$(jq -r '(.signature // "") | tostring' <<<"$feed")" ]; then
     printf 'latest.json의 signature가 비어 있습니다\n'
+    return 1
+  fi
+  dll=$(release_dll_asset "$tag")
+  grep -Fxq -- "$dll" <<<"$assets" && have_dll=1
+  grep -Fxq -- "$dll.sig" <<<"$assets" && have_sig=1
+  if [ "$have_dll" = 1 ] && [ "$have_sig" = 0 ]; then
+    printf '릴리스 %s에 %s 파일이 없습니다 (DLL만 있습니다)\n' "$tag" "$dll.sig"
+    return 1
+  fi
+  if [ "$have_dll" = 0 ] && [ "$have_sig" = 1 ]; then
+    printf '릴리스 %s에 %s 파일이 없습니다 (DLL 서명만 있습니다)\n' "$tag" "$dll"
+    return 1
+  fi
+  if [ "$have_dll" = 0 ]; then
+    if [ "$strict" = strict ]; then
+      printf '릴리스 %s에 %s, %s 파일이 없습니다\n' "$tag" "$dll" "$dll.sig"
+      return 1
+    fi
+    if jq -e 'has("ingame_url") or has("ingame_signature")' >/dev/null <<<"$feed"; then
+      printf 'latest.json에 ingame_url/ingame_signature가 있지만 릴리스 %s에 DLL 파일이 없습니다\n' "$tag"
+      return 1
+    fi
+    return 0
+  fi
+  got=$(jq -r '(.ingame_url // "") | tostring' <<<"$feed")
+  want=$(release_dll_url "$slug" "$tag")
+  if [ "$got" != "$want" ]; then
+    printf 'latest.json의 ingame_url이 이 릴리스의 DLL이 아니거나 없습니다: %s (기대: %s)\n' "$got" "$want"
+    return 1
+  fi
+  if [ -z "$(jq -r '(.ingame_signature // "") | tostring' <<<"$feed")" ]; then
+    printf 'latest.json의 ingame_signature가 비어 있습니다\n'
     return 1
   fi
 }
