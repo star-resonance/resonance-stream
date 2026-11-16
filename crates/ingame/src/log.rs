@@ -1,3 +1,137 @@
+//! `ingame.log`: one line per entry, rotated over `ingame.log.1` at a cap. Time is passed
+//! in, so the format and the rotation are tested without a clock.
+
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+/// The log's size cap (a placeholder from PR #398); one rotated file is kept.
+pub const LOG_CAP_BYTES: u64 = 1024 * 1024;
+/// A message is cut to this many bytes.
+pub const MAX_MESSAGE_BYTES: usize = 1024;
+
+const FILE_NAME: &str = "ingame.log";
+const ROTATED_NAME: &str = "ingame.log.1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warn,
+    Error,
+}
+
+impl Level {
+    fn as_str(self) -> &'static str {
+        match self {
+            Level::Info => "INFO",
+            Level::Warn => "WARN",
+            Level::Error => "ERROR",
+        }
+    }
+}
+
+/// Where the session and the walk write their entries.
+pub trait LogSink {
+    fn log(&mut self, level: Level, message: &str);
+
+    fn info(&mut self, message: &str) {
+        self.log(Level::Info, message);
+    }
+    fn warn(&mut self, message: &str) {
+        self.log(Level::Warn, message);
+    }
+}
+
+/// `<unix seconds>.<millis> <LEVEL> <message>\n`, the message on one line and cut to
+/// [`MAX_MESSAGE_BYTES`].
+pub fn format_line(unix_millis: u64, level: Level, message: &str) -> String {
+    let mut end = message.len().min(MAX_MESSAGE_BYTES);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    let message = message[..end].replace(['\n', '\r'], " ");
+    format!(
+        "{}.{:03} {} {message}\n",
+        unix_millis / 1000,
+        unix_millis % 1000,
+        level.as_str()
+    )
+}
+
+/// The log file. Every failure to write is ignored: logging never takes the game down.
+pub struct RotatingLog {
+    open: Option<Open>,
+}
+
+struct Open {
+    dir: PathBuf,
+    file: File,
+    size: u64,
+    cap: u64,
+}
+
+impl RotatingLog {
+    /// Opens (appending to) `ingame.log` in `dir`; an inert log if that fails.
+    pub fn open(dir: &Path, cap: u64) -> Self {
+        let path = dir.join(FILE_NAME);
+        let open = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok()
+            .map(|file| Open {
+                size: file.metadata().map(|m| m.len()).unwrap_or(0),
+                dir: dir.to_path_buf(),
+                file,
+                cap,
+            });
+        Self { open }
+    }
+
+    /// A log that writes nothing.
+    pub fn inert() -> Self {
+        Self { open: None }
+    }
+
+    pub fn write(&mut self, unix_millis: u64, level: Level, message: &str) {
+        let Some(open) = self.open.as_mut() else {
+            return;
+        };
+        let line = format_line(unix_millis, level, message);
+        let len = line.len() as u64;
+        if open.size > 0 && open.size + len > open.cap {
+            let _ = fs::rename(open.dir.join(FILE_NAME), open.dir.join(ROTATED_NAME));
+            match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(open.dir.join(FILE_NAME))
+            {
+                Ok(file) => {
+                    open.file = file;
+                    open.size = 0;
+                }
+                Err(_) => {
+                    self.open = None;
+                    return;
+                }
+            }
+        }
+        if open.file.write_all(line.as_bytes()).is_ok() {
+            open.size += len;
+        }
+    }
+}
+
+impl LogSink for RotatingLog {
+    fn log(&mut self, level: Level, message: &str) {
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.write(millis, level, message);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

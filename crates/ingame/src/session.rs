@@ -1,3 +1,153 @@
+//! The DLL's side of the pipe protocol: one request line in, one reply and what to do
+//! next out. Pure: the probe and the log are passed in.
+
+use crate::error::ProbeFailure;
+use crate::log::LogSink;
+use resonance_types::ingame_pipe::{
+    decode_request, encode_reply, ErrorCode, Reply, Request, PIPE_PROTOCOL_VERSION,
+};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
+/// The walk to the live `ZTcpClient`; run at `hello` and on each `send`, never on a timer.
+pub trait Probe {
+    fn probe(&mut self) -> Result<(), ProbeFailure>;
+}
+
+/// What the worker does after writing the reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Next {
+    Continue,
+    /// Close the connection (and so unload).
+    Close,
+    /// `bye`: unload.
+    Unload,
+}
+
+#[derive(Debug)]
+pub struct Outcome {
+    /// The reply line, `\n` included.
+    pub reply: Vec<u8>,
+    pub next: Next,
+}
+
+#[derive(Default)]
+pub struct Session {
+    greeted: bool,
+}
+
+impl Session {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Handles one request line (without its `\n`).
+    pub fn handle_line(
+        &mut self,
+        line: &[u8],
+        probe: &mut dyn Probe,
+        log: &mut dyn LogSink,
+    ) -> Outcome {
+        let request = match decode_request(line) {
+            Ok(r) => r,
+            Err(e) => return error(e.id, e.code, "unreadable request", Next::Continue),
+        };
+        let id = request.id();
+        match catch_unwind(AssertUnwindSafe(|| self.dispatch(request, probe, log))) {
+            Ok(outcome) => outcome,
+            Err(_) => {
+                log.warn("a request handler panicked");
+                error(id, ErrorCode::Unsupported, "internal error", Next::Continue)
+            }
+        }
+    }
+
+    /// A line over the cap: `bad_request`, and the connection closes.
+    pub fn line_too_long(&mut self, log: &mut dyn LogSink) -> Outcome {
+        log.warn("request line over the cap; closing");
+        error(0, ErrorCode::BadRequest, "line too long", Next::Close)
+    }
+
+    fn dispatch(
+        &mut self,
+        request: Request,
+        probe: &mut dyn Probe,
+        log: &mut dyn LogSink,
+    ) -> Outcome {
+        let id = request.id();
+        if !self.greeted && !matches!(request, Request::Hello { .. } | Request::Bye { .. }) {
+            return error(id, ErrorCode::BadRequest, "hello first", Next::Continue);
+        }
+        match &request {
+            Request::Hello { version, .. } => {
+                if *version != PIPE_PROTOCOL_VERSION {
+                    log.warn(&format!("hello with version {version}"));
+                    let detail = format!("dll speaks {PIPE_PROTOCOL_VERSION}, app sent {version}");
+                    return error(id, ErrorCode::Version, &detail, Next::Continue);
+                }
+                self.greeted = true;
+                match probe.probe() {
+                    Ok(()) => log.info("hello: probe walked: ok"),
+                    Err(f) => log.info(&format!("hello: probe failed: {}", f.detail())),
+                }
+                reply(
+                    Reply::Hello {
+                        id,
+                        version: PIPE_PROTOCOL_VERSION,
+                        dll: env!("CARGO_PKG_VERSION").into(),
+                    },
+                    Next::Continue,
+                )
+            }
+            Request::Ping { .. } => reply(Reply::Ack { id }, Next::Continue),
+            Request::Bye { .. } => {
+                log.info("bye");
+                reply(Reply::Ack { id }, Next::Unload)
+            }
+            Request::Send { text, .. } => {
+                let channel = match request.send_channel() {
+                    Ok(c) => c,
+                    Err(code) => return error(id, code, "unknown channel", Next::Continue),
+                };
+                // Channel and length only: chat text is never logged.
+                let note = format!("send channel={} text_len={}", channel.as_str(), text.len());
+                match probe.probe() {
+                    Err(f) => {
+                        log.info(&format!("{note}: probe failed: {}", f.detail()));
+                        error(id, f.error_code(), &f.detail(), Next::Continue)
+                    }
+                    Ok(()) => {
+                        log.info(&format!("{note}: probe walked: ok; send not built"));
+                        error(
+                            id,
+                            ErrorCode::Unsupported,
+                            "send not built (R4)",
+                            Next::Continue,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn reply(reply: Reply, next: Next) -> Outcome {
+    Outcome {
+        reply: encode_reply(&reply).into_bytes(),
+        next,
+    }
+}
+
+fn error(id: u32, code: ErrorCode, detail: &str, next: Next) -> Outcome {
+    reply(
+        Reply::Error {
+            id,
+            code,
+            detail: detail.into(),
+        },
+        next,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

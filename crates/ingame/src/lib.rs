@@ -12,8 +12,8 @@ compile_error!(
      `cargo build -p resonance-ingame --profile ingame`"
 );
 
-mod error;
-mod log;
-mod names;
-mod session;
-mod unload;
+pub mod error;
+pub mod log;
+pub mod names;
+pub mod session;
+pub mod unload;

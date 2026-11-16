@@ -580,7 +580,7 @@ mod tests {
         assert_eq!(b.push(b"ping\n"), Err(LineTooLong));
 
         let mut b = LineBuffer::new();
-        assert_eq!(b.push(&vec![b'a'; 5000]), Err(LineTooLong));
+        assert_eq!(b.push(&[b'a'; 5000]), Err(LineTooLong));
         assert_eq!(b.push(b"\n"), Err(LineTooLong));
 
         // The cap holds across pushes too.

@@ -1,3 +1,64 @@
+//! The names the DLL looks up in the game, from Stellar's release_3.7 dump (facts only).
+//! The game's IL2CPP API is found by `GetProcAddress` on `GameAssembly.dll`, never by
+//! signature scan.
+
+/// Exports the DLL cannot work without; a missing one is `export_missing:<name>`.
+pub const REQUIRED_EXPORTS: [&str; 12] = [
+    "il2cpp_domain_get",
+    "il2cpp_domain_get_assemblies",
+    "il2cpp_assembly_get_image",
+    "il2cpp_class_from_name",
+    "il2cpp_class_get_parent",
+    "il2cpp_class_get_method_from_name",
+    "il2cpp_class_get_field_from_name",
+    "il2cpp_field_get_offset",
+    "il2cpp_field_static_get_value",
+    "il2cpp_runtime_invoke",
+    "il2cpp_object_get_class",
+    "il2cpp_thread_attach",
+];
+
+/// Exports that only name a class in a log line or detach the thread; a missing one is
+/// logged, never fatal.
+pub const OPTIONAL_EXPORTS: [&str; 3] = [
+    "il2cpp_class_get_namespace",
+    "il2cpp_class_get_name",
+    "il2cpp_thread_detach",
+];
+
+/// The proxy id `GetRpcByProxyId` takes for the chat rpc.
+pub const PROXY_ID_CHITCHAT: u64 = 1321197368;
+
+/// Namespaces each class is tried in, in this order.
+pub const NAMESPACES: [&str; 2] = ["ZCode.ZRpc", "ZCode.ZNet"];
+
+pub const ZRPC_CTRL: &str = "ZRpcCtrl";
+pub const ZRPC_IMPL: &str = "ZRpcImpl";
+pub const ZRPC_TRANSFER: &str = "ZRpcTransfer";
+pub const ZTRANSPORT: &str = "ZTransport";
+pub const ZTCP_CONNECTION: &str = "ZTcpConnection";
+pub const ZTCP_CLIENT: &str = "ZTcpClient";
+
+/// The six classes of the walk.
+pub const CLASSES: [&str; 6] = [
+    ZRPC_CTRL,
+    ZRPC_IMPL,
+    ZRPC_TRANSFER,
+    ZTRANSPORT,
+    ZTCP_CONNECTION,
+    ZTCP_CLIENT,
+];
+
+pub const METHOD_GET_INSTANCE: &str = "get_Instance";
+pub const METHOD_GET_RPC_BY_PROXY_ID: &str = "GetRpcByProxyId";
+pub const METHOD_GET_TRANSFER: &str = "GetTransfer";
+pub const METHOD_GET_TRANSPORT: &str = "GetTransport";
+pub const METHOD_SEND: &str = "Send";
+
+pub const FIELD_CONN: &str = "conn_";
+pub const FIELD_CLIENT: &str = "client_";
+pub const FIELD_HANDLE: &str = "handle_";
+
 #[cfg(test)]
 mod tests {
     use super::*;
