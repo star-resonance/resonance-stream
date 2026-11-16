@@ -180,7 +180,8 @@ pub enum SendError {
     PipeCreate,
     NoConnect,
     Broken,
-    StaleModule,
+    /// The module stayed in the game after the unload wait (`KeepResident`).
+    ResidentModule,
     /// The DLL answered with an error.
     Dll(ErrorCode),
     /// The text rules or the spacing rule.
@@ -208,8 +209,8 @@ impl fmt::Display for SendError {
             }
             SendError::NoConnect => "게임 내 전송 모듈이 연결되지 않았습니다.",
             SendError::Broken => "게임 내 전송 모듈이 응답하지 않습니다. 설정에서 껐다 켜 주세요.",
-            SendError::StaleModule => {
-                "이전 전송 모듈이 아직 게임에 남아 있습니다. 잠시 후 다시 시도해 주세요."
+            SendError::ResidentModule => {
+                "게임에 전송 모듈이 남아 있어 다시 불러올 수 없습니다. 게임을 다시 시작해 주세요."
             }
             SendError::Dll(code) => code_text(*code),
             SendError::Text(e) => return write!(f, "{e}"),
@@ -356,18 +357,53 @@ pub trait Host {
     fn accept(&mut self, pid: u32) -> Result<(), SendError>;
     /// Sends `hello` with the protocol version and returns the reply.
     fn hello(&mut self) -> Result<Reply, SendError>;
-    /// Sends `bye` and waits up to [`UNLOAD_WAIT`] for the module to leave.
-    fn bye_and_wait(&mut self, pid: u32);
+    /// Sends `bye` and waits up to [`UNLOAD_WAIT`] for the module to leave; false
+    /// when it is still loaded (the DLL kept itself resident).
+    fn bye_and_wait(&mut self, pid: u32) -> bool;
+}
+
+/// The game process whose module stayed loaded after the unload wait. A resident
+/// module is not reopened by a second load, so while it is there the app never
+/// loads it again; a game with another pid (a restart) loads it fresh.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Resident {
+    pid: Option<u32>,
+}
+
+impl Resident {
+    /// Empty, usable in a `static`.
+    pub const fn new() -> Self {
+        Resident { pid: None }
+    }
+    pub fn note(&mut self, pid: u32) {
+        self.pid = Some(pid);
+    }
+    pub fn holds(&self, pid: u32) -> bool {
+        self.pid == Some(pid)
+    }
+    pub fn clear(&mut self) {
+        self.pid = None;
+    }
 }
 
 /// Finds the game, creates the pipe, loads the DLL and says `hello`; returns the
 /// game's pid. A DLL of another protocol version (a stale module: the file name is
 /// fixed, so the old one must leave first) gets one `bye`, a wait and a second try.
-pub fn connect(host: &mut impl Host) -> Result<u32, SendError> {
+///
+/// A module that is still in the game after [`UNLOAD_WAIT`] is resident: it is
+/// noted in `resident`, and `connect` returns `ResidentModule` without loading again.
+pub fn connect(host: &mut impl Host, resident: &mut Resident) -> Result<u32, SendError> {
     let pid = host.find_game()?;
+    if resident.holds(pid) {
+        if host.module_loaded(pid) {
+            return Err(SendError::ResidentModule);
+        }
+        resident.clear();
+    }
     host.create_pipe(pid).map_err(|_| SendError::PipeCreate)?;
     if host.module_loaded(pid) && !host.wait_module_gone(pid, UNLOAD_WAIT) {
-        return Err(SendError::StaleModule);
+        resident.note(pid);
+        return Err(SendError::ResidentModule);
     }
     let mut replaced = false;
     loop {
@@ -385,7 +421,10 @@ pub fn connect(host: &mut impl Host) -> Result<u32, SendError> {
                     return Err(SendError::Dll(ErrorCode::Version));
                 }
                 replaced = true;
-                host.bye_and_wait(pid);
+                if !host.bye_and_wait(pid) {
+                    resident.note(pid);
+                    return Err(SendError::ResidentModule);
+                }
             }
             Reply::Error { code, detail, .. } => {
                 log::warn!("hello refused: {} ({detail})", code.as_str());
@@ -651,10 +690,7 @@ mod tests {
                 SendError::Broken,
                 "게임 내 전송 모듈이 응답하지 않습니다. 설정에서 껐다 켜 주세요.",
             ),
-            (
-                SendError::ResidentModule,
-                RESIDENT_SENTENCE,
-            ),
+            (SendError::ResidentModule, RESIDENT_SENTENCE),
         ];
         for (err, sentence) in table {
             assert_eq!(err.to_string(), sentence);
@@ -950,7 +986,10 @@ mod tests {
 
         let mut host = FakeHost::happy();
         host.create = Err(SendError::OpenFailed);
-        assert_eq!(connect(&mut host, &mut Resident::default()), Err(SendError::PipeCreate));
+        assert_eq!(
+            connect(&mut host, &mut Resident::default()),
+            Err(SendError::PipeCreate)
+        );
         assert_eq!(host.count("load_dll"), 0);
     }
 
@@ -964,7 +1003,10 @@ mod tests {
         let mut host = FakeHost::happy();
         host.loaded = VecDeque::from([true]);
         host.gone_after_wait = false;
-        assert_eq!(connect(&mut host, &mut Resident::default()), Err(SendError::ResidentModule));
+        assert_eq!(
+            connect(&mut host, &mut Resident::default()),
+            Err(SendError::ResidentModule)
+        );
         assert_eq!(host.count("load_dll"), 0);
     }
 
@@ -986,16 +1028,25 @@ mod tests {
     fn connect_passes_load_accept_and_hello_errors_on() {
         let mut host = FakeHost::happy();
         host.load = Err(SendError::LoadFailed);
-        assert_eq!(connect(&mut host, &mut Resident::default()), Err(SendError::LoadFailed));
+        assert_eq!(
+            connect(&mut host, &mut Resident::default()),
+            Err(SendError::LoadFailed)
+        );
         assert_eq!(host.count("accept"), 0);
 
         let mut host = FakeHost::happy();
         host.accept = Err(SendError::NoConnect);
-        assert_eq!(connect(&mut host, &mut Resident::default()), Err(SendError::NoConnect));
+        assert_eq!(
+            connect(&mut host, &mut Resident::default()),
+            Err(SendError::NoConnect)
+        );
 
         let mut host = FakeHost::happy();
         host.hellos = VecDeque::from([Err(SendError::Broken)]);
-        assert_eq!(connect(&mut host, &mut Resident::default()), Err(SendError::Broken));
+        assert_eq!(
+            connect(&mut host, &mut Resident::default()),
+            Err(SendError::Broken)
+        );
     }
 
     fn version_error() -> Reply {
@@ -1081,9 +1132,12 @@ mod tests {
     fn the_resident_sentence_is_one_line_and_its_own() {
         let text = SendError::ResidentModule.to_string();
         assert_eq!(text, RESIDENT_SENTENCE);
-        assert!(!text.contains('
-'));
-        for other in [SendError::NoConnect, SendError::Broken, SendError::LoadFailed] {
+        assert!(!text.contains('\n'));
+        for other in [
+            SendError::NoConnect,
+            SendError::Broken,
+            SendError::LoadFailed,
+        ] {
             assert_ne!(other.to_string(), text);
         }
     }
@@ -1092,7 +1146,10 @@ mod tests {
     fn connect_gives_up_after_two_version_mismatches() {
         let mut host = FakeHost::happy();
         host.hellos = VecDeque::from([Ok(version_error()), Ok(version_error())]);
-        assert_eq!(connect(&mut host, &mut Resident::default()), Err(SendError::Dll(ErrorCode::Version)));
+        assert_eq!(
+            connect(&mut host, &mut Resident::default()),
+            Err(SendError::Dll(ErrorCode::Version))
+        );
         assert_eq!(host.count("bye_and_wait"), 1);
 
         let mut host = FakeHost::happy();
@@ -1102,7 +1159,10 @@ mod tests {
             dll: "x".into(),
         };
         host.hellos = VecDeque::from([Ok(other.clone()), Ok(other)]);
-        assert_eq!(connect(&mut host, &mut Resident::default()), Err(SendError::Dll(ErrorCode::Version)));
+        assert_eq!(
+            connect(&mut host, &mut Resident::default()),
+            Err(SendError::Dll(ErrorCode::Version))
+        );
     }
 
     #[derive(Default)]
