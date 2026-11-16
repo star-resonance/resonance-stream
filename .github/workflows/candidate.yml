@@ -20,6 +20,10 @@
 #     the prerelease's exe URL; try it with --feed-url on a test-env build of your own), makes the
 #     branch rc/<rc tag> at the tagged commit for Promote (promote.yml) to run from, and deletes the
 #     version's lower rc/ branches.
+# The in-game DLL (crates/ingame) is built first, with --profile ingame, and hashed; the shipping
+# build pins that hash into the exe (RESONANCE_INGAME_DLL, src-tauri/build.rs) and a packaging check
+# proves the DLL beside the exe is the pinned one before signing. The DLL goes to the prerelease
+# only, as an extra asset outside SHA256SUMS (Promote and the stable release are unchanged).
 # The binary carries the final version and never knows it is a candidate. Promote reuses these files.
 # A push to main during the run changes nothing: the run keeps its commit. main itself is never
 # written. Only the tag job can write, and it runs none of the repository's code.
@@ -145,7 +149,27 @@ jobs:
         run: cp stamped/Cargo.toml stamped/Cargo.lock .
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,x86_64-pc-windows-msvc
+      - name: Install just
+        run: pipx install --pip-args="--retries 5" rust-just==1.59.0
+      # The DLL first: its hash is what the app build pins. Built through the recipe only
+      # (--profile ingame, panic = "unwind").
+      - name: Build the in-game DLL
+        run: just ingame-build
+      - name: Hash the in-game DLL
+        id: dll
+        shell: bash
+        run: |
+          set -euo pipefail
+          dll="$(pwd -W)/target/x86_64-pc-windows-msvc/ingame/resonance_ingame.dll"
+          test -f "$dll"
+          sha=$(sha256sum "$dll" | cut -d' ' -f1)
+          echo "path=$dll" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "in-game DLL: $dll"
+            echo "in-game DLL SHA-256: $sha"
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -157,8 +181,22 @@ jobs:
           tool: trunk
       # beforeBuildCommand runs `trunk build`; --no-bundle: the plain exe only. No test flags:
       # these are the bytes users get. Release builds embed src-tauri/app.manifest (Administrator).
+      # --config adds only the DLL as a bundle resource (src-tauri/tauri.ingame.conf.json); the env is
+      # for this step alone, so signing and verifying never see it.
       - name: Build
-        run: npx --yes @tauri-apps/cli@2 build --no-bundle
+        env:
+          RESONANCE_INGAME_DLL: ${{ steps.dll.outputs.path }}
+          RESONANCE_INGAME_REQUIRED: '1'
+        run: npx --yes @tauri-apps/cli@2 build --no-bundle --config src-tauri/tauri.ingame.conf.json
+      # Nothing writes the DLL after it was hashed: it is not signed (Sign covers the exe only).
+      - name: The shipped DLL is the pinned one
+        shell: bash
+        env:
+          DLL: ${{ steps.dll.outputs.path }}
+          SHA: ${{ steps.dll.outputs.sha }}
+        run: |
+          bash .github/scripts/check-ingame-package.sh "$DLL" "$SHA" \
+            target/release/resonance-stream.exe target/release/ingame/resonance_ingame.dll target
       # The signature is over the exact bytes, so nothing may touch the file after this.
       # --app-version puts the version into the signed comment: the app refuses an exe signed
       # for another version.
@@ -186,6 +224,12 @@ jobs:
           set -euo pipefail
           cargo run --release -p resonance-core --example verify_update -- \
             target/release/resonance-stream.exe target/release/resonance-stream.exe.sig "$VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ingame-dll
+          path: target/release/ingame/resonance_ingame.dll
+          if-no-files-found: error
+          retention-days: 3
       - uses: actions/upload-artifact@v7
         with:
           name: signed-exe
