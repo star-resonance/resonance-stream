@@ -9,7 +9,7 @@ paths:
   `pub use <module>::*`.** A new command module needs both. A private `use` of the same
   name in a module shadows its glob re-export (rustc warns) — the item then silently
   stops being exported; call it by path instead.
-  47 commands (`commands!` in `crates/types/src/ipc.rs`; the test
+  48 commands (`commands!` in `crates/types/src/ipc.rs`; the test
   `the_backend_registers_exactly_the_commands_listed_here` fails when that list and
   `generate_handler!` differ).
 
@@ -46,16 +46,22 @@ src-tauri/            app crate (resonance-stream, lib resonance_stream_lib)
   src/commands.rs       history + translator commands; window.rs, tray.rs, shortcut.rs
   src/protocol/types.rs AppState and backend-only types; re-exports resonance-types
   src/services/         owner.rs (Services: who runs, the one start/stop/restart) sniffer/ (sockets, workers)
-                          translator/ (llama server) downloader/
-  src/ingame/           chat sending: mod.rs (send_chat, apply_setting, shutdown), pin.rs (the DLL's SHA-256 from build.rs), win/ (loader, pipe server, WinHost; Windows only)
+                          translator/ (llama server) downloader/ (ingame_module.rs: the DLL download)
+  src/ingame/           chat sending: mod.rs (send_chat, game_clients, apply_setting, shutdown), pin.rs (the DLL's SHA-256 from build.rs), win/ (loader, pipe server, WinHost; Windows only)
   src/config/ src/io/   config + metadata persistence, archive writer
 ```
 
 ## Chat sending and the in-game DLL
 
-- **Only the pinned DLL:** `<exe dir>/ingame/resonance_ingame.dll`, hashed through the handle the app
-  holds open and compared with the build's pin before the load; no pin or a mismatch means no load.
+- **Only the pinned DLL, from APPDATA per version:** `%APPDATA%\com.enjay.bpsr.resonance-stream\bin\ingame\<version>\resonance_ingame.dll`
+  (`module_dir`, `crates/core/src/ingame_fetch.rs`); the app never loads from beside the exe. It is hashed through
+  the handle the app holds open and compared with the build's pin before the load; no pin or a mismatch means no load.
   The debug-build path override (`pin::dll_path_override`) is a dev convenience.
+- **The DLL is downloaded on opt-in** (`downloader/ingame_module.rs`, `ensure_module`): when the setting turns on, at
+  start-up with it on, and when a send finds no file (`SendError::DllDownloading`). The release is the app's own tag
+  when its `SHA256SUMS` lists the DLL with the exe's pin, else the newest matching `-rc.<N>` prerelease
+  (`resolve_tag`). It checks the pin, then the `.sig` with the app's keys, then moves the folder in whole; other
+  versions' folders are removed. One run at a time; turning the setting off cancels it.
 - **Only with `ingame_send` on** (off by default), **only into the game's process**: `pick_game`, and
   the pipe accepts only the game's pid. The pipe exists before the load. No chat text in logs.
 - `send_chat` is `#[tauri::command(async)]` (it blocks for seconds). Pure logic goes in
