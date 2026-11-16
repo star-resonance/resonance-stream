@@ -450,6 +450,7 @@ mod tests {
             chat_log_retention_days: 5,
             raw_capture: true,
             ingame_send: true,
+            send_channel: "party".into(),
             guild_relay: GuildRelayConfig {
                 enabled: true,
                 broker_url: "https://relay.example".into(),
@@ -487,6 +488,30 @@ mod tests {
         assert_eq!(config.tab_switch_key, "Tab");
         assert!(config.tab_limits.is_empty());
         assert_eq!(config.theme, Theme::Dark);
+        assert_eq!(config.send_channel, "world");
+    }
+
+    #[test]
+    fn the_composer_channel_loads_and_a_bad_value_is_world() {
+        use crate::composer_view::stored_channel;
+        use resonance_types::SendChatChannel;
+        let signals = ConfigSignals::new();
+        signals.apply(AppConfig {
+            send_channel: "guild".into(),
+            ..AppConfig::default()
+        });
+        assert_eq!(
+            stored_channel(&signals.send_channel.get_untracked()),
+            SendChatChannel::Guild
+        );
+        signals.apply(AppConfig {
+            send_channel: "whisper".into(),
+            ..AppConfig::default()
+        });
+        assert_eq!(
+            stored_channel(&signals.send_channel.get_untracked()),
+            SendChatChannel::World
+        );
     }
 
     fn tab(id: u32, name: &str) -> FavoriteTab {

@@ -184,4 +184,28 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn the_stored_channel_is_restored_and_anything_else_is_world() {
+        for c in SendChatChannel::ALL {
+            assert_eq!(stored_channel(c.as_str()), c);
+        }
+        assert_eq!(stored_channel("guild"), SendChatChannel::Guild);
+        for odd in ["", "GUILD", "whisper", "beginner", "길드"] {
+            assert_eq!(stored_channel(odd), SendChatChannel::World, "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn a_tab_change_picks_a_channel_only_when_it_differs_and_not_on_the_first_run() {
+        use SendChatChannel::{Guild, Say};
+        assert_eq!(tab_pick(true, "길드", "world"), None);
+        assert_eq!(tab_pick(false, "길드", "world"), Some(Guild));
+        assert_eq!(tab_pick(false, "길드", "guild"), None);
+        assert_eq!(tab_pick(false, "로컬", "world"), Some(Say));
+        for label in [ALL_TAB, CUSTOM_TAB, SYSTEM_TAB, "신입", "???"] {
+            assert_eq!(tab_pick(false, label, "party"), None, "{label}");
+        }
+        assert_eq!(tab_pick(false, "신입", "guild"), None);
+    }
 }
