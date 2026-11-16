@@ -160,11 +160,11 @@ mod tests {
         let [first, second] = HOOK_CANDIDATES;
         assert_eq!(
             (first.class, first.namespaces, first.method, first.argc),
-            ("ZRpcCtrl", &["ZCode.ZRpc", "ZCode.ZNet"][..], "Update", 0)
+            ("ZRpcCtrl", &["ZCode.ZRpc", "ZCode.ZNet"][..], "Update", 1)
         );
         assert_eq!(
             (second.class, second.namespaces, second.method, second.argc),
-            ("Game", &["Panda.Core"][..], "Update", 0)
+            ("Game", &["Panda.Core"][..], "Update", 1)
         );
         assert_eq!(first.label(), "ZRpcCtrl.Update");
         assert_eq!(second.label(), "Game.Update");
