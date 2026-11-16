@@ -1,3 +1,4 @@
+mod chat_composer;
 mod chat_container;
 pub mod chat_row;
 mod cheatsheet_window;
@@ -13,6 +14,7 @@ mod setup_wizard;
 pub mod title_bar;
 mod update_modals;
 
+pub use chat_composer::ChatComposer;
 pub use chat_container::ChatContainer;
 pub use chat_row::ChatRow;
 pub use cheatsheet_window::CheatSheetWindow;
