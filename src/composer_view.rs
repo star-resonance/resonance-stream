@@ -54,6 +54,25 @@ pub fn preselect(tab_label: &str) -> Option<SendChatChannel> {
     }
 }
 
+/// The channel a saved wire name (`send_channel` in the config) stands for; an exact match, else
+/// World (a missing, hand-edited or unknown value).
+pub fn stored_channel(s: &str) -> SendChatChannel {
+    SendChatChannel::ALL
+        .into_iter()
+        .find(|c| c.as_str() == s)
+        .unwrap_or(SendChatChannel::ALL[0])
+}
+
+/// What the preselect Effect does: the channel to switch to, or `None`. Not on the first run
+/// (the saved channel wins on start), and not when the tab's channel is already the stored one
+/// (no change, no save).
+pub fn tab_pick(first_run: bool, tab_label: &str, stored: &str) -> Option<SendChatChannel> {
+    if first_run {
+        return None;
+    }
+    preselect(tab_label).filter(|c| *c != stored_channel(stored))
+}
+
 /// Whether a key press sends: a plain Enter, not Shift+Enter, and not one an
 /// input method handles (`is_composing`, or key code 229 as Chromium reports it).
 pub fn enter_sends(key: &str, shift: bool, composing: bool, key_code: u32) -> bool {
@@ -183,5 +202,29 @@ mod tests {
                 ("say", "로컬")
             ]
         );
+    }
+
+    #[test]
+    fn the_stored_channel_is_restored_and_anything_else_is_world() {
+        for c in SendChatChannel::ALL {
+            assert_eq!(stored_channel(c.as_str()), c);
+        }
+        assert_eq!(stored_channel("guild"), SendChatChannel::Guild);
+        for odd in ["", "GUILD", "whisper", "beginner", "길드"] {
+            assert_eq!(stored_channel(odd), SendChatChannel::World, "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn a_tab_change_picks_a_channel_only_when_it_differs_and_not_on_the_first_run() {
+        use SendChatChannel::{Guild, Say};
+        assert_eq!(tab_pick(true, "길드", "world"), None);
+        assert_eq!(tab_pick(false, "길드", "world"), Some(Guild));
+        assert_eq!(tab_pick(false, "길드", "guild"), None);
+        assert_eq!(tab_pick(false, "로컬", "world"), Some(Say));
+        for label in [ALL_TAB, CUSTOM_TAB, SYSTEM_TAB, "신입", "???"] {
+            assert_eq!(tab_pick(false, label, "party"), None, "{label}");
+        }
+        assert_eq!(tab_pick(false, "신입", "guild"), None);
     }
 }
