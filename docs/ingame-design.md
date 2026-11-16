@@ -644,9 +644,10 @@ opt-in exactly (no setting, no DLL).
     warning); `src-tauri/build.rs` writes the hash into the app. R8's Candidate builds the DLL first,
     then the app, and bundles the same bytes next to the exe. In a debug build whose
     `RESONANCE_INGAME_DLL` was set at build time the path is that file (dev only).
-  - **A prerelease-only asset.** Releases ship a bare exe, so the DLL is an asset of the prerelease
-    only, outside `SHA256SUMS`. The stable path (the DLL fetched by the updater, signed and listed) is
-    a later task; until then a stable build has no DLL and the app answers that the module is missing.
+  - **A signed release asset.** Releases ship a bare exe, so the DLL is its own asset next to it: signed with
+    the exe's key and version comment, listed in `SHA256SUMS` with its `.sig`, carried from the prerelease to
+    the stable release by Promote, and announced in `latest.json`. Fetching it with an update, and the
+    opt-in download for an exe without it, are later tasks; until then a build without the DLL answers that the module is missing.
   - Having the DLL check which module loaded it is not worth it: nothing in the DLL is privileged.
 - **No overwrite while loaded.** A loaded DLL file cannot be replaced: the updater swaps only the exe,
   and a still-loaded old module is waited out (see an app update, below). In the fallback each version
