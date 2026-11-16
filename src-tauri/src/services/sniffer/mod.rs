@@ -7,7 +7,7 @@ use self::raw_capture::RawCapture;
 pub use self::raw_capture::{open_captures_folder, set_raw_capture};
 
 use crate::{inject_system_message, inject_system_message_throttled};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -101,6 +101,9 @@ pub fn start_sniffer_command(app: AppHandle, state: State<'_, AppState>) {
     }
 }
 
+/// Counts the sniffer workers started, so a stopping worker knows whether a newer one exists.
+static WORKER_GENERATION: AtomicU64 = AtomicU64::new(0);
+
 /// Starts a sniffer. `activity` is owned by `Services` for the whole run: it outlives this sniffer.
 pub fn start_sniffer_worker(app: AppHandle, activity: Arc<SnifferActivity>) -> SnifferHandle {
     // We use a blank channel just for its lifecycle dropping properties
@@ -144,6 +147,8 @@ pub fn start_sniffer_worker(app: AppHandle, activity: Arc<SnifferActivity>) -> S
     let rx_main = rx.clone();
 
     alive.store(true, Ordering::SeqCst);
+    // A restart starts a new worker while the old one winds down: only the newest clears the roster.
+    let generation = WORKER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     thread::spawn(move || {
         let _alive = AliveGuard(alive);
         inject_system_message(
@@ -268,7 +273,9 @@ pub fn start_sniffer_worker(app: AppHandle, activity: Arc<SnifferActivity>) -> S
                 dispatch_pipeline_actions(&app_handle, actions);
             }
         }
-        crate::ingame::set_clients(Vec::new());
+        if WORKER_GENERATION.load(Ordering::SeqCst) == generation {
+            crate::ingame::set_clients(Vec::new());
+        }
     });
 
     handle // Kept in AppState; dropping it stops the sniffer
