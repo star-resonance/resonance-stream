@@ -120,7 +120,8 @@ values). This doc builds on them and reopens none.
 - Only server-to-client TCP on port 5003 with a payload: `is_capturable`
   (`crates/core/src/capture/recorder.rs:21-29`) and the live pipeline (`tcp.source_port != 5003`,
   `crates/core/src/capture/pipeline.rs:93`). The frames the DLL sends are never seen; the server's
-  answers are.
+  answers are. So the corpus holds no outbound frame, and no Return that can be read either (section
+  2: the fixture's are blanked).
 - The frame assembler knows `0x0002` (16-byte inner header), `0x0003` (12-byte inner header),
   `0x0004` keepalive, and the `0x8000` compressed forms (`crates/core/src/protocol/framing.rs:6-12`,
   `:29-33`, `inner_header` at `:188-193`). A plain `0x0003` is kept only when its root has field 5
@@ -516,9 +517,10 @@ options: section 1 B, 2 C, 3 A and C, 4 B, 5 A):
    `call_id` `0x8000_0011`, `error_id` 0; root `{1: {3: {…}, 4: T}}`) gives a Return with that
    `call_id` and `verdict(…)` = accepted, with the cooldown end `T` for the channel.
 2. `a_5211_with_a_cooldown_end_gives_the_seconds_left`: the same with `{5: 5211, 4: T}` and
-   `server_now` = `T - 3` gives cooldown with 3 s; `T - 2.2` rounds up to 3 (seconds are whole, so
-   this is `server_now` passed in milliseconds or the offset rule's fraction); `server_now` unknown
-   gives "too frequent"; `T - 700` gives "too frequent" (above the 600 s cap).
+   `server_now` (in milliseconds, since the offset rule mixes in the PC's milliseconds) =
+   `T·1000 - 3000` gives cooldown with 3 s, `T·1000 - 2200` rounds up to 3 s, `T·1000 + 500` gives
+   1 s (never 0 or less); `server_now` unknown gives "too frequent"; `T·1000 - 700000` gives "too
+   frequent" (above the 600 s cap).
 3. `an_unknown_code_or_error_id_is_refused_unknown`: `err_code` 9999, or `error_id` 1 with an empty
    root, gives refused-unknown; the number is not in any sentence.
 4. `a_plain_0x0003_echo_becomes_a_return`: the existing `a_plain_0x0003_echo_stays_skipped`
