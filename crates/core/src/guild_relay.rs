@@ -1052,7 +1052,9 @@ mod tests {
             RelayStatus::Off
         );
         assert_eq!(
-            GuildRelays::new(config(true, "")).status(),
+            GuildRelays::new(config(true, ""))
+                .with_default_url("")
+                .status(),
             RelayStatus::NoBroker
         );
         // One relaying, one still checking: the furthest along shows.
