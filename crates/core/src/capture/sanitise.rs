@@ -390,7 +390,7 @@ fn rewrite_frame(
     }
     let body = PREFIX_LEN + inner_header(ty);
     if !decodes_to_chat(ty, &frame[PREFIX_LEN..]) {
-        // World state, the echoed own line, a live frame with no chat: nothing of it is kept
+        // World state, a Return, a live frame with no chat: nothing of it is kept
         // but its length, its type and the first byte of its body (a root's tag or a zstd
         // frame's), which is what framing checks.
         report.frames_blanked += 1;
@@ -1249,7 +1249,7 @@ mod tests {
         let distinct: std::collections::BTreeSet<_> = names.values().collect();
         assert_eq!(distinct.len(), 4, "two people got the same pseudonym");
         assert_eq!(out.report.chats, 8);
-        // World state, the echoed own line and the live frame with no chat.
+        // World state, a Return and the live frame with no chat.
         assert_eq!(out.report.frames_blanked, 3);
         assert_eq!(out.report.nicknames, 4);
         assert_eq!(out.report.uids, 4);

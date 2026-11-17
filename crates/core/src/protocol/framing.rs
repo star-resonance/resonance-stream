@@ -239,7 +239,7 @@ pub(crate) fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
         // Plain `0x0003`: a one-line history has `{3: channel, 5: chat}`; anything
         // else is the server's Return to an RPC (`{4: cd_end_time, 5: err_code}`).
         TYPE_OWN_LINE if has_history_lines(&root) => FrameKind::History,
-        TYPE_OWN_LINE => FrameKind::Return(rpc_return::decode(body.get(..12)?, &root)?),
+        TYPE_OWN_LINE => FrameKind::Return(rpc_return::decode(&body[..inner_header(ty)], &root)?),
         _ => return None,
     };
     Some(Frame { kind, root })

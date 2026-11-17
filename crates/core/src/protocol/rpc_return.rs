@@ -61,6 +61,9 @@ pub fn decode(inner_header: &[u8], root: &[u8]) -> Option<RpcReturn> {
         return None;
     }
     let (len, read) = read_varint(&root[1..]);
+    if read == 0 {
+        return None; // the envelope's length is cut short
+    }
     let start = 1 + read;
     let end = field_end(start, len, root.len());
     let (mut err_code, mut cd_end_time, mut server_time) = (0u64, 0u64, None);
