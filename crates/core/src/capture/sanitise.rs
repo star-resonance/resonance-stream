@@ -390,7 +390,7 @@ fn rewrite_frame(
     }
     let body = PREFIX_LEN + inner_header(ty);
     if !decodes_to_chat(ty, &frame[PREFIX_LEN..]) {
-        // World state, the echoed own line, a live frame with no chat: nothing of it is kept
+        // World state, a Return, a live frame with no chat: nothing of it is kept
         // but its length, its type and the first byte of its body (a root's tag or a zstd
         // frame's), which is what framing checks.
         report.frames_blanked += 1;
@@ -434,6 +434,8 @@ fn decodes_to_chat(ty: u16, after_prefix: &[u8]) -> bool {
         FrameKind::History => !history_pipeline(&frame.root).is_empty(),
         // World state is blanked: the player's own record names the guild.
         FrameKind::State => false,
+        // Returns stay blanked: the sanitiser does not read them.
+        FrameKind::Return(_) => false,
     })
 }
 
@@ -840,7 +842,7 @@ fn decode_lines(text: &str) -> Vec<ChatMessage> {
             let events = match frame.kind {
                 FrameKind::Live => parsing_pipeline(&frame.root),
                 FrameKind::History => history_pipeline(&frame.root),
-                FrameKind::State => Vec::new(),
+                FrameKind::State | FrameKind::Return(_) => Vec::new(),
             };
             out.extend(events.into_iter().map(|Port5003Event::Chat(chat)| chat));
         }
@@ -1247,7 +1249,7 @@ mod tests {
         let distinct: std::collections::BTreeSet<_> = names.values().collect();
         assert_eq!(distinct.len(), 4, "two people got the same pseudonym");
         assert_eq!(out.report.chats, 8);
-        // World state, the echoed own line and the live frame with no chat.
+        // World state, a Return and the live frame with no chat.
         assert_eq!(out.report.frames_blanked, 3);
         assert_eq!(out.report.nicknames, 4);
         assert_eq!(out.report.uids, 4);

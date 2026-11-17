@@ -176,6 +176,8 @@ impl ChatPipeline {
                     }
                     continue;
                 }
+                // Nothing reads a Return yet.
+                FrameKind::Return(_) => continue,
             };
             for event in events {
                 // Guard clause for the event loop using let-else
