@@ -1,21 +1,32 @@
 use crate::composer_view::{
-    can_send, channel_options, clears_choice, clears_draft, client_from_value, client_options,
-    counter_over, counter_text, enter_sends, module_line, send_plan, send_request, show_picker,
-    stored_channel, tab_pick, verdict_line, SendPlan, COUNTER_TITLE,
+    add_block, block_from, can_send_now, channel_options, clears_choice, clears_draft,
+    client_from_value, client_options, counter_over, counter_text, counting, enter_sends,
+    module_line, prune, seconds_left, send_plan, send_request, send_target, show_picker,
+    shown_status, status_of, stored_channel, tab_pick, CooldownBlock, SendPlan, Status, Tone,
+    COUNTER_TITLE,
 };
 use crate::store::{AppActions, AppSignals};
 use crate::tauri_bridge::{call, listen};
 use crate::ui_types::ProgressPayload;
 use leptos::html::Input;
+use leptos::leptos_dom::helpers::IntervalHandle;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use resonance_types::ipc::{event, GameClient, GameClients, SendChat, CLIENT_GONE_LINE};
 use resonance_types::SendChatChannel;
+use std::time::Duration;
 use wasm_bindgen::prelude::*;
 
+/// The wall clock in ms. A clock change during a countdown (at most 10 minutes) can move it; the
+/// backend's gate stays the authority and answers `Cooldown` again if the ui ends early.
+fn now_ms() -> u64 {
+    js_sys::Date::now() as u64
+}
+
 /// The composer under the chat list: channel picker, draft, live counter, Send
-/// and one error line. The draft stays on a failed send. Mounted under a
-/// `<Show>` on `ingame_send`, so turning the setting off drops draft and error.
+/// and one status line. The draft stays on a failed send; a cooldown verdict shows a live
+/// countdown and disables Send for that client and channel until it ends. Mounted under a
+/// `<Show>` on `ingame_send`, so turning the setting off drops draft, status and timer.
 #[component]
 pub fn ChatComposer() -> impl IntoView {
     let signals = use_context::<AppSignals>().expect("AppSignals missing");
@@ -34,7 +45,12 @@ pub fn ChatComposer() -> impl IntoView {
 
     let draft = RwSignal::new(String::new());
     let sending = RwSignal::new(false);
-    let error = RwSignal::new(String::new());
+    let status = RwSignal::new(None::<Status>);
+    // Cooldowns by (client, channel), the clock they count against, and the one-second timer that
+    // runs exactly while a cooldown does.
+    let blocks = RwSignal::new(Vec::<CooldownBlock>::new());
+    let now = RwSignal::new(now_ms());
+    let timer = StoredValue::new_local(None::<IntervalHandle>);
     let input_ref = NodeRef::<Input>::new();
     // The game clients last read and the one chosen (a pid means nothing after a restart, so
     // neither is saved). The picker shows with two or more clients.
@@ -82,8 +98,48 @@ pub fn ChatComposer() -> impl IntoView {
         }
     });
 
+    // Seconds left on the cooldown of the channel and client the next send goes with.
+    let left = move || {
+        seconds_left(
+            &blocks.get(),
+            send_target(&clients.get(), chosen.get()),
+            channel(),
+            now.get(),
+        )
+    };
+    let shown = move || shown_status(status.get().as_ref(), left());
+    let can_send_view = move || can_send_now(&draft.get(), sending.get(), left());
+
+    Effect::new(move |_| {
+        let running = counting(&blocks.get(), now.get_untracked());
+        let has_handle = timer.with_value(|h| h.is_some());
+        if running && !has_handle {
+            let handle = set_interval_with_handle(
+                move || {
+                    let t = now_ms();
+                    // The signals are gone once the composer is (setting off).
+                    let _ = now.try_set(t);
+                    let _ = blocks.try_update(|b| prune(b, t));
+                },
+                Duration::from_millis(1000),
+            );
+            if let Ok(handle) = handle {
+                timer.set_value(Some(handle));
+            }
+        } else if !running {
+            if let Some(handle) = timer.try_update_value(|h| h.take()).flatten() {
+                handle.clear();
+            }
+        }
+    });
+    on_cleanup(move || {
+        if let Some(handle) = timer.try_update_value(|h| h.take()).flatten() {
+            handle.clear();
+        }
+    });
+
     let send = move || {
-        if !can_send(&draft.get_untracked(), sending.get_untracked()) {
+        if !can_send_now(&draft.get_untracked(), sending.get_untracked(), left()) {
             return;
         }
         sending.set(true);
@@ -95,7 +151,10 @@ pub fn ChatComposer() -> impl IntoView {
             match send_plan(&list, chosen.get_untracked()) {
                 SendPlan::Gone => {
                     chosen.set(None);
-                    error.set(CLIENT_GONE_LINE.to_string());
+                    status.set(Some(Status {
+                        tone: Tone::Error,
+                        text: CLIENT_GONE_LINE.to_string(),
+                    }));
                 }
                 SendPlan::Send(client) => {
                     match call::<SendChat>(&send_request(channel, &text, client)).await {
@@ -103,13 +162,22 @@ pub fn ChatComposer() -> impl IntoView {
                             if clears_draft(&verdict) {
                                 draft.set(String::new());
                             }
-                            error.set(verdict_line(&verdict));
+                            let t = now_ms();
+                            // The signals are gone once the composer is (setting off).
+                            let _ = now.try_set(t);
+                            if let Some(b) = block_from(&verdict, client, channel, t) {
+                                let _ = blocks.try_update(|v| add_block(v, b));
+                            }
+                            let _ = status.try_set(status_of(&verdict));
                         }
                         Err(e) => {
                             if clears_choice(&e) {
                                 chosen.set(None);
                             }
-                            error.set(e);
+                            status.set(Some(Status {
+                                tone: Tone::Error,
+                                text: e,
+                            }));
                         }
                     }
                 }
@@ -192,7 +260,7 @@ pub fn ChatComposer() -> impl IntoView {
                 </span>
                 <button
                     class="btn btn-xs btn-success"
-                    disabled=move || !can_send(&draft.get(), sending.get())
+                    disabled=move || !can_send_view()
                     on:click=move |_| send()
                 >
                     "보내기"
@@ -205,11 +273,13 @@ pub fn ChatComposer() -> impl IntoView {
                 {move || module.get().unwrap_or_default()}
             </div>
             <div
-                class="px-2 pb-1 text-[10px] text-error truncate"
-                class:hidden=move || error.get().is_empty()
-                title=move || error.get()
+                class="px-2 pb-1 text-[10px] truncate"
+                class=("text-error", move || shown().is_some_and(|s| s.tone == Tone::Error))
+                class=("text-base-content/70", move || shown().is_some_and(|s| s.tone == Tone::Notice))
+                class:hidden=move || shown().is_none()
+                title=move || shown().map(|s| s.text).unwrap_or_default()
             >
-                {move || error.get()}
+                {move || shown().map(|s| s.text).unwrap_or_default()}
             </div>
         </div>
     }

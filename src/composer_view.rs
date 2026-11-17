@@ -138,9 +138,7 @@ pub fn verdict_line(verdict: &SendVerdict) -> String {
     match verdict {
         SendVerdict::Sent => String::new(),
         SendVerdict::TooFrequent => "너무 자주 보냈습니다. 잠시 후 다시 보내 주세요.".to_string(),
-        SendVerdict::Cooldown { remaining_secs } => {
-            format!("아직 보낼 수 없습니다. {remaining_secs}초 뒤에 다시 보내 주세요.")
-        }
+        SendVerdict::Cooldown { remaining_secs } => countdown_line(*remaining_secs),
         SendVerdict::NotConfirmed => "보냈지만 서버의 확인을 받지 못했습니다.".to_string(),
         // The code is for the log, not the user.
         SendVerdict::Refused { .. } => "서버가 메시지를 받지 않았습니다.".to_string(),
@@ -150,6 +148,125 @@ pub fn verdict_line(verdict: &SendVerdict) -> String {
 /// Whether the draft is cleared: the message went out (the server's word or not).
 pub fn clears_draft(verdict: &SendVerdict) -> bool {
     matches!(verdict, SendVerdict::Sent | SendVerdict::NotConfirmed)
+}
+
+/// A cooldown the server answered for one client and channel, until a wall-clock time (ms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CooldownBlock {
+    pub client: Option<u32>,
+    pub channel: SendChatChannel,
+    pub until_ms: u64,
+}
+
+/// The block a verdict makes; only a `Cooldown` of at least one second does. The end is
+/// clamped to 600 s (a placeholder bound against a wrong clock).
+pub fn block_from(
+    verdict: &SendVerdict,
+    client: Option<u32>,
+    channel: SendChatChannel,
+    arrived_ms: u64,
+) -> Option<CooldownBlock> {
+    match verdict {
+        SendVerdict::Cooldown { remaining_secs } if *remaining_secs > 0 => Some(CooldownBlock {
+            client,
+            channel,
+            until_ms: arrived_ms + u64::from((*remaining_secs).min(600)) * 1000,
+        }),
+        _ => None,
+    }
+}
+
+/// Adds a block, replacing the one for the same client and channel.
+pub fn add_block(blocks: &mut Vec<CooldownBlock>, new: CooldownBlock) {
+    match blocks
+        .iter_mut()
+        .find(|b| b.client == new.client && b.channel == new.channel)
+    {
+        Some(old) => *old = new,
+        None => blocks.push(new),
+    }
+}
+
+/// Whole seconds left (rounded up) for exactly this client and channel; 0 when none.
+pub fn seconds_left(
+    blocks: &[CooldownBlock],
+    client: Option<u32>,
+    channel: SendChatChannel,
+    now_ms: u64,
+) -> u32 {
+    blocks
+        .iter()
+        .find(|b| b.client == client && b.channel == channel)
+        .map_or(0, |b| {
+            let left = b.until_ms.saturating_sub(now_ms);
+            u32::try_from(left.div_ceil(1000)).unwrap_or(u32::MAX)
+        })
+}
+
+/// Whether any block is still running (the timer runs exactly then).
+pub fn counting(blocks: &[CooldownBlock], now_ms: u64) -> bool {
+    blocks.iter().any(|b| b.until_ms > now_ms)
+}
+
+/// Drops the blocks that have ended.
+pub fn prune(blocks: &mut Vec<CooldownBlock>, now_ms: u64) {
+    blocks.retain(|b| b.until_ms > now_ms);
+}
+
+/// The client the next send goes with; a stale choice (`Gone`) has none, so no block applies.
+pub fn send_target(clients: &[GameClient], chosen: Option<u32>) -> Option<u32> {
+    match send_plan(clients, chosen) {
+        SendPlan::Send(c) => c,
+        SendPlan::Gone => None,
+    }
+}
+
+/// Whether Send is allowed: `can_send` and no cooldown left.
+pub fn can_send_now(draft: &str, sending: bool, left_secs: u32) -> bool {
+    can_send(draft, sending) && left_secs == 0
+}
+
+/// The cooldown sentence for the seconds left (a placeholder wording).
+pub fn countdown_line(left_secs: u32) -> String {
+    format!("아직 보낼 수 없습니다. {left_secs}초 뒤에 다시 보내 주세요.")
+}
+
+/// How the status line is coloured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Error,
+    Notice,
+}
+
+/// The status line: a sentence and its tone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub tone: Tone,
+    pub text: String,
+}
+
+/// The line a verdict stores; a `Cooldown` is shown live from its block, not stored.
+pub fn status_of(verdict: &SendVerdict) -> Option<Status> {
+    let tone = match verdict {
+        SendVerdict::Sent | SendVerdict::Cooldown { .. } => return None,
+        SendVerdict::NotConfirmed => Tone::Notice,
+        SendVerdict::TooFrequent | SendVerdict::Refused { .. } => Tone::Error,
+    };
+    Some(Status {
+        tone,
+        text: verdict_line(verdict),
+    })
+}
+
+/// What the line shows: the live countdown while one runs, else the stored status.
+pub fn shown_status(stored: Option<&Status>, left_secs: u32) -> Option<Status> {
+    if left_secs > 0 {
+        return Some(Status {
+            tone: Tone::Error,
+            text: countdown_line(left_secs),
+        });
+    }
+    stored.cloned()
 }
 
 /// The picker's options as (value, label), in tab order.
@@ -386,5 +503,177 @@ mod tests {
         assert!(!clears_draft(&SendVerdict::TooFrequent));
         assert!(!clears_draft(&SendVerdict::Cooldown { remaining_secs: 3 }));
         assert!(!clears_draft(&SendVerdict::Refused { code: 1 }));
+    }
+
+    const W: SendChatChannel = SendChatChannel::World;
+    const P: SendChatChannel = SendChatChannel::Party;
+    const A: Option<u32> = Some(7);
+    const B: Option<u32> = Some(42);
+    const T: u64 = 1_000_000;
+
+    fn cd(n: u32) -> SendVerdict {
+        SendVerdict::Cooldown { remaining_secs: n }
+    }
+
+    fn block(client: Option<u32>, channel: SendChatChannel, secs: u64) -> CooldownBlock {
+        CooldownBlock {
+            client,
+            channel,
+            until_ms: T + secs * 1000,
+        }
+    }
+
+    #[test]
+    fn only_a_cooldown_makes_a_block_and_its_end_is_clamped() {
+        assert_eq!(block_from(&cd(3), A, W, T), Some(block(A, W, 3)));
+        assert_eq!(block_from(&cd(0), A, W, T), None);
+        assert_eq!(
+            block_from(&cd(5000), A, W, T).unwrap().until_ms,
+            T + 600_000
+        );
+        for v in [
+            SendVerdict::Sent,
+            SendVerdict::TooFrequent,
+            SendVerdict::NotConfirmed,
+            SendVerdict::Refused { code: 9999 },
+        ] {
+            assert_eq!(block_from(&v, A, W, T), None, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn seconds_left_rounds_up_and_never_underflows() {
+        let b = [block(A, W, 3)];
+        for (now, want) in [
+            (T, 3),
+            (T + 1, 3),
+            (T + 1000, 2),
+            (T + 2000, 1),
+            (T + 2999, 1),
+            (T + 3000, 0),
+            (T + 9000, 0),
+            (T - 5000, 8),
+        ] {
+            assert_eq!(seconds_left(&b, A, W, now), want, "now={now}");
+        }
+        assert_eq!(seconds_left(&[], A, W, T), 0);
+    }
+
+    #[test]
+    fn a_block_applies_to_its_own_client_and_channel_only() {
+        let b = [block(A, W, 3)];
+        assert_eq!(seconds_left(&b, A, P, T), 0);
+        assert_eq!(seconds_left(&b, B, W, T), 0);
+        assert_eq!(seconds_left(&b, None, W, T), 0);
+        assert_eq!(seconds_left(&b, A, W, T), 3);
+        let two = [block(A, W, 3), block(B, P, 10)];
+        assert_eq!(seconds_left(&two, A, W, T), 3);
+        assert_eq!(seconds_left(&two, B, P, T), 10);
+    }
+
+    #[test]
+    fn add_block_keeps_one_entry_per_key_and_prune_drops_the_ended() {
+        let mut v = vec![block(A, W, 3)];
+        add_block(&mut v, block(A, W, 8));
+        assert_eq!(v, vec![block(A, W, 8)]);
+        add_block(&mut v, block(A, P, 3));
+        assert_eq!(v.len(), 2);
+        let mut v = vec![block(A, W, 3), block(B, P, 10)];
+        prune(&mut v, T + 3000);
+        assert_eq!(v, vec![block(B, P, 10)]);
+        prune(&mut v, T + 10_000);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn the_timer_runs_exactly_while_a_block_runs() {
+        assert!(!counting(&[], T));
+        let b = [block(A, W, 3)];
+        assert!(counting(&b, T));
+        assert!(counting(&b, T + 2999));
+        assert!(!counting(&b, T + 3000));
+        let two = [block(A, W, 3), block(B, P, 10)];
+        assert!(counting(&two, T + 5000));
+    }
+
+    #[test]
+    fn the_send_target_and_the_send_gate() {
+        let two = [c(7, "Aria"), c(42, "Bob")];
+        assert_eq!(send_target(&two, Some(42)), B);
+        assert_eq!(send_target(&two, None), None);
+        assert_eq!(send_target(&[c(7, "Aria")], None), None);
+        assert_eq!(send_target(&two, Some(9)), None);
+        assert_eq!(
+            countdown_line(3),
+            "아직 보낼 수 없습니다. 3초 뒤에 다시 보내 주세요."
+        );
+        assert_eq!(countdown_line(3), verdict_line(&cd(3)));
+        assert!(can_send_now("hi", false, 0));
+        assert!(!can_send_now("hi", false, 2));
+        assert!(!can_send_now("hi", true, 0));
+        assert!(!can_send_now("", false, 0));
+    }
+
+    fn st(tone: Tone, text: &str) -> Status {
+        Status {
+            tone,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_verdict_stores_its_line_and_a_cooldown_none() {
+        assert_eq!(status_of(&SendVerdict::Sent), None);
+        assert_eq!(status_of(&cd(3)), None);
+        assert_eq!(
+            status_of(&SendVerdict::NotConfirmed),
+            Some(st(Tone::Notice, "보냈지만 서버의 확인을 받지 못했습니다."))
+        );
+        for v in [
+            SendVerdict::TooFrequent,
+            SendVerdict::Refused { code: 9999 },
+        ] {
+            assert_eq!(status_of(&v), Some(st(Tone::Error, &verdict_line(&v))));
+        }
+        assert!(!status_of(&SendVerdict::Refused { code: 9999 })
+            .unwrap()
+            .text
+            .contains("9999"));
+    }
+
+    #[test]
+    fn the_countdown_wins_the_line_and_is_never_a_notice() {
+        let notice = st(Tone::Notice, "n");
+        let error = st(Tone::Error, "e");
+        assert_eq!(shown_status(None, 0), None);
+        assert_eq!(
+            shown_status(None, 3),
+            Some(st(Tone::Error, &countdown_line(3)))
+        );
+        assert_eq!(shown_status(Some(&notice), 0), Some(notice.clone()));
+        assert_eq!(
+            shown_status(Some(&error), 2),
+            Some(st(Tone::Error, &countdown_line(2)))
+        );
+        assert_eq!(
+            shown_status(Some(&notice), 1),
+            Some(st(Tone::Error, &countdown_line(1)))
+        );
+    }
+
+    #[test]
+    fn the_draft_and_the_line_for_every_verdict() {
+        // (verdict, clears the draft, stored tone)
+        let table = [
+            (SendVerdict::Sent, true, None),
+            (SendVerdict::NotConfirmed, true, Some(Tone::Notice)),
+            (SendVerdict::TooFrequent, false, Some(Tone::Error)),
+            (cd(3), false, None),
+            (SendVerdict::Refused { code: 1 }, false, Some(Tone::Error)),
+        ];
+        for (v, clears, tone) in table {
+            assert_eq!(clears_draft(&v), clears, "{v:?}");
+            assert_eq!(status_of(&v).map(|s| s.tone), tone, "{v:?}");
+        }
     }
 }
