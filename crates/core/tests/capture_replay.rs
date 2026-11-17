@@ -107,7 +107,12 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 fn the_frames_the_app_reads_are_pinned() {
     let table: String = corpus_frames()
         .iter()
-        .filter(|f| matches!(f.kind, FrameKind::Live | FrameKind::History | FrameKind::State))
+        .filter(|f| {
+            matches!(
+                f.kind,
+                FrameKind::Live | FrameKind::History | FrameKind::State
+            )
+        })
         .map(|f| format!("{:?} {} {:016x}\n", f.kind, f.root.len(), fnv1a(&f.root)))
         .collect();
     insta::assert_snapshot!(table);
