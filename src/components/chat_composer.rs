@@ -217,7 +217,7 @@ pub fn ChatComposer() -> impl IntoView {
                         class="select select-xs w-auto"
                         on:change=move |ev| chosen.set(client_from_value(&event_target_value(&ev)))
                     >
-                        <option value="" selected=move || chosen.get().is_none()>
+                        <option value="" prop:selected=move || chosen.get().is_none()>
                             "게임 선택"
                         </option>
                         {move || {
@@ -226,7 +226,7 @@ pub fn ChatComposer() -> impl IntoView {
                                 .map(|(value, label)| {
                                     let target = client_from_value(&value);
                                     view! {
-                                        <option value=value selected=move || chosen.get() == target>
+                                        <option value=value prop:selected=move || chosen.get() == target>
                                             {label}
                                         </option>
                                     }
