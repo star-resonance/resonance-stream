@@ -299,6 +299,23 @@ mod tests {
     }
 
     #[test]
+    fn a_full_route_table_never_evicts_the_key_being_learned() {
+        let hub = VerdictHub::default();
+        for i in 0..15u16 {
+            hub.learn_route(
+                Some(100 + u32::from(i)),
+                &[Endpoint {
+                    addr: [1, 1, 1, 1],
+                    port: i,
+                }],
+            );
+        }
+        hub.learn_route(A, &[E1, E2]);
+        assert_eq!(hub.route(E1), Some(A));
+        assert_eq!(hub.route(E2), Some(A));
+    }
+
+    #[test]
     fn a_return_without_a_route_changes_nothing() {
         let hub = VerdictHub::default();
         let t0 = Instant::now();
