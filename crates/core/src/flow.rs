@@ -246,12 +246,16 @@ mod tests {
         fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R {
             f(&mut self.nicknames)
         }
-        fn own_player(&mut self, player: OwnPlayer) {
-            self.relayed
-                .push(format!("player {} {:?}", player.uid, player.guild_id));
+        fn own_player(&mut self, conn: Endpoint, player: Option<OwnPlayer>) {
+            self.relayed.push(match player {
+                Some(p) => format!("player {} {} {:?}", conn.port, p.uid, p.guild_id),
+                None => format!("player {} gone", conn.port),
+            });
         }
-        fn relay_line(&mut self, chat: &ChatMessage, origin: Origin, _conn: Option<Endpoint>) {
-            self.relayed.push(format!("line {} {origin:?}", chat.pid));
+        fn relay_line(&mut self, chat: &ChatMessage, origin: Origin, conn: Option<Endpoint>) {
+            let port = conn.map_or(0, |c| c.port);
+            self.relayed
+                .push(format!("line {} {origin:?} {port}", chat.pid));
             self.relayed_readings.push(chat.nickname_romaji.clone());
         }
     }
@@ -263,18 +267,28 @@ mod tests {
             uid: 424_242,
             guild_id: Some(77_001),
         };
+        let conn = Endpoint {
+            addr: [10, 0, 0, 5],
+            port: 51000,
+        };
         dispatch(
             &mut sink,
             vec![
-                PipelineAction::OwnPlayer(player),
-                PipelineAction::EmitNewMessage(line(1, "Bob", "live"), Origin::Live, None),
+                PipelineAction::OwnPlayer(conn, Some(player)),
+                PipelineAction::EmitNewMessage(line(1, "Bob", "live"), Origin::Live, Some(conn)),
                 PipelineAction::EmitNewMessage(line(2, "Bob", "old"), Origin::History, None),
+                PipelineAction::OwnPlayer(conn, None),
                 PipelineAction::UpdateBlockedMessage(line(1, "Bob", "live")),
             ],
         );
         assert_eq!(
             sink.relayed,
-            ["player 424242 Some(77001)", "line 1 Live", "line 2 History"]
+            [
+                "player 51000 424242 Some(77001)",
+                "line 1 Live 51000",
+                "line 2 History 0",
+                "player 51000 gone"
+            ]
         );
     }
 

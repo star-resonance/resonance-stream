@@ -368,6 +368,7 @@ impl GuildRelay {
 mod tests {
     use super::*;
     use crate::capture::Origin;
+    use crate::game_clients::Endpoint;
     use crate::protocol::own_player::OwnPlayer;
     use resonance_types::{Channel, ChatMessage, GuildRelayConfig};
 
@@ -850,5 +851,155 @@ mod tests {
             .unwrap()
             .url
             .ends_with("/v1/enrolled"));
+    }
+
+    // ---- one relay per connection (F-GR) ----
+
+    const CONN_A: Endpoint = Endpoint {
+        addr: [10, 0, 0, 5],
+        port: 51000,
+    };
+    const CONN_B: Endpoint = Endpoint {
+        addr: [10, 0, 0, 5],
+        port: 51001,
+    };
+
+    fn many() -> GuildRelays {
+        GuildRelays::new(config(true, URL))
+    }
+
+    fn record(guild: u64) -> Option<OwnPlayer> {
+        Some(OwnPlayer {
+            uid: guild,
+            guild_id: Some(guild),
+        })
+    }
+
+    fn guild_of(request: &RelayRequest) -> u64 {
+        body(request)["guildId"].as_u64().unwrap()
+    }
+
+    // 9
+    #[test]
+    fn two_connections_in_two_guilds_each_enrol_and_send_under_their_own_guild() {
+        let mut relays = many();
+        for _ in 0..3 {
+            relays.on_own_player(CONN_A, record(100));
+            relays.on_own_player(CONN_B, record(200));
+        }
+        let (conn, ask_a) = relays.poll(0).expect("asks first");
+        assert_eq!(conn, CONN_A);
+        assert!(ask_a.url.ends_with("/v1/enrolled"));
+        assert_eq!(body(&ask_a), serde_json::json!({"guildId": 100}));
+        relays.on_response(conn, 0, ask_a.generation, ok(r#"{"enrolled":true}"#));
+        let (conn, ask_b) = relays.poll(0).expect("then b");
+        assert_eq!(conn, CONN_B);
+        assert_eq!(body(&ask_b), serde_json::json!({"guildId": 200}));
+        relays.on_response(conn, 0, ask_b.generation, ok(r#"{"enrolled":true}"#));
+        assert_eq!(relays.poll(0), None, "nothing is asked twice");
+        assert_eq!(relays.status(), RelayStatus::Relaying);
+
+        relays.on_line(Some(CONN_A), &line(1, 1, "A"), Origin::Live);
+        relays.on_line(Some(CONN_B), &line(2, 1, "B"), Origin::Live);
+        let (conn, send_a) = relays.poll(0).unwrap();
+        assert_eq!(
+            (conn, guild_of(&send_a), texts(&send_a)),
+            (CONN_A, 100, vec!["A".into()])
+        );
+        relays.on_response(conn, 0, send_a.generation, ok("{}"));
+        let (conn, send_b) = relays.poll(0).unwrap();
+        assert_eq!(
+            (conn, guild_of(&send_b), texts(&send_b)),
+            (CONN_B, 200, vec!["B".into()])
+        );
+        assert_eq!(relays.status(), RelayStatus::Relaying);
+    }
+
+    // 10
+    #[test]
+    fn a_gone_connection_loses_its_relay_and_lines_not_the_others() {
+        let mut relays = many();
+        assert_eq!(relays.status(), RelayStatus::WaitingForGuild);
+        for (conn, guild) in [(CONN_A, 100), (CONN_B, 200)] {
+            relays.on_own_player(conn, record(guild));
+            let (c, ask) = relays.poll(0).unwrap();
+            assert_eq!(c, conn);
+            relays.on_response(c, 0, ask.generation, ok(r#"{"enrolled":true}"#));
+        }
+        relays.on_line(Some(CONN_A), &line(1, 1, "A"), Origin::Live);
+        relays.on_line(Some(CONN_B), &line(2, 1, "B"), Origin::Live);
+        relays.on_line(None, &line(3, 1, "nobody"), Origin::Live);
+        relays.on_own_player(CONN_A, None);
+        let (conn, send) = relays.poll(0).unwrap();
+        assert_eq!((conn, texts(&send)), (CONN_B, vec!["B".to_string()]));
+        // The answer to a request of the gone connection is ignored.
+        relays.on_response(CONN_A, 0, send.generation, ok("{}"));
+        relays.on_response(CONN_B, 0, send.generation, ok("{}"));
+        assert_eq!(relays.poll(BATCH_INTERVAL_MS), None);
+
+        assert_eq!(
+            GuildRelays::new(config(false, URL)).status(),
+            RelayStatus::Off
+        );
+        assert_eq!(
+            GuildRelays::new(config(true, "")).status(),
+            RelayStatus::NoBroker
+        );
+        // One relaying, one still checking: the furthest along shows.
+        let mut mixed = many();
+        mixed.on_own_player(CONN_A, record(100));
+        let (c, ask) = mixed.poll(0).unwrap();
+        mixed.on_response(c, 0, ask.generation, ok(r#"{"enrolled":true}"#));
+        mixed.on_own_player(CONN_B, record(200));
+        assert_eq!(mixed.status(), RelayStatus::Relaying);
+    }
+
+    // 11
+    #[test]
+    fn one_connection_behaves_exactly_like_the_single_relay() {
+        let mut single = on();
+        let mut relays = many();
+        macro_rules! same_poll {
+            ($now:expr) => {{
+                let want = single.poll($now);
+                let got = relays.poll($now);
+                assert_eq!(got.as_ref().map(|(_, r)| r), want.as_ref());
+                assert_eq!(relays.status(), single.status());
+                want
+            }};
+        }
+        let p = OwnPlayer {
+            uid: 1,
+            guild_id: Some(GUILD),
+        };
+        single.on_own_player(p);
+        relays.on_own_player(CONN_A, Some(p));
+        for i in 0..3 {
+            single.on_line(&line(5, 10 + i, "x"), Origin::Live);
+            relays.on_line(Some(CONN_A), &line(5, 10 + i, "x"), Origin::Live);
+        }
+        let ask = same_poll!(0).unwrap();
+        single.on_response(0, ask.generation, ok(r#"{"enrolled":true}"#));
+        relays.on_response(CONN_A, 0, ask.generation, ok(r#"{"enrolled":true}"#));
+        let send = same_poll!(0).unwrap();
+        single.on_response(0, send.generation, ok("{}"));
+        relays.on_response(CONN_A, 0, send.generation, ok("{}"));
+        same_poll!(BATCH_INTERVAL_MS);
+        // A change of guild starts over.
+        let moved = OwnPlayer {
+            uid: 1,
+            guild_id: Some(GUILD + 1),
+        };
+        single.on_own_player(moved);
+        relays.on_own_player(CONN_A, Some(moved));
+        let ask = same_poll!(BATCH_INTERVAL_MS).unwrap();
+        single.on_response(BATCH_INTERVAL_MS, ask.generation, status(403));
+        relays.on_response(CONN_A, BATCH_INTERVAL_MS, ask.generation, status(403));
+        same_poll!(BATCH_INTERVAL_MS + 1);
+        for origin in [Origin::History, Origin::Replay] {
+            single.on_line(&line(5, 99, "old"), origin);
+            relays.on_line(Some(CONN_A), &line(5, 99, "old"), origin);
+        }
+        same_poll!(BATCH_INTERVAL_MS + 2);
     }
 }

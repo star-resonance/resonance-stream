@@ -194,6 +194,7 @@ pub fn client_views(
 mod tests {
     use super::*;
     use crate::ingame_send::{pick_target, send_chat_flow, SendBackend, SendError};
+    use crate::protocol::own_player::OwnPlayer;
     use crate::send_text::SendSpacing;
     use resonance_types::ipc::GameClient;
     use resonance_types::SendChatChannel;
@@ -293,6 +294,50 @@ mod tests {
         let later = t0 + CLIENT_IDLE_TIMEOUT + Duration::from_secs(1);
         roster.see_connection(B, later);
         assert_eq!(roster.take_changed(later), Some(vec![fact(B, None)]));
+    }
+
+    fn record(uid: u64, guild: u64) -> OwnPlayer {
+        OwnPlayer {
+            uid,
+            guild_id: Some(guild),
+        }
+    }
+
+    // F-GR 1
+    #[test]
+    fn each_connection_keeps_its_own_record() {
+        let t0 = Instant::now();
+        let mut roster = Roster::new();
+        let p7 = record(7, 100);
+        let p9 = record(9, 200);
+        assert!(roster.own_record(A, p7, t0));
+        assert!(!roster.own_record(A, p7, t0), "the same record is not news");
+        assert!(roster.own_record(A, record(7, 101), t0));
+        assert!(roster.own_record(B, p9, t0));
+        // Alternating frames overwrite nothing.
+        assert!(roster.own_record(A, p7, t0));
+        for _ in 0..3 {
+            assert!(!roster.own_record(A, p7, t0));
+            assert!(!roster.own_record(B, p9, t0));
+        }
+    }
+
+    // F-GR 2
+    #[test]
+    fn a_closed_or_idle_connection_is_queued_as_gone_once() {
+        let t0 = Instant::now();
+        let mut roster = Roster::new();
+        roster.own_record(A, record(7, 100), t0);
+        roster.forget(A);
+        assert_eq!(roster.take_gone(), [A]);
+        assert!(roster.take_gone().is_empty());
+
+        roster.own_record(A, record(7, 100), t0);
+        roster.own_record(B, record(9, 200), t0 + Duration::from_secs(9 * 60));
+        roster.expire(t0 + CLIENT_IDLE_TIMEOUT + Duration::from_secs(1));
+        assert_eq!(roster.take_gone(), [A]);
+        // A forgotten connection reports its record as new again.
+        assert!(roster.own_record(A, record(7, 100), t0));
     }
 
     // 8
