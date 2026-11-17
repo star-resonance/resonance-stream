@@ -467,7 +467,9 @@ pub fn connect(host: &mut impl Host, resident: &mut Resident, pid: u32) -> Resul
 /// `detail` goes to the log with the code, never the chat text.
 pub fn map_send_reply(reply: Reply) -> (Result<Option<u32>, SendError>, bool) {
     match reply {
-        Reply::Send { .. } | Reply::Ack { .. } => (Ok(None), false),
+        // An answer without a call id (an older DLL) cannot be matched to its Return.
+        Reply::Send { call_id, .. } => (Ok(Some(call_id)), false),
+        Reply::Ack { .. } => (Ok(None), false),
         Reply::Error { code, detail, .. } => {
             log::warn!("in-game send refused: {} ({detail})", code.as_str());
             let drop = matches!(code, ErrorCode::BadRequest | ErrorCode::Version);
@@ -489,9 +491,11 @@ pub trait SendBackend {
     ) -> Result<Option<u32>, SendError>;
 }
 
-/// The `send_chat` command's logic: setting, text rules, spacing, send. The spacing is kept
-/// per client (the `target` as given). Its guard is held across the send, so two calls to one
-/// client at once cannot both pass; only a send that succeeded starts the window. The error is the one sentence the ui shows.
+/// The `send_chat` command's logic: setting, text rules, the server's cooldown, spacing, send,
+/// then up to `VERDICT_WAIT` for the server's verdict. The spacing is kept per client (the
+/// `target` as given). Its guard is held across the DLL call, so two calls to one client at once
+/// cannot both pass; only a send that succeeded starts the window. A send the cooldown gate
+/// refuses is a `Cooldown` verdict, not an error; the error is the one sentence the ui shows.
 /// Chat text is not logged, only the channel and the length.
 pub fn send_chat_flow(
     setting_on: bool,
@@ -502,23 +506,37 @@ pub fn send_chat_flow(
     channel: SendChatChannel,
     text: &str,
 ) -> Result<SendVerdict, String> {
-    let _ = hub;
     let mut run = || -> Result<SendVerdict, SendError> {
         if !setting_on {
             return Err(SendError::SettingOff);
         }
         let prepared = prepare_text(text)?;
+        // The server's cooldown, learned from an earlier Return: refused here, nothing is sent
+        // and no spacing window starts.
+        if let Err(refused) = hub.check(target, channel, Instant::now()) {
+            return Ok(refused.into());
+        }
         let slot = spacing.slot(target, Instant::now());
         let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
         guard.allow(Instant::now())?;
-        backend.send(target, channel, &prepared)?;
-        guard.record_success(Instant::now());
+        let call_id = backend.send(target, channel, &prepared)?;
+        let sent_at = Instant::now();
+        guard.record_success(sent_at);
+        // The guard covers the DLL call only: the wait below must not hold the next send back.
+        drop(guard);
         log::debug!(
             "chat sent: channel {}, {} units",
             channel.as_str(),
             prepared.encode_utf16().count()
         );
-        Ok(SendVerdict::NotConfirmed)
+        Ok(match call_id {
+            Some(id) => {
+                hub.register(target, id, channel, sent_at);
+                hub.wait(target, id, Instant::now, sent_at).into()
+            }
+            // An older DLL answers with no call id: that send cannot be matched.
+            None => SendVerdict::NotConfirmed,
+        })
     };
     run().map_err(|e| {
         log::debug!("chat not sent: channel {}: {e}", channel.as_str());
