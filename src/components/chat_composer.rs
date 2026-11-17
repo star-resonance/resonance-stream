@@ -107,10 +107,11 @@ pub fn ChatComposer() -> impl IntoView {
             now.get(),
         )
     };
+    let shown = move || shown_status(status.get().as_ref(), left());
     let can_send_view = move || can_send_now(&draft.get(), sending.get(), left());
 
     Effect::new(move |_| {
-        let running = counting(&blocks.get(), now.get());
+        let running = counting(&blocks.get(), now.get_untracked());
         let has_handle = timer.with_value(|h| h.is_some());
         if running && !has_handle {
             let handle = set_interval_with_handle(
@@ -162,11 +163,12 @@ pub fn ChatComposer() -> impl IntoView {
                                 draft.set(String::new());
                             }
                             let t = now_ms();
-                            now.set(t);
+                            // The signals are gone once the composer is (setting off).
+                            let _ = now.try_set(t);
                             if let Some(b) = block_from(&verdict, client, channel, t) {
-                                blocks.update(|v| add_block(v, b));
+                                let _ = blocks.try_update(|v| add_block(v, b));
                             }
-                            status.set(status_of(&verdict));
+                            let _ = status.try_set(status_of(&verdict));
                         }
                         Err(e) => {
                             if clears_choice(&e) {
@@ -270,23 +272,15 @@ pub fn ChatComposer() -> impl IntoView {
             >
                 {move || module.get().unwrap_or_default()}
             </div>
-            {move || {
-                let shown = shown_status(status.get().as_ref(), left());
-                let tone = shown.as_ref().map(|s| s.tone);
-                let text = shown.map(|s| s.text).unwrap_or_default();
-                let title = text.clone();
-                view! {
-                    <div
-                        class="px-2 pb-1 text-[10px] truncate"
-                        class=("text-error", tone == Some(Tone::Error))
-                        class=("text-base-content/70", tone == Some(Tone::Notice))
-                        class:hidden=tone.is_none()
-                        title=title
-                    >
-                        {text}
-                    </div>
-                }
-            }}
+            <div
+                class="px-2 pb-1 text-[10px] truncate"
+                class=("text-error", move || shown().is_some_and(|s| s.tone == Tone::Error))
+                class=("text-base-content/70", move || shown().is_some_and(|s| s.tone == Tone::Notice))
+                class:hidden=move || shown().is_none()
+                title=move || shown().map(|s| s.text).unwrap_or_default()
+            >
+                {move || shown().map(|s| s.text).unwrap_or_default()}
+            </div>
         </div>
     }
 }
