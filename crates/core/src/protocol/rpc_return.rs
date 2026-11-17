@@ -9,6 +9,10 @@
 //! A Return carries no service or method, so this reads the Return of every RPC; a decoded code
 //! means something only for a `call_id` the caller knows it sent.
 
+use crate::protocol::decoder::{field_end, read_varint, Fields, Value};
+
+const ROOT_TAG: u8 = 0x0A;
+
 /// `err_code` of an accepted send.
 pub const ERR_ACCEPTED: u32 = 0;
 /// `err_code`: the chat-send cooldown has not ended (`cd_end_time` says when).
@@ -49,8 +53,43 @@ impl RpcReturn {
 /// Reads a Return from a frame's inner header and root. `None` when the header is shorter than
 /// 12 bytes, the root is not `0A <len> ..`, or `err_code` does not fit a `u32`.
 pub fn decode(inner_header: &[u8], root: &[u8]) -> Option<RpcReturn> {
-    let _ = (inner_header, root);
-    None
+    let header: &[u8; 12] = inner_header.get(..12)?.try_into().ok()?;
+    let word = |at: usize| {
+        u32::from_be_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+    };
+    if root.first() != Some(&ROOT_TAG) {
+        return None;
+    }
+    let (len, read) = read_varint(&root[1..]);
+    let start = 1 + read;
+    let end = field_end(start, len, root.len());
+    let (mut err_code, mut cd_end_time, mut server_time) = (0u64, 0u64, None);
+    for field in Fields::new(&root[start..end]) {
+        match (field.number(), field.value) {
+            (3, Value::Bytes(show)) => server_time = show_msg_time(show),
+            (4, Value::Varint(n)) => cd_end_time = n,
+            (5, Value::Varint(n)) => err_code = n,
+            _ => {}
+        }
+    }
+    Some(RpcReturn {
+        call_id: word(4),
+        err_code: u32::try_from(err_code).ok()?,
+        cd_end_time,
+        error_id: word(8),
+        server_time,
+    })
+}
+
+/// The chat message's timestamp: field 3 of `show_msg`, when a nonzero varint.
+fn show_msg_time(show: &[u8]) -> Option<u64> {
+    Fields::new(show)
+        .filter_map(|f| match (f.number(), f.value) {
+            (3, Value::Varint(n)) => Some(n),
+            _ => None,
+        })
+        .last()
+        .filter(|&n| n != 0)
 }
 
 #[cfg(test)]
