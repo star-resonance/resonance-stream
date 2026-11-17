@@ -138,9 +138,7 @@ pub fn verdict_line(verdict: &SendVerdict) -> String {
     match verdict {
         SendVerdict::Sent => String::new(),
         SendVerdict::TooFrequent => "너무 자주 보냈습니다. 잠시 후 다시 보내 주세요.".to_string(),
-        SendVerdict::Cooldown { remaining_secs } => {
-            format!("아직 보낼 수 없습니다. {remaining_secs}초 뒤에 다시 보내 주세요.")
-        }
+        SendVerdict::Cooldown { remaining_secs } => countdown_line(*remaining_secs),
         SendVerdict::NotConfirmed => "보냈지만 서버의 확인을 받지 못했습니다.".to_string(),
         // The code is for the log, not the user.
         SendVerdict::Refused { .. } => "서버가 메시지를 받지 않았습니다.".to_string(),
@@ -160,45 +158,77 @@ pub struct CooldownBlock {
     pub until_ms: u64,
 }
 
-/// The block a verdict makes; only a `Cooldown` of at least one second does.
+/// The block a verdict makes; only a `Cooldown` of at least one second does. The end is
+/// clamped to 600 s (a placeholder bound against a wrong clock).
 pub fn block_from(
-    _verdict: &SendVerdict,
-    _client: Option<u32>,
-    _channel: SendChatChannel,
-    _arrived_ms: u64,
+    verdict: &SendVerdict,
+    client: Option<u32>,
+    channel: SendChatChannel,
+    arrived_ms: u64,
 ) -> Option<CooldownBlock> {
-    None
+    match verdict {
+        SendVerdict::Cooldown { remaining_secs } if *remaining_secs > 0 => Some(CooldownBlock {
+            client,
+            channel,
+            until_ms: arrived_ms + u64::from((*remaining_secs).min(600)) * 1000,
+        }),
+        _ => None,
+    }
 }
 
 /// Adds a block, replacing the one for the same client and channel.
-pub fn add_block(_blocks: &mut Vec<CooldownBlock>, _new: CooldownBlock) {}
+pub fn add_block(blocks: &mut Vec<CooldownBlock>, new: CooldownBlock) {
+    match blocks
+        .iter_mut()
+        .find(|b| b.client == new.client && b.channel == new.channel)
+    {
+        Some(old) => *old = new,
+        None => blocks.push(new),
+    }
+}
 
 /// Whole seconds left (rounded up) for exactly this client and channel; 0 when none.
 pub fn seconds_left(
-    _blocks: &[CooldownBlock],
-    _client: Option<u32>,
-    _channel: SendChatChannel,
-    _now_ms: u64,
+    blocks: &[CooldownBlock],
+    client: Option<u32>,
+    channel: SendChatChannel,
+    now_ms: u64,
 ) -> u32 {
-    0
+    blocks
+        .iter()
+        .find(|b| b.client == client && b.channel == channel)
+        .map_or(0, |b| {
+            let left = b.until_ms.saturating_sub(now_ms);
+            u32::try_from(left.div_ceil(1000)).unwrap_or(u32::MAX)
+        })
 }
 
 /// Whether any block is still running (the timer runs exactly then).
-pub fn counting(_blocks: &[CooldownBlock], _now_ms: u64) -> bool {
-    false
+pub fn counting(blocks: &[CooldownBlock], now_ms: u64) -> bool {
+    blocks.iter().any(|b| b.until_ms > now_ms)
 }
 
 /// Drops the blocks that have ended.
-pub fn prune(_blocks: &mut Vec<CooldownBlock>, _now_ms: u64) {}
+pub fn prune(blocks: &mut Vec<CooldownBlock>, now_ms: u64) {
+    blocks.retain(|b| b.until_ms > now_ms);
+}
 
-/// The client the next send goes with; a stale choice has no block.
-pub fn send_target(_clients: &[GameClient], _chosen: Option<u32>) -> Option<u32> {
-    None
+/// The client the next send goes with; a stale choice (`Gone`) has none, so no block applies.
+pub fn send_target(clients: &[GameClient], chosen: Option<u32>) -> Option<u32> {
+    match send_plan(clients, chosen) {
+        SendPlan::Send(c) => c,
+        SendPlan::Gone => None,
+    }
 }
 
 /// Whether Send is allowed: `can_send` and no cooldown left.
-pub fn can_send_now(_draft: &str, _sending: bool, _left_secs: u32) -> bool {
-    false
+pub fn can_send_now(draft: &str, sending: bool, left_secs: u32) -> bool {
+    can_send(draft, sending) && left_secs == 0
+}
+
+/// The cooldown sentence for the seconds left (a placeholder wording).
+pub fn countdown_line(left_secs: u32) -> String {
+    format!("아직 보낼 수 없습니다. {left_secs}초 뒤에 다시 보내 주세요.")
 }
 
 /// The picker's options as (value, label), in tab order.
@@ -535,6 +565,11 @@ mod tests {
         assert_eq!(send_target(&two, None), None);
         assert_eq!(send_target(&[c(7, "Aria")], None), None);
         assert_eq!(send_target(&two, Some(9)), None);
+        assert_eq!(
+            countdown_line(3),
+            "아직 보낼 수 없습니다. 3초 뒤에 다시 보내 주세요."
+        );
+        assert_eq!(countdown_line(3), verdict_line(&cd(3)));
         assert!(can_send_now("hi", false, 0));
         assert!(!can_send_now("hi", false, 2));
         assert!(!can_send_now("hi", true, 0));
