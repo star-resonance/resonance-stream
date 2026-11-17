@@ -183,3 +183,79 @@ values). This doc builds on them and reopens none.
 
 Then: the tests the work would need, the tasks it would split into, Questions for Kade, summary,
 Not verified.
+
+## 1. Where the verdict is read
+
+### Facts
+
+- **`SendBytes` sees only the outbound call.** `ZRpcImpl.SendBytes(uuid, stubId, callId, methodId,
+  pbData, pbSize, framePack)` is the game's own path to the transport (R0 section 1;
+  `docs/ingame-design.md:125` cites Stellar for it). A hook there gives the `call_id` and channel of
+  sends **the DLL did not make**: the game's own chat-box sends. The DLL's own sends never pass
+  through it (they go straight to `ZTcpClient.Send`), and their `call_id` is already known
+  (`Reply::Send`). (confirmed for our side, reported for the game's)
+- **The Return arrives on the receive side.** Stellar reads Returns with one hook on
+  `ZCode.ZNet.ZTcpConnection.OnData(ReadOnlySpan<byte>, ZTcpClient)`, as a prefix, because the
+  method clears its buffer before it returns
+  (`Stellar@60a7772:…/Game/PandaWireTap.Patching.cs:58-95`, `:90-93`), and a second one on
+  `ZCode.ZNet.ZUdpConnection.ProcessKcpData(ReadOnlySpan<byte>)` for UDP/KCP (`:151-167`). Its
+  handlers run on the game's network I/O thread, which carries hundreds of packets a second
+  (`…/Game/PandaWireTap.cs:9-17`, `:33-35`; `…/Game/PandaChatProbe.History.cs:23`). Reported.
+- **Login, chat and social traffic go over TCP; scene and combat over UDP/KCP**
+  (`…/Game/PandaWireTap.Patching.cs:34-37`, reported). R0 noted that World can run over UDP/KCP
+  (`docs/ingame-design.md:116`, `:708-713`). Our DLL sends only over TCP: a UDP connection is
+  refused with `no_client` before anything is sent (R0 section 7). So **every send the DLL makes is
+  answered on a TCP connection to port 5003**, which the sniffer already reads (derived).
+- **The sniffer already sees every Return on that connection**, frames it (`0x0003`, 12-byte inner
+  header) and drops the non-history ones (`framing.rs:231-238`). Reading the `call_id` and the reply
+  needs a decoder in `crates/core`, not a new capture (derived from the facts above).
+- **Cost of a hook in the DLL** (R0 sections 2, 3, 6): each is one more `ilhook` detour with the
+  game's other threads suspended around the 14-byte write, one more method to resolve by name after
+  every patch, one more unhook that must be provably safe before unload (`KeepResident`
+  otherwise, `crates/ingame/src/win/entry.rs:232-235`), and, on `OnData`, a hot path where the rule
+  "one atomic load when idle, never allocate, lock or log" (`.claude/rules/ingame.md`) would have to
+  hold for every inbound packet, not once a frame.
+
+### Options
+
+- **A. In the DLL: a receive hook (and a `SendBytes` hook for the game's own sends).** Detour
+  `ZTcpConnection.OnData`, parse each frame header on the network thread, pick the Returns whose
+  `call_id` is one of ours, and report the verdict over the pipe. A `SendBytes` detour adds the
+  game's own chat-box sends (their channel and `call_id`), which our composer does not need. Two new
+  hooks on a hot path, a D-35 scope change ("no other hook"), a pipe protocol change (section 4),
+  and new code in the game's process that reads every packet. Patch resilience: two more names to
+  resolve (R0 section 7's table gains two rows), and a buffer layout to trust at run time.
+- **B. In the app: decode the Return from the sniffed TCP stream.** `FrameAssembler` hands a plain
+  `0x0003` that is not history to a new pure decoder in `crates/core` (header: `call_id`; root:
+  the `SendChitChatMsgReply` fields, through `decoder.rs`'s `Fields`), and the app matches it with
+  the `call_id` the DLL already returns (`Reply::Send`). No new game hook, no pipe change, nothing
+  new in the game's process, D-35 unchanged. It needs the sniffer running (it is, whenever chat is
+  shown) and sees only TCP, which is all the DLL sends over. A segment the raw socket misses loses
+  that Return: section 2's "no verdict" state covers it.
+- **C. Both: the app as the verdict, the DLL's hooks as a cross-check or for the game's own sends.**
+  All of B's code and all of A's hooks; it adds something only if the composer must also show
+  verdicts for lines typed in the game's own chat box, which the game already shows itself
+  (`ChatSendResult.cs:28-30`, reported).
+
+| | new game hooks | pipe change | D-35 scope | runs in the game | sees a missed segment |
+|---|---|---|---|---|---|
+| A | 1-2 (`OnData`, `SendBytes`) | yes | widened | packet parser on the I/O thread | yes (in-process) |
+| B | 0 | none | unchanged | nothing new | no: "no verdict" |
+| C | 1-2 | yes | widened | as A | yes |
+
+What `crates/core` needs for B (and for A's parser, which would live in `crates/frame` or core
+too): a `Return` frame kind in `framing.rs` (the plain `0x0003` that is not history, today `None` at
+`:238`), a header reader (`stub_id`, `call_id`, `error_id`), and a `SendChitChatMsgReply` reader
+using `decoder.rs`'s `Fields` and `read_varint` (`crates/core/src/protocol/decoder.rs`). All pure,
+all tested on any OS under `just core-check`.
+
+Effect on the patch-resilience table (R0 section 7): B adds no row; it depends on the wire layout,
+which the sniffer already depends on, and not on any game method name. A adds two rows
+(`OnData` or `SendBytes` renamed or re-signed: `unsupported` for the verdict only, the send still
+works).
+
+`Recommended: B`, because the app already captures every Return the DLL's sends can produce, so the
+verdict needs no new hook, no D-35 change and no code on the game's network thread; reading the
+reply off the wire is the long-term option as well, since a game patch that renames methods does
+not touch it. The roadmap's "hook `ZRpcImpl.SendBytes`" (tasks#2) was written before this was known:
+`SendBytes` would not see the DLL's own sends at all.
