@@ -4,7 +4,7 @@
 //! Pure: no clock inside (every call gets `now`), no wiring. The Return arrives without a pid or
 //! target, so the caller gives the key a send was registered under.
 
-use crate::protocol::rpc_return::RpcReturn;
+use crate::protocol::rpc_return::{RpcReturn, SendOutcome};
 use resonance_types::SendChatChannel;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -45,47 +45,161 @@ pub struct Resolved {
     pub cooldown: Option<Duration>,
 }
 
+/// Call ids of the DLL are in the upper half of `u32`; a Return below it is the game's own call.
+const DLL_CALL_IDS: u32 = 0x8000_0000;
+const MAX_COOLDOWN_MS: u64 = MAX_COOLDOWN.as_millis() as u64;
+
+/// Milliseconds from the server's now to the Return's `cd_end_time`, 0 when it is past. `None`
+/// when there is no end, the server's now is unknown (the PC's clock is never a guess) or the
+/// arithmetic overflows.
+fn cooldown_left_ms(ret: &RpcReturn, fallback_server_ms: Option<u64>) -> Option<u64> {
+    if ret.cd_end_time == 0 {
+        return None;
+    }
+    let now = ret
+        .server_time
+        .and_then(|s| s.checked_mul(1000))
+        .or(fallback_server_ms)?;
+    let end = ret.cd_end_time.checked_mul(1000)?;
+    Some(end.saturating_sub(now))
+}
+
 /// The verdict of a Return. `fallback_server_ms` is the server's now (Unix ms) when the Return
-/// carries none of its own.
-pub fn verdict(_ret: &RpcReturn, _fallback_server_ms: Option<u64>) -> Verdict {
-    Verdict::NotConfirmed
+/// carries none of its own. Reads `err_code` only (`error_id` is not looked at).
+pub fn verdict(ret: &RpcReturn, fallback_server_ms: Option<u64>) -> Verdict {
+    match ret.outcome() {
+        SendOutcome::Accepted => Verdict::Sent,
+        SendOutcome::Other(n) => Verdict::Other(n),
+        SendOutcome::CooldownNotEnded => match cooldown_left_ms(ret, fallback_server_ms) {
+            Some(left) if left <= MAX_COOLDOWN_MS => Verdict::Cooldown {
+                remaining: Duration::from_secs(left.div_ceil(1000).max(1)),
+            },
+            _ => Verdict::TooFrequent,
+        },
+    }
 }
 
-/// The exact time until the Return's `cd_end_time`; `Some` only for a plausible future end.
-pub fn cooldown_remaining(_ret: &RpcReturn, _fallback_server_ms: Option<u64>) -> Option<Duration> {
-    None
+/// The exact time until the Return's `cd_end_time`; `Some` only for a plausible future end
+/// (up to [`MAX_COOLDOWN`]). Applies to an accepted reply as well as a refusal.
+pub fn cooldown_remaining(ret: &RpcReturn, fallback_server_ms: Option<u64>) -> Option<Duration> {
+    cooldown_left_ms(ret, fallback_server_ms)
+        .filter(|left| (1..=MAX_COOLDOWN_MS).contains(left))
+        .map(Duration::from_millis)
 }
 
-/// Pairs sends with their Returns.
+type Key = (ClientKey, u32);
+
+/// Pairs sends with their Returns. No clock inside: every call gets `now`. Each map holds at
+/// most [`MAX_TRACKED`] entries.
 #[derive(Debug, Default)]
 pub struct VerdictMatcher {
-    pending: HashMap<(ClientKey, u32), (SendChatChannel, Instant)>,
-    early: HashMap<(ClientKey, u32), (RpcReturn, Option<u64>, Instant)>,
+    pending: HashMap<Key, (SendChatChannel, Instant)>,
+    /// Returns of the DLL's id range that came before their send was registered:
+    /// the Return, the fallback it came with, its arrival.
+    early: HashMap<Key, (RpcReturn, Option<u64>, Instant)>,
 }
 
 impl VerdictMatcher {
+    /// Stores a send. Returns what resolved at once: the send's earlier entry under the same key
+    /// or the oldest one when full (`NotConfirmed`), or the send itself when its Return came
+    /// first.
     pub fn register(
         &mut self,
-        _client: ClientKey,
-        _call_id: u32,
-        _channel: SendChatChannel,
-        _sent_at: Instant,
+        client: ClientKey,
+        call_id: u32,
+        channel: SendChatChannel,
+        sent_at: Instant,
     ) -> Vec<Resolved> {
-        Vec::new()
+        let key = (client, call_id);
+        let mut out = Vec::new();
+        if let Some((old_channel, _)) = self.pending.remove(&key) {
+            out.push(not_confirmed(key, old_channel));
+        }
+        if let Some((ret, fallback, arrived)) = self.early.remove(&key) {
+            if sent_at.saturating_duration_since(arrived) < VERDICT_WAIT {
+                out.push(Resolved {
+                    client,
+                    call_id,
+                    channel,
+                    verdict: verdict(&ret, fallback),
+                    cooldown: cooldown_remaining(&ret, fallback),
+                });
+                return out;
+            }
+        }
+        if self.pending.len() >= MAX_TRACKED {
+            let oldest = self
+                .pending
+                .iter()
+                .min_by_key(|((_, id), (_, at))| (*at, *id))
+                .map(|(k, _)| *k);
+            if let Some(k) = oldest {
+                if let Some((c, _)) = self.pending.remove(&k) {
+                    out.push(not_confirmed(k, c));
+                }
+            }
+        }
+        self.pending.insert(key, (channel, sent_at));
+        out
     }
 
+    /// Feeds a Return seen on `client`'s stream. A pending send resolves with its verdict, or
+    /// as `NotConfirmed` when it already waited [`VERDICT_WAIT`] (the cooldown is still taken
+    /// from the Return). An unknown id in the DLL's range waits in `early`; any other is dropped.
     pub fn on_return(
         &mut self,
-        _client: ClientKey,
-        _ret: &RpcReturn,
-        _fallback_server_ms: Option<u64>,
-        _now: Instant,
+        client: ClientKey,
+        ret: &RpcReturn,
+        fallback_server_ms: Option<u64>,
+        now: Instant,
     ) -> Option<Resolved> {
-        None
+        let key = (client, ret.call_id);
+        let Some((channel, sent_at)) = self.pending.remove(&key) else {
+            if ret.call_id >= DLL_CALL_IDS {
+                if self.early.len() >= MAX_TRACKED && !self.early.contains_key(&key) {
+                    let oldest = self
+                        .early
+                        .iter()
+                        .min_by_key(|((_, id), (_, _, at))| (*at, *id))
+                        .map(|(k, _)| *k);
+                    if let Some(k) = oldest {
+                        self.early.remove(&k);
+                    }
+                }
+                self.early.insert(key, (*ret, fallback_server_ms, now));
+            }
+            return None;
+        };
+        let verdict = if now.saturating_duration_since(sent_at) >= VERDICT_WAIT {
+            Verdict::NotConfirmed
+        } else {
+            verdict(ret, fallback_server_ms)
+        };
+        Some(Resolved {
+            client,
+            call_id: ret.call_id,
+            channel,
+            verdict,
+            cooldown: cooldown_remaining(ret, fallback_server_ms),
+        })
     }
 
-    pub fn poll(&mut self, _now: Instant) -> Vec<Resolved> {
-        Vec::new()
+    /// Ends every send that waited [`VERDICT_WAIT`] as `NotConfirmed`, oldest first, and drops
+    /// early Returns of that age.
+    pub fn poll(&mut self, now: Instant) -> Vec<Resolved> {
+        let mut expired: Vec<(Instant, Key)> = self
+            .pending
+            .iter()
+            .filter(|(_, (_, at))| now.saturating_duration_since(*at) >= VERDICT_WAIT)
+            .map(|(k, (_, at))| (*at, *k))
+            .collect();
+        expired.sort_by_key(|(at, (_, id))| (*at, *id));
+        self.early
+            .retain(|_, (_, _, at)| now.saturating_duration_since(*at) < VERDICT_WAIT);
+        expired
+            .into_iter()
+            .filter_map(|(_, k)| self.pending.remove(&k).map(|(c, _)| not_confirmed(k, c)))
+            .collect()
     }
 
     pub fn pending_len(&self) -> usize {
@@ -94,6 +208,16 @@ impl VerdictMatcher {
 
     pub fn early_len(&self) -> usize {
         self.early.len()
+    }
+}
+
+fn not_confirmed((client, call_id): Key, channel: SendChatChannel) -> Resolved {
+    Resolved {
+        client,
+        call_id,
+        channel,
+        verdict: Verdict::NotConfirmed,
+        cooldown: None,
     }
 }
 
