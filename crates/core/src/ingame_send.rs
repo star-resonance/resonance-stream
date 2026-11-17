@@ -624,6 +624,7 @@ mod tests {
             "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요."
         );
         assert_eq!(gone, "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.");
+        assert_eq!(gone, resonance_types::ipc::CLIENT_GONE_LINE);
         for text in [&choose, &gone] {
             assert!(!text.contains('\n') && !text.chars().any(|c| c.is_ascii_digit()));
         }

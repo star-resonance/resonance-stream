@@ -330,15 +330,32 @@ mod tests {
     }
 
     #[test]
-    fn send_chat_takes_a_channel_and_text() {
+    fn send_chat_takes_a_channel_text_and_client() {
         assert_eq!(SendChat::NAME, "send_chat");
         assert!(COMMAND_NAMES.contains(&"send_chat"));
         assert_eq!(
             wire(&SendChat {
                 channel: crate::SendChatChannel::World,
-                text: "hi".into()
+                text: "hi".into(),
+                client: Some(7),
             }),
-            json!({ "channel": "world", "text": "hi" })
+            json!({ "channel": "world", "text": "hi", "client": 7 })
+        );
+        assert_eq!(
+            wire(&SendChat {
+                channel: crate::SendChatChannel::World,
+                text: "hi".into(),
+                client: None,
+            }),
+            json!({ "channel": "world", "text": "hi", "client": null })
+        );
+    }
+
+    #[test]
+    fn the_client_gone_sentence_is_one_shared_line() {
+        assert_eq!(
+            CLIENT_GONE_LINE,
+            "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요."
         );
     }
 
