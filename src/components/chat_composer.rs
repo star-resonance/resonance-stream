@@ -1,7 +1,7 @@
 use crate::composer_view::{
-    can_send, channel_options, clears_choice, client_from_value, client_options, counter_over,
-    counter_text, enter_sends, module_line, send_plan, send_request, show_picker, stored_channel,
-    tab_pick, SendPlan, COUNTER_TITLE,
+    can_send, channel_options, clears_choice, clears_draft, client_from_value, client_options,
+    counter_over, counter_text, enter_sends, module_line, send_plan, send_request, show_picker,
+    stored_channel, tab_pick, verdict_line, SendPlan, COUNTER_TITLE,
 };
 use crate::store::{AppActions, AppSignals};
 use crate::tauri_bridge::{call, listen};
@@ -99,9 +99,11 @@ pub fn ChatComposer() -> impl IntoView {
                 }
                 SendPlan::Send(client) => {
                     match call::<SendChat>(&send_request(channel, &text, client)).await {
-                        Ok(_) => {
-                            draft.set(String::new());
-                            error.set(String::new());
+                        Ok(verdict) => {
+                            if clears_draft(&verdict) {
+                                draft.set(String::new());
+                            }
+                            error.set(verdict_line(&verdict));
                         }
                         Err(e) => {
                             if clears_choice(&e) {

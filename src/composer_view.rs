@@ -135,14 +135,21 @@ pub fn clears_choice(error: &str) -> bool {
 
 /// The status-line sentence for what the server said; empty when it took the message.
 pub fn verdict_line(verdict: &SendVerdict) -> String {
-    let _ = verdict;
-    String::new()
+    match verdict {
+        SendVerdict::Sent => String::new(),
+        SendVerdict::TooFrequent => "너무 자주 보냈습니다. 잠시 후 다시 보내 주세요.".to_string(),
+        SendVerdict::Cooldown { remaining_secs } => {
+            format!("아직 보낼 수 없습니다. {remaining_secs}초 뒤에 다시 보내 주세요.")
+        }
+        SendVerdict::NotConfirmed => "보냈지만 서버의 확인을 받지 못했습니다.".to_string(),
+        // The code is for the log, not the user.
+        SendVerdict::Refused { .. } => "서버가 메시지를 받지 않았습니다.".to_string(),
+    }
 }
 
 /// Whether the draft is cleared: the message went out (the server's word or not).
 pub fn clears_draft(verdict: &SendVerdict) -> bool {
-    let _ = verdict;
-    false
+    matches!(verdict, SendVerdict::Sent | SendVerdict::NotConfirmed)
 }
 
 /// The picker's options as (value, label), in tab order.
