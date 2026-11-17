@@ -7,3 +7,4 @@ pub mod framing;
 mod outbound;
 pub mod own_player;
 pub mod parser;
+pub mod rpc_return;

@@ -21,6 +21,7 @@
 
 use crate::protocol::compression::decompress;
 use crate::protocol::decoder::{field_end, read_varint, Fields, Value};
+use crate::protocol::rpc_return::RpcReturn;
 
 /// A frame longer than this is not a frame (the biggest seen is ~4 KB).
 pub const MAX_FRAME_LEN: usize = 1 << 20;
@@ -45,6 +46,9 @@ pub enum FrameKind {
     /// `0x8002`: world state; the parser reads only the player's own record
     /// from it (`protocol::own_player`).
     State,
+    /// A plain `0x0003` without history lines: the server's Return to an RPC
+    /// (`protocol::rpc_return`).
+    Return(RpcReturn),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
