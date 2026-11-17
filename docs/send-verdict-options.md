@@ -370,7 +370,7 @@ never by a number, and shows no digits except the remaining seconds.
 | `err_code` 5211, no `cd_end_time` or no `server_now` | too frequent | 너무 자주 보냈습니다. 잠시 후 다시 보내 주세요. | kept |
 | any other `err_code`, or `error_id` not 0 | refused, unknown | 서버가 메시지를 받지 않았습니다. | kept |
 | no Return within `VERDICT_WAIT` (section 2) | no verdict | 보냈지만 서버의 확인을 받지 못했습니다. | cleared |
-| an existing `ErrorCode` or app error | not sent | the existing sentence (`ingame_send.rs:159-180`, `:225-240`) | kept |
+| an existing `ErrorCode` or app error | not sent | the existing sentence (`ingame_send.rs:159-180`, `:209-243`) | kept |
 
 - `n` is whole seconds rounded up: `cd_end_time - server_now`, at least 1; a value above 600 s is
   taken as a wrong clock and shown as "too frequent" (600 is a placeholder).
@@ -414,3 +414,43 @@ updates the cooldown (section 2 C).
 not sending a line the server is certain to refuse is better than showing a refusal (it is what the
 game's own chat box does with its `chatCD_`, reported); it is the most work of the three (a
 per-client, per-channel map in `crates/core` beside the spacing, and a timer in the composer).
+
+## 4. The pipe protocol change and an old DLL
+
+### Facts
+
+- `PIPE_PROTOCOL_VERSION` is 1 (`ingame_pipe.rs:12`); lines are JSON, at most `MAX_LINE_BYTES` =
+  4096 bytes (`:14`); the app sends requests and the DLL answers each with exactly one reply that
+  echoes its `id` (`ingame_pipe.rs:1-5`). An unsolicited line from the DLL would break that rule: the
+  app reads one reply per request and treats anything else as a broken session
+  (`map_send_reply`, `ingame_send.rs:466-476`: a `Hello` to a send drops the session).
+- A version mismatch is refused, not negotiated: the DLL answers `error version`
+  (`session.rs:87-92`), the app says `bye` and loads its own copy, and a module that will not leave
+  makes every send fail with `ResidentModule` until the game restarts (`ingame_send.rs:418-458`).
+- The DLL is downloaded per app version and pinned by SHA-256 (DS-0006, `.claude/rules/app.md`), so a
+  new app always brings the matching DLL; only a game that kept an old module resident runs a
+  mismatched one.
+- The `call_id` the verdict needs is **already** on the wire: `{"id":2,"ok":true,"call_id":17}`
+  (`Reply::Send`, `ingame_pipe.rs:154-157`, `:248`).
+
+### Options
+
+- **A. Bump to 2: the DLL gains a message.** Needed only with section 1 A or C: the DLL pushes a
+  `{"verdict":…,"call_id":…,"err_code":…,"cd_end_time":…}` line, or the app polls with a new
+  `{"op":"verdict","id":N,"call_id":…}` request (a push breaks one-request-one-reply, so a poll keeps
+  the rule; the push needs a reader thread that sorts replies from pushes). New `ErrorCode`s: none
+  for the verdict itself (it is not an error of the pipe). An old resident DLL then meets
+  `version`, and the user must restart the game once after the update (the existing
+  `ResidentModule` sentence). Tests in `crates/types`: the new line round-trips, stays under
+  4096 bytes, and an old `hello` gets `version`.
+- **B. No pipe change.** The verdict is read in the app (section 1 B); `PIPE_PROTOCOL_VERSION` stays
+  1, every DLL already released works unchanged (M2 needs only the `call_id` it already returns),
+  and no game restart is ever needed for M2. Tests: none in `crates/types` beyond the existing
+  `Reply::Send` round trip (`ingame_pipe.rs:460`).
+- **C. Additive: `hello` reports a `features` list.** `{"id":1,"ok":true,"version":1,"dll":"…",
+  "features":["verdict"]}`; an old DLL sends none and the app falls back to "sent, no verdict". It
+  avoids a bump for later additions, at the cost of a second version axis to test.
+
+`Recommended: B`, because with the verdict read in the app nothing in the pipe needs to change, and
+an unchanged protocol is the cheapest one to keep compatible; if Kade picks section 1 A, take C over
+A (it keeps an old resident DLL usable for sending, which A does not).
