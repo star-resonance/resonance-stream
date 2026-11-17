@@ -205,7 +205,7 @@ pub fn ChatComposer() -> impl IntoView {
                         .into_iter()
                         .map(|(value, label)| {
                             view! {
-                                <option value=value selected=move || channel().as_str() == value>
+                                <option value=value prop:selected=move || channel().as_str() == value>
                                     {label}
                                 </option>
                             }
