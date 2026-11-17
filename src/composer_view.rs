@@ -101,6 +101,7 @@ mod tests {
     use super::*;
     use crate::chat_view::{Tab, ALL_TAB, CUSTOM_TAB, SYSTEM_TAB};
     use crate::ui_types::Channel;
+    use resonance_types::ipc::{GameClient, CLIENT_GONE_LINE};
     use resonance_types::SendChatChannel;
 
     fn a(n: usize) -> String {
@@ -183,13 +184,72 @@ mod tests {
 
     #[test]
     fn the_request_carries_the_draft_as_typed() {
-        let req = send_request(SendChatChannel::Guild, "  hi\n");
+        let req = send_request(SendChatChannel::Guild, "  hi\n", None);
         assert_eq!(req.channel, SendChatChannel::Guild);
         assert_eq!(req.text, "  hi\n");
+        assert_eq!(req.client, None);
         assert_eq!(
             serde_json::to_value(&req).unwrap(),
-            serde_json::json!({"channel": "guild", "text": "  hi\n"})
+            serde_json::json!({"channel": "guild", "text": "  hi\n", "client": null})
         );
+        assert_eq!(
+            send_request(SendChatChannel::World, "hi", Some(7)).client,
+            Some(7)
+        );
+    }
+
+    fn c(target: u32, name: &str) -> GameClient {
+        GameClient {
+            target,
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn the_picker_shows_only_with_two_or_more_clients() {
+        assert!(!show_picker(&[]));
+        assert!(!show_picker(&[c(7, "Aria")]));
+        assert!(show_picker(&[c(7, "Aria"), c(42, "Bob")]));
+    }
+
+    #[test]
+    fn options_are_nicknames_with_an_opaque_value() {
+        let opts = client_options(&[c(7, "Aria"), c(42, "Bob")]);
+        let labels: Vec<_> = opts.iter().map(|(_, l)| l.as_str()).collect();
+        let values: Vec<_> = opts.iter().map(|(v, _)| v.as_str()).collect();
+        assert_eq!(labels, ["Aria", "Bob"]);
+        assert_eq!(values, ["7", "42"]);
+        for (v, l) in &opts {
+            assert!(l != v && !l.contains(v.as_str()));
+        }
+        assert_eq!(client_from_value("42"), Some(42));
+        for bad in ["", "x", "-1"] {
+            assert_eq!(client_from_value(bad), None);
+        }
+    }
+
+    #[test]
+    fn the_send_plan_never_redirects_a_gone_choice() {
+        let two = [c(7, "Aria"), c(42, "Bob")];
+        assert_eq!(send_plan(&two, Some(42)), SendPlan::Send(Some(42)));
+        assert_eq!(send_plan(&two, None), SendPlan::Send(None));
+        assert_eq!(send_plan(&[c(7, "Aria")], None), SendPlan::Send(None));
+        assert_eq!(send_plan(&[c(7, "Aria")], Some(7)), SendPlan::Send(None));
+        assert_eq!(
+            send_plan(&[c(7, "Aria"), c(50, "Cy")], Some(42)),
+            SendPlan::Gone
+        );
+        assert_eq!(send_plan(&[c(7, "Aria")], Some(42)), SendPlan::Gone);
+        assert_eq!(send_plan(&[], None), SendPlan::Send(None));
+    }
+
+    #[test]
+    fn only_the_gone_sentence_clears_the_choice() {
+        assert!(clears_choice(CLIENT_GONE_LINE));
+        assert!(!clears_choice(
+            "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요."
+        ));
+        assert!(!clears_choice(""));
     }
 
     #[test]
