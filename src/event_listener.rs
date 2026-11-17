@@ -107,23 +107,26 @@ impl Listener {
     }
 
     /// Listens to `event` with `handler`, removing the listener this one started before. Does
-    /// nothing once the owner is gone.
+    /// nothing once the owner is gone. The registration runs in the background; a caller that
+    /// must have it done before it goes on awaits `register` instead.
     pub fn start(self, event: &'static str, handler: impl FnMut(JsValue) + 'static) {
+        spawn_local(self.register(event, handler));
+    }
+
+    /// `start`, finished when `listen` has answered (the listener is then live).
+    pub async fn register(self, event: &'static str, handler: impl FnMut(JsValue) + 'static) {
         let Some(Some((token, old))) = self.0.try_update_value(|s| s.begin()) else {
             return;
         };
         drop(old);
         let closure = Closure::wrap(Box::new(handler) as Box<dyn FnMut(JsValue)>);
-        let slot = self.0;
-        spawn_local(async move {
-            let handle = listen(event, &closure).await;
-            let active = Active::new(handle, closure);
-            // A disposed slot or a stale token: the value comes back (or, with the slot gone,
-            // is dropped with the closure), and its `Drop` unlistens.
-            if let Some(Some(stale)) = slot.try_update_value(|s| s.attach(token, active)) {
-                drop(stale);
-            }
-        });
+        let handle = listen(event, &closure).await;
+        let active = Active::new(handle, closure);
+        // A disposed slot or a stale token: the value comes back (or, with the slot gone, is
+        // dropped with the closure), and its `Drop` unlistens.
+        if let Some(Some(stale)) = self.0.try_update_value(|s| s.attach(token, active)) {
+            drop(stale);
+        }
     }
 }
 
