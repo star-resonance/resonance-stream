@@ -8,15 +8,19 @@ use crate::text::normalize_emotes;
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
 use resonance_types::ChatMessage;
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// The shortest time between two looks for idle connections.
+const EXPIRE_EVERY: Duration = Duration::from_secs(10);
 
 pub enum PipelineAction {
     UpdateBlockedMessage(ChatMessage),
     /// A new message, its origin and the connection it came in on (`None`: `feed_chat`, not captured).
     EmitNewMessage(ChatMessage, Origin, Option<Endpoint>),
-    /// Who is playing and in which guild, read from world state: sent when the
-    /// first record arrives and again whenever it changes.
-    OwnPlayer(OwnPlayer),
+    /// A connection's own player (uid, guild), read from world state: `Some` when its first
+    /// record arrives and again whenever it changes; `None` when the connection is gone (closed,
+    /// or idle past `CLIENT_IDLE_TIMEOUT`).
+    OwnPlayer(Endpoint, Option<OwnPlayer>),
 }
 
 /// Where a new message came from. The guild relay sends only live lines.
@@ -34,8 +38,8 @@ pub struct ChatPipeline {
     tracker: StreamTracker,
     processor: MessageProcessor,
     keep_unknown_fields: bool,
-    /// The last own-player record reported, so an unchanged one is not sent again.
-    own_player: Option<OwnPlayer>,
+    /// When idle connections were last looked for (at most every `EXPIRE_EVERY`).
+    last_expire: Option<Instant>,
     /// Which connection is which character (read before the duplicate check).
     roster: Roster,
 }
@@ -46,7 +50,7 @@ impl ChatPipeline {
             tracker: StreamTracker::new(),
             processor: MessageProcessor::new(),
             keep_unknown_fields: false,
-            own_player: None,
+            last_expire: None,
             roster: Roster::new(),
         }
     }
@@ -74,6 +78,21 @@ impl ChatPipeline {
         self.roster.take_changed(Instant::now())
     }
 
+    /// Drops the connections idle past `CLIENT_IDLE_TIMEOUT` at `now`; each is reported as
+    /// `OwnPlayer(conn, None)`.
+    pub fn expire(&mut self, now: Instant) -> Vec<PipelineAction> {
+        self.roster.expire(now);
+        self.gone_actions()
+    }
+
+    fn gone_actions(&mut self) -> Vec<PipelineAction> {
+        self.roster
+            .take_gone()
+            .into_iter()
+            .map(|conn| PipelineAction::OwnPlayer(conn, None))
+            .collect()
+    }
+
     /// 100% Pure Logic: Takes raw network bytes and returns UI Actions.
     pub fn feed_network_packet(
         &mut self,
@@ -94,6 +113,25 @@ impl ChatPipeline {
         if tcp.source_port != 5003 {
             return actions;
         }
+
+        let now = Instant::now();
+        if let Some(NetHeaders::Ipv4(ipv4, _)) = &headers.net {
+            if tcp.fin || tcp.rst {
+                self.roster.forget(Endpoint {
+                    addr: ipv4.destination,
+                    port: tcp.destination_port,
+                });
+            }
+        }
+        // A silent client is noticed on the next 5003 packet of any client.
+        if self
+            .last_expire
+            .is_none_or(|last| now.saturating_duration_since(last) >= EXPIRE_EVERY)
+        {
+            self.last_expire = Some(now);
+            self.roster.expire(now);
+        }
+        actions.extend(self.gone_actions());
 
         let payload = headers.payload.slice();
         if payload.is_empty() {
@@ -118,7 +156,7 @@ impl ChatPipeline {
             addr: ipv4.destination,
             port: tcp.destination_port,
         };
-        self.roster.see_connection(local, Instant::now());
+        self.roster.see_connection(local, now);
 
         // 3. Assemble fragmented bytes into complete frames (retransmits dropped)
         let frames = self
@@ -132,11 +170,8 @@ impl ChatPipeline {
                 FrameKind::History => (history_pipeline(&frame.root), Origin::History),
                 FrameKind::State => {
                     if let Some(player) = own_player(&frame.root) {
-                        // Per connection, before the (single) own-player slot below.
-                        self.roster.own_uid(local, player.uid, Instant::now());
-                        if self.own_player != Some(player) {
-                            self.own_player = Some(player);
-                            actions.push(PipelineAction::OwnPlayer(player));
+                        if self.roster.own_record(local, player, now) {
+                            actions.push(PipelineAction::OwnPlayer(local, Some(player)));
                         }
                     }
                     continue;
@@ -669,7 +704,7 @@ mod tests {
             Some(PipelineAction::UpdateBlockedMessage(_)) => {
                 panic!("expected a new message, got a block update")
             }
-            Some(PipelineAction::OwnPlayer(_)) => {
+            Some(PipelineAction::OwnPlayer(..)) => {
                 panic!("expected a new message, got an own-player record")
             }
             None => panic!("expected a new message, got nothing"),

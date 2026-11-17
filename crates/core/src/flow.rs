@@ -37,8 +37,9 @@ pub trait Sink {
     fn with_ledger<R>(&mut self, f: impl FnOnce(&mut TranslationLedger) -> R) -> R;
     /// Japanese nickname -> romaji, filled as senders arrive.
     fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R;
-    /// The player's own record (uid, guild), for the guild relay. Does nothing by default.
-    fn own_player(&mut self, _player: OwnPlayer) {}
+    /// A connection's own record (uid, guild) for the guild relay; `None`: the connection is
+    /// gone. Does nothing by default.
+    fn own_player(&mut self, _conn: Endpoint, _player: Option<OwnPlayer>) {}
     /// A new line, as captured (the sender's in-game name, no translation), with where it came
     /// from, for the guild relay. Does nothing by default.
     fn relay_line(&mut self, _chat: &ChatMessage, _origin: Origin, _conn: Option<Endpoint>) {}
@@ -50,7 +51,7 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
 
     for action in actions {
         match action {
-            PipelineAction::OwnPlayer(player) => sink.own_player(player),
+            PipelineAction::OwnPlayer(conn, player) => sink.own_player(conn, player),
             PipelineAction::UpdateBlockedMessage(chat) => {
                 let flagged = sink.with_history(|history| {
                     let row = history.get_mut(chat.pid)?;

@@ -44,7 +44,7 @@ fn the_sanitised_corpus_decodes_the_same_every_time() {
         })
         .filter_map(|action| match action {
             PipelineAction::EmitNewMessage(chat, _, _) => Some(chat),
-            PipelineAction::UpdateBlockedMessage(_) | PipelineAction::OwnPlayer(_) => None,
+            PipelineAction::UpdateBlockedMessage(_) | PipelineAction::OwnPlayer(..) => None,
         })
         .collect();
     assert_eq!((packets.len(), chats.len()), (2164, 380));

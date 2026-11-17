@@ -5,6 +5,7 @@
 //! A name is built only from the nickname and [`UNKNOWN_NAME`]: a pid, an address, a port or an
 //! executable name is never part of it (DS-0007).
 
+use crate::protocol::own_player::OwnPlayer;
 use resonance_types::ipc::GameClient;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -32,6 +33,8 @@ pub struct ClientFact {
 
 struct Conn {
     own_uid: Option<u64>,
+    /// The last own-player record this connection reported (uid and guild).
+    player: Option<OwnPlayer>,
     nickname: Option<String>,
     last_seen: Instant,
 }
@@ -41,6 +44,8 @@ pub struct Roster {
     names: HashMap<u64, String>,
     order: VecDeque<u64>,
     conns: BTreeMap<Endpoint, Conn>,
+    /// Connections dropped (idle or closed) and not yet reported through `take_gone`.
+    gone: Vec<Endpoint>,
     dirty: bool,
     last: Vec<ClientFact>,
 }
@@ -56,6 +61,7 @@ impl Roster {
             *dirty = true;
             Conn {
                 own_uid: None,
+                player: None,
                 nickname: None,
                 last_seen: now,
             }
@@ -78,6 +84,46 @@ impl Roster {
             conn.nickname = name;
             self.dirty = true;
         }
+    }
+
+    /// The connection's own-player record (uid and guild). `true` when it is new or differs from
+    /// the connection's last one; each connection keeps its own, so interleaved clients never
+    /// overwrite each other.
+    pub fn own_record(&mut self, local: Endpoint, player: OwnPlayer, now: Instant) -> bool {
+        self.own_uid(local, player.uid, now);
+        let conn = self.conn(local, now);
+        let changed = conn.player != Some(player);
+        conn.player = Some(player);
+        changed
+    }
+
+    /// Drops the connections idle for [`CLIENT_IDLE_TIMEOUT`]; `take_gone` names them.
+    pub fn expire(&mut self, now: Instant) {
+        let gone = &mut self.gone;
+        let before = self.conns.len();
+        self.conns.retain(|local, c| {
+            let keep = now.saturating_duration_since(c.last_seen) < CLIENT_IDLE_TIMEOUT;
+            if !keep {
+                gone.push(*local);
+            }
+            keep
+        });
+        if self.conns.len() != before {
+            self.dirty = true;
+        }
+    }
+
+    /// The connection was closed (FIN or RST): drops it; `take_gone` names it.
+    pub fn forget(&mut self, local: Endpoint) {
+        if self.conns.remove(&local).is_some() {
+            self.gone.push(local);
+            self.dirty = true;
+        }
+    }
+
+    /// The connections dropped since the last call, in the order they went.
+    pub fn take_gone(&mut self) -> Vec<Endpoint> {
+        std::mem::take(&mut self.gone)
     }
 
     /// A chat line from `uid` named `nickname` (`uid == 0` and blank names carry nothing).
@@ -105,12 +151,7 @@ impl Roster {
     /// The snapshot (sorted by endpoint) if it differs from the last one returned; connections
     /// idle for [`CLIENT_IDLE_TIMEOUT`] are dropped first.
     pub fn take_changed(&mut self, now: Instant) -> Option<Vec<ClientFact>> {
-        let before = self.conns.len();
-        self.conns
-            .retain(|_, c| now.saturating_duration_since(c.last_seen) < CLIENT_IDLE_TIMEOUT);
-        if self.conns.len() != before {
-            self.dirty = true;
-        }
+        self.expire(now);
         if !self.dirty {
             return None;
         }
