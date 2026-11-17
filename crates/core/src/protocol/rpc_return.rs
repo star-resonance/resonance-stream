@@ -231,6 +231,9 @@ mod tests {
         }
         assert_eq!(decode(&h(0, 7, 0), &[]), None);
         assert_eq!(decode(&h(0, 7, 0), &[0x12, 0x00]), None);
+        // The envelope's own length is cut short.
+        assert_eq!(decode(&h(0, 7, 0), &[0x0A]), None);
+        assert_eq!(decode(&h(0, 7, 0), &[0x0A, 0x80]), None);
         let wide = root(&[num(5, u64::from(u32::MAX) + 1)]);
         assert_eq!(decode(&h(0, 7, 0), &wide), None);
         let minus_one = root(&[num(5, u64::MAX)]); // int32 -1 is a 10-byte varint
