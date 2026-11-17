@@ -3,7 +3,7 @@
 //! component (`components/chat_composer.rs`) only wires signals and events.
 
 use crate::chat_view::Tab;
-use resonance_types::ipc::SendChat;
+use resonance_types::ipc::{GameClient, SendChat, CLIENT_GONE_LINE};
 use resonance_types::{prepare_text, SendChatChannel, SendTextError, MAX_TEXT_UTF16};
 
 /// The counter's tooltip: the limit is the game's, in UTF-16 units.
@@ -79,12 +79,58 @@ pub fn enter_sends(key: &str, shift: bool, composing: bool, key_code: u32) -> bo
     key == "Enter" && !shift && !composing && key_code != 229
 }
 
-/// The request: the draft exactly as typed, no prefix (the command prepares it).
-pub fn send_request(channel: SendChatChannel, draft: &str) -> SendChat {
+/// The request: the draft exactly as typed, no prefix (the command prepares it), and the chosen
+/// client (a `GameClient.target`, handed back unchanged).
+pub fn send_request(channel: SendChatChannel, draft: &str, client: Option<u32>) -> SendChat {
     SendChat {
         channel,
         text: draft.to_string(),
+        client,
     }
+}
+
+/// Whether the client picker shows: only with two or more clients.
+pub fn show_picker(clients: &[GameClient]) -> bool {
+    clients.len() >= 2
+}
+
+/// The picker's options as (value, label) in list order: the label is the nickname only; the
+/// value is the opaque target as text, never displayed.
+pub fn client_options(clients: &[GameClient]) -> Vec<(String, String)> {
+    clients
+        .iter()
+        .map(|c| (c.target.to_string(), c.name.clone()))
+        .collect()
+}
+
+/// The client an `<option value>` stands for; `None` for the placeholder or anything else.
+pub fn client_from_value(value: &str) -> Option<u32> {
+    value.parse().ok()
+}
+
+/// What a send does with the list just read and the chosen client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendPlan {
+    /// Call `send_chat` with this client.
+    Send(Option<u32>),
+    /// The chosen client is no longer listed: ask to choose again, send nothing.
+    Gone,
+}
+
+/// A chosen client that is not listed is `Gone` (never sent to a survivor); fewer than two
+/// clients send with none; otherwise the choice goes as it is (a `None` gets the backend's
+/// "choose a client" sentence).
+pub fn send_plan(clients: &[GameClient], chosen: Option<u32>) -> SendPlan {
+    match chosen {
+        Some(p) if !clients.iter().any(|c| c.target == p) => SendPlan::Gone,
+        _ if clients.len() < 2 => SendPlan::Send(None),
+        _ => SendPlan::Send(chosen),
+    }
+}
+
+/// Whether a failed send's sentence means the chosen client is gone, so the choice resets.
+pub fn clears_choice(error: &str) -> bool {
+    error == CLIENT_GONE_LINE
 }
 
 /// The picker's options as (value, label), in tab order.
@@ -100,6 +146,7 @@ mod tests {
     use super::*;
     use crate::chat_view::{Tab, ALL_TAB, CUSTOM_TAB, SYSTEM_TAB};
     use crate::ui_types::Channel;
+    use resonance_types::ipc::{GameClient, CLIENT_GONE_LINE};
     use resonance_types::SendChatChannel;
 
     fn a(n: usize) -> String {
@@ -182,13 +229,72 @@ mod tests {
 
     #[test]
     fn the_request_carries_the_draft_as_typed() {
-        let req = send_request(SendChatChannel::Guild, "  hi\n");
+        let req = send_request(SendChatChannel::Guild, "  hi\n", None);
         assert_eq!(req.channel, SendChatChannel::Guild);
         assert_eq!(req.text, "  hi\n");
+        assert_eq!(req.client, None);
         assert_eq!(
             serde_json::to_value(&req).unwrap(),
-            serde_json::json!({"channel": "guild", "text": "  hi\n"})
+            serde_json::json!({"channel": "guild", "text": "  hi\n", "client": null})
         );
+        assert_eq!(
+            send_request(SendChatChannel::World, "hi", Some(7)).client,
+            Some(7)
+        );
+    }
+
+    fn c(target: u32, name: &str) -> GameClient {
+        GameClient {
+            target,
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn the_picker_shows_only_with_two_or_more_clients() {
+        assert!(!show_picker(&[]));
+        assert!(!show_picker(&[c(7, "Aria")]));
+        assert!(show_picker(&[c(7, "Aria"), c(42, "Bob")]));
+    }
+
+    #[test]
+    fn options_are_nicknames_with_an_opaque_value() {
+        let opts = client_options(&[c(7, "Aria"), c(42, "Bob")]);
+        let labels: Vec<_> = opts.iter().map(|(_, l)| l.as_str()).collect();
+        let values: Vec<_> = opts.iter().map(|(v, _)| v.as_str()).collect();
+        assert_eq!(labels, ["Aria", "Bob"]);
+        assert_eq!(values, ["7", "42"]);
+        for (v, l) in &opts {
+            assert!(l != v && !l.contains(v.as_str()));
+        }
+        assert_eq!(client_from_value("42"), Some(42));
+        for bad in ["", "x", "-1"] {
+            assert_eq!(client_from_value(bad), None);
+        }
+    }
+
+    #[test]
+    fn the_send_plan_never_redirects_a_gone_choice() {
+        let two = [c(7, "Aria"), c(42, "Bob")];
+        assert_eq!(send_plan(&two, Some(42)), SendPlan::Send(Some(42)));
+        assert_eq!(send_plan(&two, None), SendPlan::Send(None));
+        assert_eq!(send_plan(&[c(7, "Aria")], None), SendPlan::Send(None));
+        assert_eq!(send_plan(&[c(7, "Aria")], Some(7)), SendPlan::Send(None));
+        assert_eq!(
+            send_plan(&[c(7, "Aria"), c(50, "Cy")], Some(42)),
+            SendPlan::Gone
+        );
+        assert_eq!(send_plan(&[c(7, "Aria")], Some(42)), SendPlan::Gone);
+        assert_eq!(send_plan(&[], None), SendPlan::Send(None));
+    }
+
+    #[test]
+    fn only_the_gone_sentence_clears_the_choice() {
+        assert!(clears_choice(CLIENT_GONE_LINE));
+        assert!(!clears_choice(
+            "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요."
+        ));
+        assert!(!clears_choice(""));
     }
 
     #[test]

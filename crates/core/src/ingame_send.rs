@@ -6,7 +6,7 @@
 //!
 //! Chat text is never logged here: only the channel and the length.
 
-use crate::send_text::SendSpacing;
+use crate::send_text::ClientSpacing;
 use resonance_types::ingame_pipe::{
     decode_reply, encode_request, ErrorCode, LineBuffer, Reply, Request, PIPE_PROTOCOL_VERSION,
     WRITE_TIMEOUT_MS,
@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Read};
-use std::sync::{Mutex, PoisonError};
+use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
 /// Executable base names that are the game: the stem starts with one of these.
@@ -214,7 +214,7 @@ impl fmt::Display for SendError {
             SendError::Game(GameError::Several) => "게임이 둘 이상 실행 중입니다.",
             SendError::Game(GameError::Is32Bit) => "32비트 게임은 지원하지 않습니다.",
             SendError::ChooseClient => "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요.",
-            SendError::ClientGone => "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.",
+            SendError::ClientGone => resonance_types::ipc::CLIENT_GONE_LINE,
             SendError::NoPin => "이 앱에는 게임 내 전송 모듈이 들어 있지 않습니다.",
             SendError::DllDownloading => {
                 "게임 내 전송 모듈을 내려받는 중입니다. 끝나면 보낼 수 있습니다."
@@ -487,13 +487,13 @@ pub trait SendBackend {
     ) -> Result<(), SendError>;
 }
 
-/// The `send_chat` command's logic: setting, text rules, spacing, send. The spacing
-/// guard is held across the send, so two calls at once cannot both pass; only a
-/// send that succeeded starts the window. The error is the one sentence the ui shows.
+/// The `send_chat` command's logic: setting, text rules, spacing, send. The spacing is kept
+/// per client (the `target` as given). Its guard is held across the send, so two calls to one
+/// client at once cannot both pass; only a send that succeeded starts the window. The error is the one sentence the ui shows.
 /// Chat text is not logged, only the channel and the length.
 pub fn send_chat_flow(
     setting_on: bool,
-    spacing: &Mutex<SendSpacing>,
+    spacing: &ClientSpacing,
     backend: &mut impl SendBackend,
     target: Option<u32>,
     channel: SendChatChannel,
@@ -504,7 +504,8 @@ pub fn send_chat_flow(
             return Err(SendError::SettingOff);
         }
         let prepared = prepare_text(text)?;
-        let mut guard = spacing.lock().unwrap_or_else(PoisonError::into_inner);
+        let slot = spacing.slot(target, Instant::now());
+        let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
         guard.allow(Instant::now())?;
         backend.send(target, channel, &prepared)?;
         guard.record_success(Instant::now());
@@ -623,6 +624,7 @@ mod tests {
             "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요."
         );
         assert_eq!(gone, "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.");
+        assert_eq!(gone, resonance_types::ipc::CLIENT_GONE_LINE);
         for text in [&choose, &gone] {
             assert!(!text.contains('\n') && !text.chars().any(|c| c.is_ascii_digit()));
         }
@@ -793,9 +795,10 @@ mod tests {
 
     // ---- flows -------------------------------------------------------------
 
+    use crate::send_text::ClientSpacing;
     use resonance_types::ingame_pipe::decode_request;
     use std::collections::VecDeque;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     struct FakeWire {
         writes: Vec<(Vec<u8>, Duration)>,
@@ -1307,8 +1310,53 @@ mod tests {
     }
 
     #[test]
+    fn the_flow_spaces_each_client_on_its_own() {
+        let spacing = ClientSpacing::default();
+        let mut backend = FakeBackend::default();
+        let go = |backend: &mut FakeBackend, t| {
+            send_chat_flow(true, &spacing, backend, t, SendChatChannel::Say, "hi")
+        };
+        assert_eq!(go(&mut backend, Some(7)), Ok(()));
+        assert_eq!(go(&mut backend, Some(42)), Ok(()));
+        assert_eq!(backend.targets, [Some(7), Some(42)]);
+        let got = go(&mut backend, Some(7)).unwrap_err();
+        assert!(got.starts_with(&too_soon_sentence()));
+        assert_eq!(backend.targets.len(), 2);
+
+        let spacing_none = ClientSpacing::default();
+        let mut backend = FakeBackend::default();
+        let mut go = |t| {
+            send_chat_flow(
+                true,
+                &spacing_none,
+                &mut backend,
+                t,
+                SendChatChannel::Say,
+                "hi",
+            )
+        };
+        assert_eq!(go(None), Ok(()));
+        assert!(go(None).is_err());
+    }
+
+    #[test]
+    fn a_failed_send_to_a_client_does_not_start_its_window() {
+        let spacing = ClientSpacing::default();
+        let mut backend = FakeBackend {
+            result: Some(SendError::ClientGone),
+            ..Default::default()
+        };
+        let go = |b: &mut FakeBackend| {
+            send_chat_flow(true, &spacing, b, Some(7), SendChatChannel::Say, "hi")
+        };
+        assert!(go(&mut backend).is_err());
+        backend.result = None;
+        assert_eq!(go(&mut backend), Ok(()));
+    }
+
+    #[test]
     fn the_flow_refuses_when_the_setting_is_off_before_anything_else() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             false,
@@ -1324,7 +1372,7 @@ mod tests {
 
     #[test]
     fn the_flow_passes_the_target_to_the_backend() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             true,
@@ -1335,7 +1383,7 @@ mod tests {
             "hi",
         );
         assert_eq!(got, Ok(()));
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let got = send_chat_flow(
             true,
             &spacing,
@@ -1350,7 +1398,7 @@ mod tests {
 
     #[test]
     fn the_flow_checks_the_text_before_the_backend() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             true,
@@ -1376,7 +1424,7 @@ mod tests {
 
     #[test]
     fn the_flow_sends_the_prepared_text_and_records_only_a_success() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             true,
@@ -1403,7 +1451,7 @@ mod tests {
 
     #[test]
     fn a_failed_send_does_not_start_the_spacing_window() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend {
             result: Some(SendError::Dll(ErrorCode::NoClient)),
             ..Default::default()
@@ -1431,7 +1479,7 @@ mod tests {
 
     #[test]
     fn two_sends_at_once_let_exactly_one_through() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let backend = Arc::new(Mutex::new(FakeBackend {
             sleep: Duration::from_millis(50),
             ..Default::default()
@@ -1462,15 +1510,16 @@ mod tests {
 
     #[test]
     fn a_poisoned_spacing_mutex_still_works() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let _ = std::thread::scope(|s| {
             s.spawn(|| {
-                let _guard = spacing.lock().unwrap();
+                let slot = spacing.slot(None, Instant::now());
+                let _guard = slot.lock().unwrap();
                 panic!("poison");
             })
             .join()
         });
-        assert!(spacing.is_poisoned());
+        assert!(spacing.slot(None, Instant::now()).is_poisoned());
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             true,

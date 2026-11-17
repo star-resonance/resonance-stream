@@ -186,8 +186,31 @@ pub fn is_established(state: u32) -> bool {
     state == 5
 }
 
+/// Known nicknames (in pid order) with an ordinal where one occurs 2 or more times:
+/// "Aria (1)", "Aria (2)". The match is exact and case-sensitive; a unique nickname is unchanged.
+pub fn number_duplicates(names: &[String]) -> Vec<String> {
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for n in names {
+        *seen.entry(n.as_str()).or_default() += 1;
+    }
+    let mut next: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    names
+        .iter()
+        .map(|n| {
+            if seen[n.as_str()] > 1 {
+                let k = next.entry(n.as_str()).or_default();
+                *k += 1;
+                format!("{n} ({k})")
+            } else {
+                n.clone()
+            }
+        })
+        .collect()
+}
+
 /// The clients `pids` with their display names: a pid's nickname is the first one a fact gives
-/// for one of its `rows` (owner pid, local end). Unknown is [`UNKNOWN_NAME`], numbered 1, 2, ...
+/// for one of its `rows` (owner pid, local end); equal nicknames read "Name (1)", "Name (2)" in pid
+/// order (see [`number_duplicates`]). Unknown is [`UNKNOWN_NAME`], numbered 1, 2, ...
 /// in pid order only when two or more are unknown.
 pub fn client_views(
     pids: &[u32],
@@ -214,13 +237,15 @@ pub fn client_views(
         })
         .collect();
     let unknown = nicks.iter().filter(|n| n.is_none()).count();
+    let known: Vec<String> = nicks.iter().flatten().cloned().collect();
+    let mut known = number_duplicates(&known).into_iter();
     let mut ordinal = 0;
     pids.iter()
         .zip(nicks)
         .map(|(&target, nick)| GameClient {
             target,
             name: match nick {
-                Some(name) => name,
+                Some(_) => known.next().unwrap_or_default(),
                 None if unknown > 1 => {
                     ordinal += 1;
                     format!("{UNKNOWN_NAME} {ordinal}")
@@ -236,10 +261,9 @@ mod tests {
     use super::*;
     use crate::ingame_send::{pick_target, send_chat_flow, SendBackend, SendError};
     use crate::protocol::own_player::OwnPlayer;
-    use crate::send_text::SendSpacing;
+    use crate::send_text::ClientSpacing;
     use resonance_types::ipc::GameClient;
     use resonance_types::SendChatChannel;
-    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     const A: Endpoint = Endpoint {
@@ -424,6 +448,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn equal_nicknames_get_ordinals_in_order() {
+        let v =
+            |a: &[&str]| number_duplicates(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(v(&["Aria", "Bob", "Aria"]), ["Aria (1)", "Bob", "Aria (2)"]);
+        assert_eq!(
+            v(&["Aria", "Aria", "Aria"]),
+            ["Aria (1)", "Aria (2)", "Aria (3)"]
+        );
+        assert_eq!(v(&["Aria", "aria"]), ["Aria", "aria"]);
+        assert_eq!(v(&["Aria", "Aria2"]), ["Aria", "Aria2"]);
+        assert!(v(&[]).is_empty());
+        assert_eq!(v(&["Aria"]), ["Aria"]);
+    }
+
+    #[test]
+    fn client_views_numbers_duplicate_nicknames_by_pid() {
+        let named = |pid, name: &str| GameClient {
+            target: pid,
+            name: name.to_string(),
+        };
+        let rows = [(7, A), (42, B)];
+        let both = [fact(A, Some("Aria")), fact(B, Some("Aria"))];
+        assert_eq!(
+            client_views(&[42, 7], &rows, &both),
+            [named(7, "Aria (1)"), named(42, "Aria (2)")]
+        );
+        assert_eq!(
+            client_views(
+                &[7, 42],
+                &rows,
+                &[fact(A, Some("Aria")), fact(B, Some("Bob"))]
+            ),
+            [named(7, "Aria"), named(42, "Bob")]
+        );
+        assert_eq!(
+            client_views(&[7, 42, 50], &rows, &both),
+            [
+                named(7, "Aria (1)"),
+                named(42, "Aria (2)"),
+                named(50, UNKNOWN_NAME)
+            ]
+        );
+        assert_eq!(
+            client_views(&[7, 42, 50], &rows[..1], &both[..1]),
+            [
+                named(7, "Aria"),
+                named(42, "이름 확인 중 1"),
+                named(50, "이름 확인 중 2")
+            ]
+        );
+        assert_eq!(
+            client_views(
+                &[7, 42],
+                &rows,
+                &[fact(A, Some("  Aria ")), fact(B, Some("Aria"))]
+            ),
+            [named(7, "Aria (1)"), named(42, "Aria (2)")]
+        );
+    }
+
     // 9
     #[test]
     fn a_name_never_shows_a_technical_id() {
@@ -470,7 +555,7 @@ mod tests {
         assert_eq!(views.len(), 2);
         let target = views[0].target;
         assert_eq!(pick_target(&[7, 42], Some(target)), Ok(7));
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut fake = Fake(Vec::new());
         send_chat_flow(
             true,

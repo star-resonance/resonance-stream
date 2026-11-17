@@ -15,6 +15,10 @@ use crate::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// The sentence for a chosen client that is gone: the backend's `ClientGone` text and the
+/// ui's prompt are this one line, so they cannot drift.
+pub const CLIENT_GONE_LINE: &str = "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.";
+
 /// A connected game client as the ui lists it. `target` goes back unchanged as `send_chat`'s
 /// `client`; the ui never shows or interprets it. `name` is the character's nickname, or a
 /// placeholder while it is not known: never a pid, an address or an exe name.
@@ -71,7 +75,7 @@ commands! {
     UnblockUser = "unblock_user_command" { uid: u64 } -> ();
 
     // Chat sending (through the in-game module). The error is one Korean sentence.
-    SendChat = "send_chat" { channel: SendChatChannel, text: String } -> ();
+    SendChat = "send_chat" { channel: SendChatChannel, text: String, client: Option<u32> } -> ();
     GameClients = "game_clients" {} -> Vec<GameClient>;
 
     // Translator.
@@ -330,15 +334,32 @@ mod tests {
     }
 
     #[test]
-    fn send_chat_takes_a_channel_and_text() {
+    fn send_chat_takes_a_channel_text_and_client() {
         assert_eq!(SendChat::NAME, "send_chat");
         assert!(COMMAND_NAMES.contains(&"send_chat"));
         assert_eq!(
             wire(&SendChat {
                 channel: crate::SendChatChannel::World,
-                text: "hi".into()
+                text: "hi".into(),
+                client: Some(7),
             }),
-            json!({ "channel": "world", "text": "hi" })
+            json!({ "channel": "world", "text": "hi", "client": 7 })
+        );
+        assert_eq!(
+            wire(&SendChat {
+                channel: crate::SendChatChannel::World,
+                text: "hi".into(),
+                client: None,
+            }),
+            json!({ "channel": "world", "text": "hi", "client": null })
+        );
+    }
+
+    #[test]
+    fn the_client_gone_sentence_is_one_shared_line() {
+        assert_eq!(
+            CLIENT_GONE_LINE,
+            "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요."
         );
     }
 
