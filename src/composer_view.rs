@@ -354,6 +354,28 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_tab_gives_the_picker_its_channel_whatever_it_showed() {
+        // The picker's value after a tab change: the tab's channel, else what it held.
+        fn after(stored: &str, tab: &str) -> SendChatChannel {
+            tab_pick(false, tab, stored).unwrap_or(stored_channel(stored))
+        }
+        for from in SendChatChannel::ALL {
+            for c in SendChatChannel::ALL {
+                assert_eq!(after(from.as_str(), c.label()), c, "{from:?} -> {c:?}");
+            }
+            for tab in [
+                ALL_TAB,
+                CUSTOM_TAB,
+                SYSTEM_TAB,
+                Tab::Channel(Channel::Beginner).label(),
+            ] {
+                assert_eq!(after(from.as_str(), tab), from, "{from:?} on {tab}");
+            }
+        }
+        assert_eq!(after("party", "길드"), SendChatChannel::Guild);
+    }
+
+    #[test]
     fn only_a_plain_enter_sends() {
         assert!(enter_sends("Enter", false, false, 13));
         assert!(!enter_sends("Enter", true, false, 13));
