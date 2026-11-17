@@ -25,18 +25,28 @@ impl<T> Slot<T> {
     /// Starts a registration: the new token, and the previously live value for the caller to
     /// drop. `None` when the owner is gone.
     pub fn begin(&mut self) -> Option<(u64, Option<T>)> {
-        None
+        if self.closed {
+            return None;
+        }
+        self.generation += 1;
+        Some((self.generation, self.live.take()))
     }
 
     /// Stores the value a registration resolved to. A value that arrives after a close or after
     /// a newer `begin` comes back for the caller to drop at once.
-    pub fn attach(&mut self, _token: u64, value: T) -> Option<T> {
-        Some(value)
+    pub fn attach(&mut self, token: u64, value: T) -> Option<T> {
+        if self.closed || token != self.generation {
+            return Some(value);
+        }
+        self.live = Some(value);
+        None
     }
 
     /// The owner is gone: returns the live value (once), and refuses every later `begin`/`attach`.
     pub fn close(&mut self) -> Option<T> {
-        None
+        self.closed = true;
+        self.generation += 1;
+        self.live.take()
     }
 }
 
