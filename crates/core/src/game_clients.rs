@@ -219,10 +219,9 @@ pub fn client_views(
 mod tests {
     use super::*;
     use crate::ingame_send::{pick_target, send_chat_flow, SendBackend, SendError};
-    use crate::send_text::SendSpacing;
+    use crate::send_text::ClientSpacing;
     use resonance_types::ipc::GameClient;
     use resonance_types::SendChatChannel;
-    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     const A: Endpoint = Endpoint {
@@ -470,7 +469,7 @@ mod tests {
         assert_eq!(views.len(), 2);
         let target = views[0].target;
         assert_eq!(pick_target(&[7, 42], Some(target)), Ok(7));
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut fake = Fake(Vec::new());
         send_chat_flow(
             true,

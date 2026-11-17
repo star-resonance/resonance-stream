@@ -18,16 +18,17 @@ use resonance_core::ingame_send::{pick_target, Resident};
 use resonance_core::ingame_send::{send_chat_flow, SendBackend, SendError};
 #[cfg(windows)]
 use resonance_core::ingame_sessions::Sessions;
-use resonance_core::send_text::SendSpacing;
+use resonance_core::send_text::ClientSpacing;
 use resonance_types::ipc::GameClient;
 use resonance_types::SendChatChannel;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 use tauri::{AppHandle, State};
 
-/// Spacing between sends. A `std` mutex: the flow keeps its guard across the send.
-static SPACING: LazyLock<Mutex<SendSpacing>> = LazyLock::new(|| Mutex::new(SendSpacing::default()));
+/// Spacing between sends, one window per client. `std` mutexes: the flow keeps a client's
+/// guard across the send.
+static SPACING: LazyLock<ClientSpacing> = LazyLock::new(ClientSpacing::default);
 
 /// The sniffer's latest roster: each connection and its character's nickname.
 static CLIENTS: parking_lot::Mutex<Vec<ClientFact>> = parking_lot::Mutex::new(Vec::new());

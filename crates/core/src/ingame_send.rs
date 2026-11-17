@@ -6,7 +6,7 @@
 //!
 //! Chat text is never logged here: only the channel and the length.
 
-use crate::send_text::SendSpacing;
+use crate::send_text::ClientSpacing;
 use resonance_types::ingame_pipe::{
     decode_reply, encode_request, ErrorCode, LineBuffer, Reply, Request, PIPE_PROTOCOL_VERSION,
     WRITE_TIMEOUT_MS,
@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Read};
-use std::sync::{Mutex, PoisonError};
+use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
 /// Executable base names that are the game: the stem starts with one of these.
@@ -487,13 +487,13 @@ pub trait SendBackend {
     ) -> Result<(), SendError>;
 }
 
-/// The `send_chat` command's logic: setting, text rules, spacing, send. The spacing
-/// guard is held across the send, so two calls at once cannot both pass; only a
-/// send that succeeded starts the window. The error is the one sentence the ui shows.
+/// The `send_chat` command's logic: setting, text rules, spacing, send. The spacing is kept
+/// per client (the `target` as given). Its guard is held across the send, so two calls to one
+/// client at once cannot both pass; only a send that succeeded starts the window. The error is the one sentence the ui shows.
 /// Chat text is not logged, only the channel and the length.
 pub fn send_chat_flow(
     setting_on: bool,
-    spacing: &Mutex<SendSpacing>,
+    spacing: &ClientSpacing,
     backend: &mut impl SendBackend,
     target: Option<u32>,
     channel: SendChatChannel,
@@ -504,7 +504,8 @@ pub fn send_chat_flow(
             return Err(SendError::SettingOff);
         }
         let prepared = prepare_text(text)?;
-        let mut guard = spacing.lock().unwrap_or_else(PoisonError::into_inner);
+        let slot = spacing.slot(target, Instant::now());
+        let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
         guard.allow(Instant::now())?;
         backend.send(target, channel, &prepared)?;
         guard.record_success(Instant::now());
@@ -796,7 +797,7 @@ mod tests {
     use crate::send_text::ClientSpacing;
     use resonance_types::ingame_pipe::decode_request;
     use std::collections::VecDeque;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     struct FakeWire {
         writes: Vec<(Vec<u8>, Duration)>,
@@ -1311,7 +1312,7 @@ mod tests {
     fn the_flow_spaces_each_client_on_its_own() {
         let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
-        let mut go = |backend: &mut FakeBackend, t| {
+        let go = |backend: &mut FakeBackend, t| {
             send_chat_flow(true, &spacing, backend, t, SendChatChannel::Say, "hi")
         };
         assert_eq!(go(&mut backend, Some(7)), Ok(()));
@@ -1354,7 +1355,7 @@ mod tests {
 
     #[test]
     fn the_flow_refuses_when_the_setting_is_off_before_anything_else() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             false,
@@ -1370,7 +1371,7 @@ mod tests {
 
     #[test]
     fn the_flow_passes_the_target_to_the_backend() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             true,
@@ -1381,7 +1382,7 @@ mod tests {
             "hi",
         );
         assert_eq!(got, Ok(()));
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let got = send_chat_flow(
             true,
             &spacing,
@@ -1396,7 +1397,7 @@ mod tests {
 
     #[test]
     fn the_flow_checks_the_text_before_the_backend() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             true,
@@ -1422,7 +1423,7 @@ mod tests {
 
     #[test]
     fn the_flow_sends_the_prepared_text_and_records_only_a_success() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             true,
@@ -1449,7 +1450,7 @@ mod tests {
 
     #[test]
     fn a_failed_send_does_not_start_the_spacing_window() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let mut backend = FakeBackend {
             result: Some(SendError::Dll(ErrorCode::NoClient)),
             ..Default::default()
@@ -1477,7 +1478,7 @@ mod tests {
 
     #[test]
     fn two_sends_at_once_let_exactly_one_through() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let backend = Arc::new(Mutex::new(FakeBackend {
             sleep: Duration::from_millis(50),
             ..Default::default()
@@ -1508,15 +1509,16 @@ mod tests {
 
     #[test]
     fn a_poisoned_spacing_mutex_still_works() {
-        let spacing = Mutex::new(SendSpacing::default());
+        let spacing = ClientSpacing::default();
         let _ = std::thread::scope(|s| {
             s.spawn(|| {
-                let _guard = spacing.lock().unwrap();
+                let slot = spacing.slot(None, Instant::now());
+                let _guard = slot.lock().unwrap();
                 panic!("poison");
             })
             .join()
         });
-        assert!(spacing.is_poisoned());
+        assert!(spacing.slot(None, Instant::now()).is_poisoned());
         let mut backend = FakeBackend::default();
         let got = send_chat_flow(
             true,
