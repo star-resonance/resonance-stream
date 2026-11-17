@@ -13,6 +13,7 @@ use resonance_types::ipc::{
     RestartToApplyUpdate,
 };
 use resonance_types::UpdateTarget;
+use wasm_bindgen::JsValue;
 
 /// App update: release notes, skip, download with progress, restart to apply;
 /// a failed download or signature check ends in an error step (3) with a retry.
@@ -34,13 +35,14 @@ pub fn AppUpdateModal() -> impl IntoView {
     let set_status_text = signals.setup.set_status_text;
 
     // --- APP UPDATE LOGIC ---
-    // The download's progress listener: a retry replaces it, closing the modal removes it.
+    // The download's progress listener: a retry replaces it; it ends with the app (the modal is
+    // mounted for the whole run), so a finished download's listener stays until then.
     let listener = Listener::new();
     let start_app_update = move |download_url: String| {
         set_app_update_step.set(1);
         set_app_update_progress.set(0);
 
-        listener.start(event::DOWNLOAD_PROGRESS, move |event_obj| {
+        let on_progress = move |event_obj: JsValue| {
             if let Ok(ev) = serde_wasm_bindgen::from_value::<serde_json::Value>(event_obj) {
                 if let Ok(payload) =
                     serde_json::from_value::<ProgressPayload>(ev["payload"].clone())
@@ -53,9 +55,13 @@ pub fn AppUpdateModal() -> impl IntoView {
                     }
                 }
             }
-        });
+        };
 
         spawn_local(async move {
+            // Registered before the download starts, so no early progress is missed.
+            listener
+                .register(event::DOWNLOAD_PROGRESS, on_progress)
+                .await;
             match call(&DownloadAppUpdate { download_url }).await {
                 Ok(()) => set_app_update_step.set(2),
                 Err(reason) => {
@@ -227,7 +233,7 @@ pub fn ModelUpdateModal() -> impl IntoView {
         set_model_update_step.set(1);
         set_model_update_progress.set(0);
 
-        listener.start(event::DOWNLOAD_PROGRESS, move |event_obj| {
+        let on_progress = move |event_obj: JsValue| {
             if let Ok(ev) = serde_wasm_bindgen::from_value::<serde_json::Value>(event_obj) {
                 if let Ok(payload) =
                     serde_json::from_value::<ProgressPayload>(ev["payload"].clone())
@@ -240,9 +246,13 @@ pub fn ModelUpdateModal() -> impl IntoView {
                     }
                 }
             }
-        });
+        };
 
         spawn_local(async move {
+            // Registered before the download starts, so no early progress is missed.
+            listener
+                .register(event::DOWNLOAD_PROGRESS, on_progress)
+                .await;
             // The backend takes the model's address and hash from the verified metadata.
             let _ = call(&DownloadModel {}).await;
         });
