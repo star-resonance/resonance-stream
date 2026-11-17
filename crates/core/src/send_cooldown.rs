@@ -120,6 +120,14 @@ mod tests {
     }
 
     #[test]
+    fn an_absurd_duration_neither_panics_nor_outlasts_the_cap() {
+        let gate = CooldownGate::default();
+        let t0 = Instant::now();
+        gate.arm(A, W, Duration::MAX, t0);
+        assert_eq!(gate.check(A, W, t0 + secs(601)), Ok(()));
+    }
+
+    #[test]
     fn check_never_writes() {
         let gate = CooldownGate::default();
         let t0 = Instant::now();

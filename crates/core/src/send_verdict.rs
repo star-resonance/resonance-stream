@@ -305,6 +305,12 @@ mod tests {
     }
 
     #[test]
+    fn an_error_code_never_arms_the_gate() {
+        let other = ret(C, 1, T, None);
+        assert_eq!(cooldown_remaining(&other, Some(T * 1000 - 4000)), None);
+    }
+
+    #[test]
     fn cooldown_remaining_is_exact_and_bounded() {
         let acc = ret(C, 0, T, None);
         assert_eq!(
