@@ -6,7 +6,7 @@
 //! | type     | body                                               | used |
 //! |----------|----------------------------------------------------|------|
 //! | `0x0002` | 16-byte header, then a protobuf root: live chat    | yes  |
-//! | `0x0003` | 12-byte header, then a root: the player's own line, echoed (always also sent as `0x0002`) -- or, when the root has field 5, a one-line channel history | history only |
+//! | `0x0003` | 12-byte header, then a root: the server's Return to an RPC (`protocol::rpc_return`) -- or, when the root has field 5 as bytes, a one-line channel history | history; Return decoded, nothing reads it yet |
 //! | `0x0004` | none: keepalive, 6 bytes                            | no   |
 //! | `0x8002` | 16-byte header, zstd: world state, not chat         | no   |
 //! | `0x8003` | 12-byte header, zstd, then a root: channel history  | yes  |
@@ -21,7 +21,7 @@
 
 use crate::protocol::compression::decompress;
 use crate::protocol::decoder::{field_end, read_varint, Fields, Value};
-use crate::protocol::rpc_return::RpcReturn;
+use crate::protocol::rpc_return::{self, RpcReturn};
 
 /// A frame longer than this is not a frame (the biggest seen is ~4 KB).
 pub const MAX_FRAME_LEN: usize = 1 << 20;
@@ -236,9 +236,10 @@ pub(crate) fn decode(ty: u16, body: &[u8]) -> Option<Frame> {
         TYPE_CHAT => FrameKind::Live,
         t if t == COMPRESSED | TYPE_CHAT => FrameKind::State,
         t if t == COMPRESSED | TYPE_OWN_LINE => FrameKind::History,
-        // Plain `0x0003`: a one-line history has `{3: channel, 5: chat}`, the
-        // echo of the player's own line does not (and comes again as `0x0002`).
+        // Plain `0x0003`: a one-line history has `{3: channel, 5: chat}`; anything
+        // else is the server's Return to an RPC (`{4: cd_end_time, 5: err_code}`).
         TYPE_OWN_LINE if has_history_lines(&root) => FrameKind::History,
+        TYPE_OWN_LINE => FrameKind::Return(rpc_return::decode(body.get(..12)?, &root)?),
         _ => return None,
     };
     Some(Frame { kind, root })
