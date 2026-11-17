@@ -49,7 +49,10 @@ impl CooldownGate {
 
     /// Drops every key whose client fails `keep` (a client that is gone).
     pub fn retain_clients(&self, keep: impl Fn(ClientKey) -> bool) {
-        let _ = keep;
+        self.ends
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(client, _), _| keep(*client));
     }
 
     /// How many keys are kept.
