@@ -506,3 +506,142 @@ A (it keeps an old resident DLL usable for sending, which A does not).
 `Recommended: A`, because the connection is what a Return truly belongs to, the endpoint is known
 once per send from a table the app already reads, and the matcher stays a pure function tested on
 any OS; it is the only option that works with section 1 B.
+
+## The tests the work would need
+
+Pure tests, in `crates/core` unless named otherwise, each one assertion set (for the recommended
+options: section 1 B, 2 C, 3 A and C, 4 B, 5 A):
+
+1. `a_send_return_with_code_0_is_accepted`: a `0x0003` frame built by hand (header `stub_id` 0,
+   `call_id` `0x8000_0011`, `error_id` 0; root `{1: {3: {…}, 4: T}}`) gives a Return with that
+   `call_id` and `verdict(…)` = accepted, with the cooldown end `T` for the channel.
+2. `a_5211_with_a_cooldown_end_gives_the_seconds_left`: the same with `{5: 5211, 4: T}` and
+   `server_now` = `T - 3` gives cooldown with 3 s; `T - 2.2` rounds up to 3 (seconds are whole, so
+   this is `server_now` passed in milliseconds or the offset rule's fraction); `server_now` unknown
+   gives "too frequent"; `T - 700` gives "too frequent" (above the 600 s cap).
+3. `an_unknown_code_or_error_id_is_refused_unknown`: `err_code` 9999, or `error_id` 1 with an empty
+   root, gives refused-unknown; the number is not in any sentence.
+4. `a_plain_0x0003_echo_becomes_a_return`: the existing `a_plain_0x0003_echo_stays_skipped`
+   (`framing.rs:372-377`) changes meaning: the frame is no chat and no history (still asserted), and
+   it now comes out as a Return. History frames (`{3: channel, 5: chat}`) still parse as history.
+5. `an_unmatched_call_id_is_ignored`: a Return whose `call_id` is in the lower half changes nothing;
+   one in the upper half that no send registers within `VERDICT_WAIT` is dropped from `early`.
+6. `a_return_before_its_send_is_matched`: the Return is fed at `t0`, the send registered at
+   `t0 + 5 ms`: the send's state is the Return's.
+7. `the_timeout_gives_no_verdict_and_frees_the_entry`: a send registered at `t0`, no Return; at
+   `t0 + VERDICT_WAIT` it is "no verdict" and `pending` is empty; a Return for it at
+   `t0 + 2 s` updates only the cooldown.
+8. `the_65th_pending_send_evicts_the_oldest`: 65 sends registered, the first one's Return is
+   ignored, the 65th's is matched; the same for `early`.
+9. `two_clients_with_the_same_call_id_do_not_cross`: one id registered on endpoints `E1` and `E2`,
+   a refusal on `E2` and an acceptance on `E1`: each send gets its own.
+10. `a_cooldown_blocks_only_its_client_and_channel`: after a World cooldown to `T` on pid 7, a World
+    send on pid 7 before `T` is `SendError::Cooldown` with the seconds left and nothing reaches the
+    backend; World on pid 42 and Party on pid 7 pass; at `T` World on pid 7 passes.
+11. `a_malformed_return_is_ignored_and_never_panics`: truncated headers (0 to 11 bytes), a root
+    whose lengths run past the end, a varint of 11 bytes, a root that is not `0x0A`: no Return, no
+    panic (a `proptest`-style loop over random bytes if the crate has one; plain cases otherwise).
+12. `crates/types`: `SendVerdict` round-trips through serde with the camelCase names the ui reads,
+    and the existing `Reply::Send` test (`ingame_pipe.rs:460`) stays.
+13. `src/`: the composer's pure parts (`composer_view.rs`): which state clears the draft, the
+    countdown's text for 3, 2, 1, 0 s, the send button disabled while a cooldown runs for the chosen
+    client and channel.
+
+**What cannot be unit-tested (Kade's check in the game, on Windows):** that the `0x0003` frame is
+the Return, where its `call_id` sits, the codes, and the cooldowns. It can be done **before any M2
+code**, with the app as it is: turn on the raw capture (`raw_capture`,
+`crates/types/src/app_config.rs:82-84`; `src-tauri/src/services/sniffer/raw_capture.rs`), log in,
+then
+
+1. send one line to World from the composer, and a second one about 2 s later;
+2. send two lines to Party 2 s apart, then one to Guild and one to Local;
+3. type one line in the game's own chat box;
+4. stop the capture and hand the raw file to a session (it holds chat text and names: it stays on
+   the PC, or goes only through Kade's private channel; it is never committed).
+
+A session then reads the `0x0003` frames that follow each send: a `call_id` in the upper half right
+after each composer send, a root `{1: {…, 4: …}}` for the first World line, `{1: {4: …, 5: 5211}}`
+for the second (if the 5 s cooldown holds), no field 4 on Party and Guild. What the game's own chat
+UI shows after the refused World line, and whether the refused text appears anywhere, is watched on
+screen. After the M2 tasks: the same steps, checking the composer's states, plus two game clients
+sending to World within 1 s of each other.
+
+## Tasks it would split into
+
+For the recommended options; each is one PR, in order. The DLL is not touched by any of them.
+
+| # | task | files | gate | blocked by |
+|---|---|---|---|---|
+| 0 | Kade's raw capture above (no code) | none | none | nothing; settles the layout before task 1 |
+| 1 | The Return in `crates/core`: a `Return` frame kind for a plain `0x0003` that is not history, its header, the `SendChitChatMsgReply` reader, `verdict()` | `crates/core/src/protocol/framing.rs`, a new `crates/core/src/protocol/rpc_return.rs` (a new module: Kade's OK with Q1) | `just core-check` | Q1, task 0 |
+| 2 | The matcher and the cooldown gate: pending and early maps, `VERDICT_WAIT`, the per-client, per-channel cooldown, `SendError::Cooldown`, `send_chat_flow` waiting for the verdict | `crates/core/src/ingame_send.rs`, `crates/core/src/send_text.rs` | `just core-check` | task 1, Q2, Q3, Q4, F-MC-3 (same functions) |
+| 3 | The wiring: the sniffer hands Returns with their endpoint to the matcher; `send_chat` registers each send under the pid's chat endpoint; `SendChat` returns `SendVerdict` | `crates/types/src/ipc.rs`, `src-tauri/src/ingame/mod.rs`, the sniffer's pipeline in `src-tauri/src/services/sniffer/`, `crates/core/src/capture/pipeline.rs`; the ui's one `SendChat` call site kept compiling | `just core-check`, `just ui-check`, `just app-cross-check` (Linux, compile only; the app's own tests run on Windows CI) | task 2, F-GR (the capture pipeline) |
+| 4 | The composer: the states, the countdown, the disabled button | `src/composer_view.rs`, `src/components/chat_composer.rs` | `just ui-check` and the `ui-preview` skill | task 3, Q3 |
+
+With Q1 A or C instead, tasks 1 and 2 stay (the decoder lives in `crates/frame` for the DLL), a DLL
+task (two hooks, `just ingame-cross-check`, `NOT VERIFIED: just ingame-build: Windows only`) and a
+pipe task (section 4 C) come before task 3, and D-35 needs an ADR change first.
+
+## Questions for Kade
+
+Four choices are his: how far the app reaches into the game, how the composer behaves, and what a
+user sees when the server is silent. Section 2's key and section 4's pipe follow from question 1
+and are not asked.
+
+1. **Where is the verdict read (section 1)?**
+   - A. In the DLL: hooks on `ZTcpConnection.OnData` (and `ZRpcImpl.SendBytes`), reported over the
+     pipe. Widens D-35 ("no other hook") by two hooks on the game's network thread.
+   - **B. In the app, from the Return the sniffer already captures (Recommended).** No new hook, no
+     pipe change, D-35 unchanged, and a game patch that renames methods does not touch it.
+   - C. Both: B as the verdict and A's hooks as a cross-check. All of A's cost for verdicts on lines
+     the game's own chat box already shows.
+2. **When does the composer learn the verdict (section 3)?**
+   - **A. The send waits for it, up to 1 s, and returns it (Recommended).** The draft stays until
+     the server answers, so a refused line is never lost; one round trip slower to clear.
+   - B. The send returns at once and the verdict comes as an event; a late refusal puts the line
+     back in the input, over whatever was typed since.
+   - C. A, plus the event for an answer later than 1 s.
+3. **What does the composer do on a cooldown (section 3)?**
+   - A. One sentence with the seconds left at that moment.
+   - B. A countdown in the sentence, to zero.
+   - **C. The countdown, plus the send button disabled for that character's channel until it ends,
+     and the app not sending there before then (Recommended).** The server gives the exact end;
+     not sending a line it will refuse is what the game's own chat box does.
+4. **What does a send with no answer from the server show (section 2)?**
+   - A. An error, and the draft kept: the user is told it failed, although it most likely arrived.
+   - **B. A neutral line, "sent, not confirmed by the server", and the draft cleared (Recommended).**
+     The line was handed to the game's connection; a missed answer is far more likely a missed
+     packet than a lost line.
+   - C. Nothing: treat it as sent.
+
+## Summary
+
+| section | recommendation | rests on |
+|---|---|---|
+| 1. Read point | B: the app decodes the sniffed `0x0003` Return; no new hook, D-35 unchanged | Question 1 |
+| 2. Matching | C: `(connection, call_id)`, pending and early maps of 64, `VERDICT_WAIT` 1000 ms (estimated), "no verdict" after it | Question 4 |
+| 3. States | the table: accepted, cooldown `n` s, too frequent, refused unknown, no verdict, not sent; server clock only; the command waits and returns the state | Question 2 |
+| 3. Cooldown | C: countdown, button disabled and a backend gate per client and channel; Party/Guild only the 1500 ms spacing | Question 3 |
+| 4. Pipe | B: no change, `PIPE_PROTOCOL_VERSION` stays 1 (C if question 1 is A) | Question 1 |
+| 5. Several clients | A: key by the pid's chat endpoint, read once per send; cooldowns per pid and channel | Question 1 |
+
+## Not verified
+
+Only a run in the game on Kade's PC can show these (task 0 settles the first four):
+
+- That the plain `0x0003` frame is an RPC Return with Stellar's 12-byte header (`stub_id`, `call_id`,
+  `error_id`), and that the "echo" `framing.rs` drops is a `SendChitChatMsgReply`.
+- That the Return for a DLL send carries the DLL's own upper-half `call_id`, on the same TCP
+  connection, and that the game's own `call_id`s stay in the lower half.
+- Every server code other than 0 and 5211, and what `error_id` holds.
+- That World and Local reply with a cooldown end (5 s observed by Stellar) and Party and Guild with
+  none.
+- What the game's own UI does with the server's Return for a call it did not make (R0 already lists
+  this), and what it does with the text after 5211.
+- Whether the server can leave a send unanswered, and what a timeout looks like.
+- That the sniffer sees the Return in practice often enough for "no verdict" to be rare (raw-socket
+  segment loss on Kade's PC).
+- That every M2 channel's sends stay on TCP (R0's World-over-UDP caveat applies to the send itself,
+  not to reading the Return).
+- The receive hook's thread and cost, which matter only for question 1 A or C
+  (`…/Game/PandaWireTap.cs:9-17`, reported).
