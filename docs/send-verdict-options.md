@@ -305,8 +305,9 @@ error.
 
 - **A. Key `(connection, call_id)`; a pending send expires after a timeout and the expiry is an
   error.** The timeout is `VERDICT_WAIT` = 1000 ms (estimated: a round trip to the game server is
-  tens to a few hundred milliseconds; 1000 ms keeps the whole command under `APP_WAIT_MS` +
-  1000 ms, below R0's 2 s budget plus one second, and well under the observed 5 s cooldown). Simple,
+  tens to a few hundred milliseconds; the wait starts when `Reply::Send` is read, so a send takes at
+  most `APP_WAIT_MS` + 1000 ms = 2.5 s in the worst case and one round trip more than today in the
+  usual one, and it stays well under the observed 5 s cooldown). Simple,
   but it calls a line the server probably received "failed", and the user sends it again.
 - **B. Match by order (FIFO) per connection, no `call_id`.** Take the next Return on the connection
   after each send. Wrong whenever the game has its own call in flight (history fetches, social
@@ -335,3 +336,81 @@ taken as the server's cooldown.
 race, and a missing Return is far more likely a missed segment than a lost line, so "no verdict"
 must not read as a failure; it is A with the race and the wording fixed, and the standard pattern for
 correlating asynchronous RPC replies (a bounded pending table with a deadline).
+
+## 3. The verdict codes and the Korean composer states
+
+### Facts
+
+- **The wire gives three numbers:** the Return header's `error_id` (an RPC-level error, reported:
+  `Stellar@60a7772:…/Game/PandaWireTap.Parsing.cs:103-111`; what values it takes is NOT VERIFIED),
+  the reply's `err_code` (0 accepted, 5211 too frequent, anything else unknown), and `cd_end_time`
+  (Unix seconds, 0 absent), plus `show_msg.timestamp` on an accepted reply (section "What the server
+  answers").
+- **The clock.** The game counts a cooldown as `cd_end_time` minus the reply's own message
+  timestamp, both server seconds (`WireProtocol.ChitChat.Send.cs:10-14`, reported). A refused reply
+  usually has no `show_msg` and so no timestamp (`ChatSendResult.cs:32-34`). The PC's clock can be
+  minutes off the server's, so `cd_end_time` minus the PC's time alone can show a wrong number or a
+  negative one. The sniffer sees the server's time on every inbound chat line
+  (`parser.rs:22`, Unix seconds) and on every accepted reply.
+- **Party and Guild carry no cooldown** (reported, `ChatSendResult.cs:5-10`): only the app's 1500 ms
+  spacing applies to them.
+- **Today the composer has two states**: sending (`sending`), then either the draft cleared or one
+  error sentence (`chat_composer.rs:73-83`).
+
+### The states (placeholder Korean words, marked: the words are Kade's)
+
+The state is computed by one pure function in `crates/core`, `verdict(reply, server_now) -> Verdict`,
+with no clock inside: `server_now` is passed in (below). The ui picks the sentence by the state,
+never by a number, and shows no digits except the remaining seconds.
+
+| wire fact | state | sentence shown (ko, placeholder) | draft |
+|---|---|---|---|
+| `err_code` 0, `error_id` 0 (any channel) | accepted | none (as today) | cleared |
+| `err_code` 5211, `cd_end_time` present and `server_now` known | cooldown, `n` s left | 아직 보낼 수 없습니다. `n`초 뒤에 다시 보내 주세요. | kept |
+| `err_code` 5211, no `cd_end_time` or no `server_now` | too frequent | 너무 자주 보냈습니다. 잠시 후 다시 보내 주세요. | kept |
+| any other `err_code`, or `error_id` not 0 | refused, unknown | 서버가 메시지를 받지 않았습니다. | kept |
+| no Return within `VERDICT_WAIT` (section 2) | no verdict | 보냈지만 서버의 확인을 받지 못했습니다. | cleared |
+| an existing `ErrorCode` or app error | not sent | the existing sentence (`ingame_send.rs:159-180`, `:225-240`) | kept |
+
+- `n` is whole seconds rounded up: `cd_end_time - server_now`, at least 1; a value above 600 s is
+  taken as a wrong clock and shown as "too frequent" (600 is a placeholder).
+- An unknown code is logged as `log::debug!("send refused: code {err_code} error_id {error_id}")`,
+  with no chat text, and never shown.
+- `server_now` is, in order: the reply's own `show_msg.timestamp` (an accepted reply); else the
+  PC's time when the Return was framed plus the offset `server seconds - PC seconds` taken from the
+  last inbound chat line or accepted reply on that connection; else unknown (so "too frequent",
+  never a guess from the PC's clock alone). After the verdict, the count runs on the PC's monotonic
+  clock (`Instant`) from the moment the Return was framed, so a PC clock change cannot move it.
+
+### Options: how the composer learns the verdict
+
+- **A. The command waits for it.** `send_chat` waits up to `VERDICT_WAIT` after `Reply::Send` and
+  returns the state; `SendChat`'s result changes from `()` to a small `SendVerdict` type in
+  `crates/types` (an ipc change, both ends in one PR). The draft is cleared only on "accepted" or
+  "no verdict", so a refused line is never lost. No event. The send takes one round trip longer
+  before the input clears (tens to hundreds of ms, estimated).
+- **B. The command returns at "handed over"; the verdict comes as a new event.** A `send-verdict`
+  event in `ipc::event` (`ALL` grows to 15), and the composer keeps a copy of the last line to put
+  back on a late refusal, which may overwrite what the user typed since.
+- **C. A, plus the event for a Return that comes after `VERDICT_WAIT`.** Covers a slow server, at
+  the cost of both paths.
+
+`Recommended: A`, because the draft stays in the input until the server has answered, which is how
+a chat box normally behaves, and it needs no new event or second code path; a late Return still
+updates the cooldown (section 2 C).
+
+### Options: how a cooldown is shown
+
+- **A. A static sentence** with the seconds left at the moment of the verdict. Nothing else changes.
+- **B. A countdown** in the composer's sentence, once a second down to zero, then the sentence goes
+  away; computed from the stored end on the monotonic clock (above).
+- **C. B, plus the send button disabled for that client and channel until the cooldown ends, and the
+  backend refusing a send there before it leaves** (a new `SendError::Cooldown` with the seconds
+  left, the same sentence as the table). An **accepted** World or Local reply's `cd_end_time` starts
+  the same gate, so the app never sends a line the server will refuse. Party and Guild, with no
+  cooldown, keep only the 1500 ms spacing.
+
+`Recommended: C`, because the server tells the app the exact end of each channel's cooldown, and
+not sending a line the server is certain to refuse is better than showing a refusal (it is what the
+game's own chat box does with its `chatCD_`, reported); it is the most work of the three (a
+per-client, per-channel map in `crates/core` beside the spacing, and a timer in the composer).
