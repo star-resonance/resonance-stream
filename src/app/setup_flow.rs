@@ -1,11 +1,12 @@
 //! First-run wizard flow: download model + server + dictionary, then start services.
 
 use crate::config_signals::ConfigSignals;
+use crate::event_listener::Listener;
 use crate::hooks::use_events::setup_event_listeners;
 use crate::setup_plan::{check_failed_message, plan_downloads};
 use crate::status_signals::{ServiceSignals, SetupSignals};
 use crate::store::AppSignals;
-use crate::tauri_bridge::{call, listen};
+use crate::tauri_bridge::call;
 use crate::ui_types::{SystemLogLevel, TauriEvent};
 use crate::utils::add_system_log;
 use leptos::prelude::*;
@@ -13,7 +14,6 @@ use leptos::task::spawn_local;
 use resonance_types::ipc::{
     event, CheckAllUpdates, DownloadAiServer, DownloadModel, StartSniffer, SyncDictionary,
 };
-use wasm_bindgen::prelude::*;
 
 /// Marks setup done, saves config, and starts the event listeners and sniffer.
 pub fn finalize_setup(
@@ -73,6 +73,8 @@ pub fn start_download(
         set_setup_error.set(Some(message.clone()));
         add_system_log(SystemLogLevel::Error, "ModelManager", &message);
     };
+    // One listener for the wizard, made once (in `App`): a retry replaces it, it never piles up.
+    let progress = Listener::new();
     move |ev: web_sys::MouseEvent| {
         // Prevent the default button behavior if necessary
         ev.prevent_default();
@@ -99,19 +101,21 @@ pub fn start_download(
                 return;
             }
 
-            // 1. Setup the progress listener
-            let closure = Closure::wrap(Box::new(move |event_obj: JsValue| {
-                if let Ok(wrapper) = serde_wasm_bindgen::from_value::<TauriEvent>(event_obj) {
-                    set_progress.set(wrapper.payload.total_percent);
-                    // Optional: Update status text to show what is currently downloading
-                    // using the `current_file` field we defined in downloader.rs
-                    set_status_text.set(format!(
-                        "{} ({}%)",
-                        wrapper.payload.current_file, wrapper.payload.total_percent
-                    ));
-                }
-            }) as Box<dyn FnMut(JsValue)>);
-            let _ = listen(event::DOWNLOAD_PROGRESS, &closure).await;
+            // 1. Setup the progress listener: registered (awaited) before the first download,
+            // and replacing the one a failed earlier press left.
+            progress
+                .register(event::DOWNLOAD_PROGRESS, move |event_obj| {
+                    if let Ok(wrapper) = serde_wasm_bindgen::from_value::<TauriEvent>(event_obj) {
+                        set_progress.set(wrapper.payload.total_percent);
+                        // Optional: Update status text to show what is currently downloading
+                        // using the `current_file` field we defined in downloader.rs
+                        set_status_text.set(format!(
+                            "{} ({}%)",
+                            wrapper.payload.current_file, wrapper.payload.total_percent
+                        ));
+                    }
+                })
+                .await;
 
             // 2. Download the AI Model (.gguf): the backend takes its address and hash from the
             // verified metadata.
@@ -120,7 +124,6 @@ pub fn start_download(
                     format!("Model Error: {why}"),
                     format!("모델 다운로드에 실패했습니다. ({why})"),
                 );
-                closure.forget();
                 return;
             }
 
@@ -130,7 +133,6 @@ pub fn start_download(
                     format!("Server Error: {why}"),
                     format!("AI 서버 다운로드에 실패했습니다. ({why})"),
                 );
-                closure.forget();
                 return;
             }
 
@@ -140,7 +142,6 @@ pub fn start_download(
                     format!("Dict Error: {why}"),
                     format!("사용자 사전 동기화에 실패했습니다. ({why})"),
                 );
-                closure.forget();
                 return;
             }
 
@@ -152,8 +153,6 @@ pub fn start_download(
             set_model_ready.set(true);
             set_status_text.set("Ready".to_string());
             finalize_setup(());
-
-            closure.forget();
         });
     }
 }
