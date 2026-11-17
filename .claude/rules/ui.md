@@ -30,7 +30,10 @@ paths:
 
 - Shown only while `ingame_send` is on (a `<Show>` after `<ChatContainer />`): turning it off drops the draft and error.
 - The draft goes out exactly as typed (no prefix, D-35 DS-0001); the backend prepares it (`SendChat { channel, text }`).
-  Ok clears draft and error; Err keeps the draft and shows the backend's sentence unchanged; the input is read-only while sending.
+  `Sent` and `NotConfirmed` clear the draft; `TooFrequent`, `Cooldown` and `Refused` (the core's `Other` too) keep it.
+  `Err` (a pre-send failure) keeps the draft and shows the backend's sentence unchanged; the input is read-only while sending.
+- `NotConfirmed` is a neutral notice ("sent, no confirmation"), not an error. A `Cooldown` shows a countdown and blocks Send
+  for that client and channel only, never another pair; the pure model (`CooldownBlock`, the status rules) is in `composer_view.rs`.
 - Enter sends only when plain: not Shift, not `is_composing`, not key code 229 (IME commit). A 길드/파티/월드/로컬 tab preselects the channel.
 - The counter counts UTF-16 units of the prepared text, `n/140` (an emoji is 2).
 - While the DLL downloads it shows `게임 내 전송 모듈을 내려받는 중... N%` from `download-progress`, matched by label prefix (`module_line`).
@@ -53,7 +56,7 @@ src/                  ui crate (resonance-stream-ui)
   status_signals.rs     ServiceSignals / SetupSignals / UpdateSignals: backend status, wizard, update dialogs
   view_signals.rs       ChatSignals / UiSignals: chat list, system log, scroll + unread, open dialogs
   chat_view.rs          chat list: per-tab views + limits (ChatStore), filter, paging -- pure, host-tested
-  composer_view.rs      chat composer logic (counter, can_send, Enter, channel preselect) -- pure, host-tested
+  composer_view.rs      chat composer logic (counter, can_send, Enter, channel preselect, verdict status, cooldown block) -- pure, host-tested
   components/           views; settings/ is one file per settings section; chat_composer.rs is the composer's wiring
   hooks/                backend event, config and tray wiring
   ui_types.rs           ui-only types + re-export of resonance-types (AppConfig included)
