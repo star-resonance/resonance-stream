@@ -44,16 +44,19 @@ struct ServerClock {
 
 impl ServerClock {
     fn observe(&mut self, local: Endpoint, server_ms: u64, at: Instant) {
-        let _ = (local, server_ms, at);
+        self.seen.insert(local, (server_ms, at));
     }
 
+    /// The server's now at `at`: the last observation plus the time since; `None` when the
+    /// connection has none or the sum overflows.
     fn server_now_ms(&self, local: Endpoint, at: Instant) -> Option<u64> {
-        let _ = (local, at);
-        None
+        let (ms, seen_at) = self.seen.get(&local)?;
+        let since = u64::try_from(at.saturating_duration_since(*seen_at).as_millis()).ok()?;
+        ms.checked_add(since)
     }
 
     fn forget(&mut self, local: Endpoint) {
-        let _ = local;
+        self.seen.remove(&local);
     }
 }
 
@@ -76,7 +79,14 @@ pub struct ChatPipeline {
     last_expire: Option<Instant>,
     /// Which connection is which character (read before the duplicate check).
     roster: Roster,
+    /// Each connection's server time, for a Return that carries none.
+    clock: ServerClock,
+    /// Returns framed and not yet taken (at most `MAX_RETURNS`, the oldest go first).
+    returns: Vec<ReturnEvent>,
 }
+
+/// Most queued Returns when nothing takes them (a tool that only replays).
+const MAX_RETURNS: usize = 256;
 
 impl ChatPipeline {
     pub fn new() -> Self {
@@ -86,6 +96,8 @@ impl ChatPipeline {
             keep_unknown_fields: false,
             last_expire: None,
             roster: Roster::new(),
+            clock: ServerClock::default(),
+            returns: Vec::new(),
         }
     }
 
@@ -114,7 +126,7 @@ impl ChatPipeline {
 
     /// The Returns framed since the last call, in arrival order.
     pub fn take_returns(&mut self) -> Vec<ReturnEvent> {
-        Vec::new()
+        std::mem::take(&mut self.returns)
     }
 
     /// Drops the connections idle past `CLIENT_IDLE_TIMEOUT` at `now`; each is reported as
@@ -128,7 +140,10 @@ impl ChatPipeline {
         self.roster
             .take_gone()
             .into_iter()
-            .map(|conn| PipelineAction::OwnPlayer(conn, None))
+            .map(|conn| {
+                self.clock.forget(conn);
+                PipelineAction::OwnPlayer(conn, None)
+            })
             .collect()
     }
 
@@ -215,12 +230,33 @@ impl ChatPipeline {
                     }
                     continue;
                 }
-                // Nothing reads a Return yet.
-                FrameKind::Return(_) => continue,
+                FrameKind::Return(ret) => {
+                    if let Some(ms) = ret.server_time.and_then(|t| t.checked_mul(1000)) {
+                        self.clock.observe(local, ms, now);
+                    }
+                    if self.returns.len() >= MAX_RETURNS {
+                        self.returns.remove(0);
+                    }
+                    self.returns.push(ReturnEvent {
+                        local,
+                        ret,
+                        fallback_server_ms: self.clock.server_now_ms(local, now),
+                        at: now,
+                    });
+                    continue;
+                }
             };
             for event in events {
                 // Guard clause for the event loop using let-else
                 let Port5003Event::Chat(chat) = event;
+                if origin == Origin::Live {
+                    if let Some(ms) = Some(chat.timestamp)
+                        .filter(|t| *t != 0)
+                        .and_then(|t| t.checked_mul(1000))
+                    {
+                        self.clock.observe(local, ms, now);
+                    }
+                }
                 actions.extend(self.feed(chat, origin, Some(local), &is_blocked, &mut assign_pid));
             }
         }
@@ -1407,11 +1443,10 @@ mod tests {
         let mut bytes = Vec::new();
         fin.write(&mut bytes, &[]).unwrap();
         pipeline.feed_network_packet(&bytes, |_| false, || 1, || {});
-        let mut seq2 = 1;
         feed_from(
             &mut pipeline,
             50000,
-            &mut seq2,
+            &mut seq,
             &return_frame(RC + 2, 0, 0, None),
         );
         assert_eq!(pipeline.take_returns()[0].fallback_server_ms, None);
