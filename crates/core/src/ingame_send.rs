@@ -173,7 +173,7 @@ pub fn code_text(code: ErrorCode) -> &'static str {
             "게임이 응답하지 않아 보내지 않았습니다. 로딩이 끝난 뒤 다시 시도해 주세요."
         }
         ErrorCode::Unsupported => {
-            "이 게임 버전에서는 채팅 보내기를 지원하지 않습니다. 앱 업데이트를 기다려 주세요."
+            "이 게임 버전은 아직 지원되지 않아 채팅을 보낼 수 없습니다. 앱 업데이트를 기다려 주세요."
         }
         ErrorCode::Version => "게임 내 전송 모듈의 버전이 맞지 않습니다. 앱을 다시 시작해 주세요.",
     }
@@ -711,7 +711,7 @@ mod tests {
             "게임이 메시지를 보내지 못했습니다.",
             "이전 메시지를 보내는 중입니다. 잠시 후 다시 시도해 주세요.",
             "게임이 응답하지 않아 보내지 않았습니다. 로딩이 끝난 뒤 다시 시도해 주세요.",
-            "이 게임 버전에서는 채팅 보내기를 지원하지 않습니다. 앱 업데이트를 기다려 주세요.",
+            "이 게임 버전은 아직 지원되지 않아 채팅을 보낼 수 없습니다. 앱 업데이트를 기다려 주세요.",
             "게임 내 전송 모듈의 버전이 맞지 않습니다. 앱을 다시 시작해 주세요.",
         ];
         let got: Vec<&str> = ErrorCode::ALL.into_iter().map(code_text).collect();
@@ -722,6 +722,31 @@ mod tests {
         }
         for code in ErrorCode::ALL {
             assert_eq!(SendError::Dll(code).to_string(), code_text(code));
+        }
+    }
+
+    #[test]
+    fn unsupported_says_the_version_is_not_supported_yet() {
+        let sentence = "이 게임 버전은 아직 지원되지 않아 채팅을 보낼 수 없습니다. 앱 업데이트를 기다려 주세요.";
+        for detail in [
+            "class_missing:ZRpcCtrl",
+            "method_missing:Update",
+            "hook_failed:MovingCodeNotSupported",
+            "hook_failed:PreHook",
+            "pump disabled",
+            "resolution failed",
+        ] {
+            let (res, drop_session) = map_send_reply(Reply::Error {
+                id: 1,
+                code: ErrorCode::Unsupported,
+                detail: detail.to_string(),
+            });
+            assert!(matches!(res, Err(SendError::Dll(ErrorCode::Unsupported))));
+            assert!(!drop_session, "{detail}: the session is kept");
+            let text = res.unwrap_err().to_string();
+            assert_eq!(text, sentence, "{detail}");
+            assert!(text.contains("아직") && text.contains("앱 업데이트"));
+            assert!(!text.contains(detail) && !text.contains("unsupported"));
         }
     }
 

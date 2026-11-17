@@ -8,7 +8,7 @@ the game for this document.
 pairs with its own suspension of the game's other threads); `crates/frame` and `crates/ingame` in the
 workspace with a custom root profile that sets `panic = "unwind"` (section 4 A); loading by remote
 thread (section 6 A). The DLL is downloaded from the app's own release into `<app data>/bin/ingame/<version>/` and loaded from there in place, with the
-file held open across hash and load; a copy is the fallback. The matching
+file held open across hash and load; no copy is made (not built: if Windows refuses `LoadLibraryW` on the held file the send fails with `LoadFailed`). The matching
 rows are in [security_model.md](security_model.md) section 3.8. D-35 in [decisions.md](decisions.md)
 is the record.
 
@@ -80,7 +80,7 @@ These were decided in DS-0001 and DS-0002 and in the lane's shared values. This 
 - **Spacing.** The app refuses a send that comes less than 1500 ms after its last successful send.
   The check is pure and takes an explicit `now`. `SendSpacing` lives in `crates/core`.
 - **Errors.** Each error reaches the ui as one Korean sentence, the `Err(String)` of the `send_chat`
-  command (ipc, task R6: `SendChat = "send_chat" { channel: SendChatChannel, text: String } -> ();`).
+  command (ipc, task R6: `SendChat = "send_chat" { channel: SendChatChannel, text: String, client: Option<u32> } -> ();`).
 
 ## Sections
 
@@ -502,8 +502,8 @@ yet. Options appear only where the choice is real.
   An error is `{"id":N,"ok":false,"code":"<code>","detail":"<short English reason for the log>"}`.
 - **Version rule.** The protocol `version` is an integer, starting at 1. `hello` is the first request
   on every connection. If the DLL's version differs, it replies with `version`, and the app refuses
-  to send, unloads that DLL and loads its own copy. In practice the DLL is embedded in the app
-  (section 6), so a mismatch means a stale DLL from an older app is still loaded.
+  to send, unloads that DLL and loads its own copy. In practice the DLL is downloaded by the app, per
+  version (section 6), so a mismatch means a stale DLL from an older app is still loaded.
 - **Timeouts.** The whole `send_chat` command must fit in **2 s**.
   - `hello` runs at load time, not per send.
   - Per send: the request write has 100 ms. The DLL holds the request for at most **1000 ms**
@@ -527,7 +527,7 @@ yet. Options appear only where the choice is real.
   | `not_sent` | `Send` raised a managed exception (returned in `runtime_invoke`'s `exc`) | 게임이 메시지를 보내지 못했습니다. |
   | `busy` | a send is already waiting for the main thread (single slot) | 이전 메시지를 보내는 중입니다. 잠시 후 다시 시도해 주세요. |
   | `expired` | the main thread did not tick within 1000 ms (loading screen) | 게임이 응답하지 않아 보내지 않았습니다. 로딩이 끝난 뒤 다시 시도해 주세요. |
-  | `unsupported` | a class, method, field or export the walk needs was not found: a game build the DLL does not know (section 7) | 이 게임 버전에서는 채팅 보내기를 지원하지 않습니다. 앱 업데이트를 기다려 주세요. |
+  | `unsupported` | a class, method, field or export the walk needs was not found: a game build the DLL does not know (section 7) | 이 게임 버전은 아직 지원되지 않아 채팅을 보낼 수 없습니다. 앱 업데이트를 기다려 주세요. |
   | `version` | `hello` version mismatch | 게임 내 전송 모듈의 버전이 맞지 않습니다. 앱을 다시 시작해 주세요. |
 
   The app has its own errors outside the pipe: the setting is off, the game is not running, loading
@@ -611,7 +611,7 @@ yet. Options appear only where the choice is real.
 `Recommended: A`. It is the standard, it leaves the game's folder untouched, and it follows the
 opt-in exactly (no setting, no DLL).
 
-### Specification for A (proposed)
+### Specification for A
 
 - **Finding the pid.** A process snapshot (`CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS)`) keeps exe
   names that start with `StarSEA` or `StarASIA` and end in `.exe`, case-insensitive.
@@ -626,25 +626,29 @@ opt-in exactly (no setting, no DLL).
 - **When to load.** When the setting is on and the game process is found (on enable, and at the
   first send if it is not loaded yet). The DLL stays loaded until the setting is turned off, the app
   exits, or the game exits.
-- **Checking the DLL is ours.** The DLL is fetched by the app when the setting is turned on and kept as
-  `<app data>/bin/ingame/<version>/resonance_ingame.dll` (the installer bundle beside the exe is no longer read). Its SHA-256 is computed at build time and built into the app
-  as a pin, the way `server_pins` works.
+- **Checking the DLL is ours.** The DLL is downloaded by the app on opt-in: when the setting is turned
+  on, at start-up with it on, and when a send finds no file (that send answers `DllDownloading`, a
+  sentence asking the user to try again). It is kept per version as
+  `%APPDATA%\com.enjay.bpsr.resonance-stream\bin\ingame\<version>\resonance_ingame.dll`
+  (`<app data>/bin/ingame/<version>/` in this document), never beside the exe; there is no installer bundle. Its SHA-256 is computed at build time and built into the app
+  as a pin, the way `server_pins` works. A build without a pin downloads nothing and loads nothing
+  (`SendError::NoPin`).
   - **Loaded in place, no copy.** The app loads that file where it is; nothing is written to the game's
     folder, and the downloaded file is not copied again. It opens the file with `FILE_SHARE_READ` (nobody else may write
     or delete it), hashes through that handle, and keeps the handle open across the remote-thread
     `LoadLibraryW`. That closes the check-to-load gap the security model names, if Windows allows
     `LoadLibraryW` on a file held that way: NOT VERIFIED on Windows.
-  - **Fallback: a copy.** If `LoadLibraryW` hits a sharing violation, the hold is dropped and the gap
-    stays open as the security model states it. The app then copies the DLL into its own data folder as
-    a second file in the app's data folder (never the
-    game's), hashes the copy, and loads only on a match. A same-user process that could use the gap
-    could inject into the game itself anyway, so it adds no new reach (estimated).
+  - **Not built: a copy as the fallback.** The design allowed one if `LoadLibraryW` hit a sharing
+    violation: copy the DLL into the app's own data folder (never the game's), hash the copy, load
+    only on a match. No copy exists in the code. If Windows refuses `LoadLibraryW` on the held file,
+    the send fails with `LoadFailed`. NOT VERIFIED on Windows.
   - **The pin contract.** The app's build script reads `RESONANCE_INGAME_DLL` (the absolute path of the
     built DLL) and `RESONANCE_INGAME_REQUIRED` (with it set and the file missing, the app build
     fails, so a Candidate can never ship without a pin; without it the build succeeds with no pin and a
     warning); `src-tauri/build.rs` writes the hash into the app. R8's Candidate builds the DLL first,
     then the app; the same bytes are the release asset the app downloads. In a debug build whose
-    `RESONANCE_INGAME_DLL` was set at build time the path is that file (dev only).
+    `RESONANCE_INGAME_DLL` was set at build time the path is that file, loaded instead of the
+    downloaded module (dev only).
   - **A signed release asset.** Releases ship a bare exe, so the DLL is its own asset next to it: signed with
     the exe's key and version comment, listed in `SHA256SUMS` with its `.sig`, carried from the prerelease to
     the stable release by Promote. The app fetches it by tag pattern, not through `latest.json` (whose
@@ -818,7 +822,7 @@ far the app reaches into the game. Each is answered by picking a letter.
 | 4. DLL crate | A: in the workspace, custom `ingame` profile with `panic = "unwind"` | Question 3 |
 | 4. Goldens | derived bytes + round trip through `core` now, one observed frame in Kade's test | - |
 | 5. Pipe | named pipe created by the app, user-only DACL with Medium label, client-pid check, JSON lines, ten error codes | - |
-| 6. Loading | A: remote thread; pid by `StarSEA`/`StarASIA` prefix and the port-5003 owner; build-time SHA-256 pin; loaded in place with the file held open (a copy is the fallback) | Question 4 |
+| 6. Loading | A: remote thread; pid by `StarSEA`/`StarASIA` prefix and the port-5003 owner; build-time SHA-256 pin; loaded in place with the file held open (no copy: not built) | Question 4 |
 | 6. Unloading | `bye` -> ilhook unhook -> drain -> `FreeLibraryAndExitThread`; `KeepResident` if the unhook is not provably safe; self-unload on a broken pipe | Question 1 (hooks) |
 | 7. Resilience | resolve by name each build, report permanent failures once, no build allow-list | - |
 
@@ -843,7 +847,7 @@ Only a run in the game on Kade's PC can show these. No agent can run the game.
 - Whether `ZTcpClient.Send` is safe from a foreign thread (only matters for question 1 B).
 - The name of a per-frame main-thread method for the pump (the candidates are `ZRpcCtrl.Update` and `Panda.Core.Game.Update`), and that a native detour on it is not
   bypassed by inlining.
-- `LoadLibraryW` loading a file the app holds open with `FILE_SHARE_READ` (and the copy as the fallback if not).
+- `LoadLibraryW` loading a file the app holds open with `FILE_SHARE_READ` (no copy fallback is built: if not, the send fails with `LoadFailed`).
 - The game's integrity level (elevated or not), and whether the pipe's DACL and Medium label let it
   connect.
 - That the game has no anti-cheat that blocks `OpenProcess`, `CreateRemoteThread` or code patching
