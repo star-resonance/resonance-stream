@@ -1,12 +1,14 @@
 # Roadmap: chat sending through an in-game DLL (2026-11-16)
 
-Status: **M0 design merged** (R0 #398, R1 #396; R2's text rules are in `crates/types`: `SendChatChannel`); wave 2 (R3 to R9) planned; nothing built.
+Status: **M0 design merged** (R0 #398, R1 #396; R2's text rules are in `crates/types`: `SendChatChannel`); **M1 done**
+(wave 2 and its follow-ups are merged; Kade confirmed it in game on v0.6.5-rc.4 and rc.5); several clients: F-MC-1
+and F-MC-2 merged, F-MC-3 and F-GR open; **M2 next**: its options doc R-M2 first.
 
 Decision: D-35 in `docs/decisions.md`. Design: [`docs/ingame-design.md`](../../docs/ingame-design.md).
-Lane decisions: DS-0001 to DS-0004 (recorded in D-35).
+Lane decisions: DS-0001 to DS-0004 (recorded in D-35); DS-0006 (where the DLL lives), DS-0007 and DS-0009 item 2 (several clients).
 Threats: `docs/security_model.md` section 3.8 and section 4, T-10 to T-13.
 
-The app (already Administrator) loads its own Rust DLL `resonance_ingame.dll` (planned) into the game;
+The app (already Administrator) loads its own Rust DLL `resonance_ingame.dll` into the game;
 the DLL calls the game's `ZTcpClient.Send` on the live chat connection. It is opt-in, off by default,
 with a terms-of-service warning. No Stellar, no keystrokes.
 
@@ -24,26 +26,27 @@ model (R1) and the send text rules (R2).
 **Done when:** `docs/ingame-design.md`, D-35 and the text rules in `crates/types` / core are merged and Kade
 has read the options doc.
 
-## M1. Send chat (wave 2)
+## M1. Send chat (wave 2): done
 
 Opt-in setting (off by default, terms-of-service warning); the app loads `resonance_ingame.dll`; the composer
 sends to World, Guild, Party and Local (`say`), at most 140 UTF-16 units, 1.5 s apart; the DLL builds the frame
-(ChitChat service `1321197368`, `SendChitChatMsg` method `1`) and calls `ZTcpClient.Send`. The Candidate run
-builds the DLL first, the app pins its SHA-256, and the DLL is signed like the exe and listed in
-`SHA256SUMS`, and the prerelease and the stable release carry it; the app downloads it into `<app data>/bin/ingame/<version>/` and loads it from there.
+(ChitChat service `1321197368`, `SendChitChatMsg` method `1`) and calls `ZTcpClient.Send`.
 
-**Wave 2 tasks:**
-- R3 frame builder
-- R4 DLL skeleton and pipe
-- R5 DLL send
-- R6 app loader and `send_chat`
-- R7 composer
-- R8 CI and Candidate build (the DLL is built first, pinned into the app and attached to the prerelease only,
-  outside `SHA256SUMS`)
-- R9 agent rules
+The DLL's release and place (DS-0006): the Candidate run builds the DLL first, the app pins its SHA-256, and the
+DLL is signed like the exe and listed in `SHA256SUMS`; the prerelease and the stable release carry it (`latest.json`
+names it, which the app does not read). The installer and the app bundle carry no DLL (F-R8c). The DLL lives per
+version in `%APPDATA%\com.enjay.bpsr.resonance-stream\bin\ingame\<version>\resonance_ingame.dll`; when the user
+turns the setting on (and at start-up with it on, and when a send finds no file) the app downloads it from its
+release, checks the signature and the exe's pinned hash, and loads it from there. Other versions' folders are removed.
 
-**Done when:** on Windows a message reaches each of the four channels (Kade's step; CI cannot run the game);
-the Candidate run builds the DLL, the app pins it, and the prerelease holds the DLL asset.
+**Wave 2 tasks (all merged):** R3 #400 frame builder; R4 #401 DLL skeleton and pipe; R5 #404 DLL send; R6 #403 app loader
+and `send_chat`; R7 #406 composer; R8 #405 CI and Candidate build; R9 #402 agent rules.
+**Follow-ups (merged):** F-R5 #408, F-R5b #409 (the pump hook); F-R6a #410, F-R6b #411 (loader); F-R8b #413 (static C
+runtime); F-R8a-1 #412 (signed DLL in the release), F-R8a-2 #417 (download), F-R8c #421 (no DLL in the installer);
+F-R6c #425 (agent rules); F-R2 #422 (control characters); F-TAB #423 (the picker starts on the last channel).
+
+**Done when:** on Windows a message reaches the game's chat (Kade's step; CI cannot run the game). **Met:** Kade
+confirmed in game that sending works on v0.6.5-rc.4, and on v0.6.5-rc.5 that the app's own DLL download works.
 
 ## M2. Server verdict
 
