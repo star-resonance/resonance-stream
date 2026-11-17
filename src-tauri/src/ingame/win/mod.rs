@@ -85,8 +85,12 @@ impl Session {
         id
     }
 
-    /// Sends one chat line. The flag says the session is no longer usable.
-    pub fn send(&mut self, channel: SendChatChannel, text: &str) -> (Result<(), SendError>, bool) {
+    /// Sends one chat line; `Some` is the call id the server's Return will carry. The flag says the session is no longer usable.
+    pub fn send(
+        &mut self,
+        channel: SendChatChannel,
+        text: &str,
+    ) -> (Result<Option<u32>, SendError>, bool) {
         let request = Request::Send {
             id: self.id(),
             channel: channel.as_str().to_string(),
