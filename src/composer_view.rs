@@ -246,13 +246,27 @@ pub struct Status {
 }
 
 /// The line a verdict stores; a `Cooldown` is shown live from its block, not stored.
-pub fn status_of(_verdict: &SendVerdict) -> Option<Status> {
-    None
+pub fn status_of(verdict: &SendVerdict) -> Option<Status> {
+    let tone = match verdict {
+        SendVerdict::Sent | SendVerdict::Cooldown { .. } => return None,
+        SendVerdict::NotConfirmed => Tone::Notice,
+        SendVerdict::TooFrequent | SendVerdict::Refused { .. } => Tone::Error,
+    };
+    Some(Status {
+        tone,
+        text: verdict_line(verdict),
+    })
 }
 
 /// What the line shows: the live countdown while one runs, else the stored status.
-pub fn shown_status(_stored: Option<&Status>, _left_secs: u32) -> Option<Status> {
-    None
+pub fn shown_status(stored: Option<&Status>, left_secs: u32) -> Option<Status> {
+    if left_secs > 0 {
+        return Some(Status {
+            tone: Tone::Error,
+            text: countdown_line(left_secs),
+        });
+    }
+    stored.cloned()
 }
 
 /// The picker's options as (value, label), in tab order.
