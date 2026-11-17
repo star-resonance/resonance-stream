@@ -47,6 +47,14 @@ impl CooldownGate {
         }
     }
 
+    /// Drops every key whose client fails `keep` (a client that is gone).
+    pub fn retain_clients(&self, keep: impl Fn(ClientKey) -> bool) {
+        self.ends
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(client, _), _| keep(*client));
+    }
+
     /// How many keys are kept.
     pub fn len(&self) -> usize {
         self.ends
@@ -149,6 +157,19 @@ mod tests {
         gate.arm(A, W, secs(1), t0);
         gate.arm(Some(42), W, secs(5), t0 + secs(2));
         assert_eq!(gate.len(), 1);
+    }
+
+    #[test]
+    fn retain_clients_drops_the_keys_of_gone_clients() {
+        let gate = CooldownGate::default();
+        let t0 = Instant::now();
+        gate.arm(A, W, secs(5), t0);
+        gate.arm(Some(42), W, secs(5), t0);
+        gate.arm(None, W, secs(5), t0);
+        gate.retain_clients(|k| k != Some(42));
+        assert_eq!(gate.len(), 2);
+        assert_eq!(gate.check(Some(42), W, t0 + secs(1)), Ok(()));
+        assert_eq!(gate.check(A, W, t0 + secs(1)), Err(cooldown(4)));
     }
 
     #[test]

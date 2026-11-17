@@ -29,6 +29,23 @@ pub struct GameClient {
     pub name: String,
 }
 
+/// What the server said about one chat send (the `send_chat` command's answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum SendVerdict {
+    Sent,
+    TooFrequent,
+    /// Whole seconds left, 1 to 600.
+    Cooldown {
+        #[serde(rename = "remainingSecs")]
+        remaining_secs: u32,
+    },
+    NotConfirmed,
+    Refused {
+        code: u32,
+    },
+}
+
 /// A Tauri command: its registered name and what it answers. A command that returns
 /// `Result<T, String>` answers `T`; its error arrives as the call's error.
 pub trait Command: Serialize {
@@ -75,7 +92,7 @@ commands! {
     UnblockUser = "unblock_user_command" { uid: u64 } -> ();
 
     // Chat sending (through the in-game module). The error is one Korean sentence.
-    SendChat = "send_chat" { channel: SendChatChannel, text: String, client: Option<u32> } -> ();
+    SendChat = "send_chat" { channel: SendChatChannel, text: String, client: Option<u32> } -> SendVerdict;
     GameClients = "game_clients" {} -> Vec<GameClient>;
 
     // Translator.
@@ -335,6 +352,8 @@ mod tests {
 
     #[test]
     fn send_chat_takes_a_channel_text_and_client() {
+        fn answers_a_verdict<C: Command<Reply = SendVerdict>>() {}
+        answers_a_verdict::<SendChat>();
         assert_eq!(SendChat::NAME, "send_chat");
         assert!(COMMAND_NAMES.contains(&"send_chat"));
         assert_eq!(
@@ -353,6 +372,30 @@ mod tests {
             }),
             json!({ "channel": "world", "text": "hi", "client": null })
         );
+    }
+
+    #[test]
+    fn send_verdict_wire_shapes() {
+        let cases = [
+            (SendVerdict::Sent, json!({ "state": "sent" })),
+            (SendVerdict::TooFrequent, json!({ "state": "tooFrequent" })),
+            (
+                SendVerdict::Cooldown { remaining_secs: 3 },
+                json!({ "state": "cooldown", "remainingSecs": 3 }),
+            ),
+            (
+                SendVerdict::NotConfirmed,
+                json!({ "state": "notConfirmed" }),
+            ),
+            (
+                SendVerdict::Refused { code: 9999 },
+                json!({ "state": "refused", "code": 9999 }),
+            ),
+        ];
+        for (v, expected) in cases {
+            assert_eq!(serde_json::to_value(v).unwrap(), expected);
+            assert_eq!(serde_json::from_value::<SendVerdict>(expected).unwrap(), v);
+        }
     }
 
     #[test]

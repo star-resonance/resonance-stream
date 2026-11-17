@@ -6,11 +6,13 @@
 //!
 //! Chat text is never logged here: only the channel and the length.
 
+use crate::send_hub::VerdictHub;
 use crate::send_text::ClientSpacing;
 use resonance_types::ingame_pipe::{
     decode_reply, encode_request, ErrorCode, LineBuffer, Reply, Request, PIPE_PROTOCOL_VERSION,
     WRITE_TIMEOUT_MS,
 };
+use resonance_types::ipc::SendVerdict;
 use resonance_types::{prepare_text, SendChatChannel, SendTextError};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -463,9 +465,11 @@ pub fn connect(host: &mut impl Host, resident: &mut Resident, pid: u32) -> Resul
 /// must be dropped (`bad_request` and `version` mean the two ends no longer
 /// understand each other; so does any reply that is no answer to a send). The
 /// `detail` goes to the log with the code, never the chat text.
-pub fn map_send_reply(reply: Reply) -> (Result<(), SendError>, bool) {
+pub fn map_send_reply(reply: Reply) -> (Result<Option<u32>, SendError>, bool) {
     match reply {
-        Reply::Send { .. } | Reply::Ack { .. } => (Ok(()), false),
+        // An answer without a call id (an older DLL) cannot be matched to its Return.
+        Reply::Send { call_id, .. } => (Ok(Some(call_id)), false),
+        Reply::Ack { .. } => (Ok(None), false),
         Reply::Error { code, detail, .. } => {
             log::warn!("in-game send refused: {} ({detail})", code.as_str());
             let drop = matches!(code, ErrorCode::BadRequest | ErrorCode::Version);
@@ -484,37 +488,55 @@ pub trait SendBackend {
         target: Option<u32>,
         channel: SendChatChannel,
         text: &str,
-    ) -> Result<(), SendError>;
+    ) -> Result<Option<u32>, SendError>;
 }
 
-/// The `send_chat` command's logic: setting, text rules, spacing, send. The spacing is kept
-/// per client (the `target` as given). Its guard is held across the send, so two calls to one
-/// client at once cannot both pass; only a send that succeeded starts the window. The error is the one sentence the ui shows.
+/// The `send_chat` command's logic: setting, text rules, the server's cooldown, spacing, send,
+/// then up to `VERDICT_WAIT` for the server's verdict. The spacing is kept per client (the
+/// `target` as given). Its guard is held across the DLL call, so two calls to one client at once
+/// cannot both pass; only a send that succeeded starts the window. A send the cooldown gate
+/// refuses is a `Cooldown` verdict, not an error; the error is the one sentence the ui shows.
 /// Chat text is not logged, only the channel and the length.
 pub fn send_chat_flow(
     setting_on: bool,
     spacing: &ClientSpacing,
+    hub: &VerdictHub,
     backend: &mut impl SendBackend,
     target: Option<u32>,
     channel: SendChatChannel,
     text: &str,
-) -> Result<(), String> {
-    let mut run = || -> Result<(), SendError> {
+) -> Result<SendVerdict, String> {
+    let mut run = || -> Result<SendVerdict, SendError> {
         if !setting_on {
             return Err(SendError::SettingOff);
         }
         let prepared = prepare_text(text)?;
+        // The server's cooldown, learned from an earlier Return: refused here, nothing is sent
+        // and no spacing window starts.
+        if let Err(refused) = hub.check(target, channel, Instant::now()) {
+            return Ok(refused.into());
+        }
         let slot = spacing.slot(target, Instant::now());
         let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
         guard.allow(Instant::now())?;
-        backend.send(target, channel, &prepared)?;
-        guard.record_success(Instant::now());
+        let call_id = backend.send(target, channel, &prepared)?;
+        let sent_at = Instant::now();
+        guard.record_success(sent_at);
+        // The guard covers the DLL call only: the wait below must not hold the next send back.
+        drop(guard);
         log::debug!(
             "chat sent: channel {}, {} units",
             channel.as_str(),
             prepared.encode_utf16().count()
         );
-        Ok(())
+        Ok(match call_id {
+            Some(id) => {
+                hub.register(target, id, channel, sent_at);
+                hub.wait(target, id, Instant::now, sent_at).into()
+            }
+            // An older DLL answers with no call id: that send cannot be matched.
+            None => SendVerdict::NotConfirmed,
+        })
     };
     run().map_err(|e| {
         log::debug!("chat not sent: channel {}: {e}", channel.as_str());
@@ -1288,12 +1310,34 @@ mod tests {
         );
     }
 
+    /// `send_chat_flow` with a hub of its own (the old tests never wait: no call id).
+    fn flow(
+        setting_on: bool,
+        spacing: &ClientSpacing,
+        backend: &mut impl SendBackend,
+        target: Option<u32>,
+        channel: SendChatChannel,
+        text: &str,
+    ) -> Result<SendVerdict, String> {
+        send_chat_flow(
+            setting_on,
+            spacing,
+            &VerdictHub::default(),
+            backend,
+            target,
+            channel,
+            text,
+        )
+    }
+
     #[derive(Default)]
     struct FakeBackend {
         calls: Vec<(SendChatChannel, String)>,
         targets: Vec<Option<u32>>,
         result: Option<SendError>,
         sleep: Duration,
+        /// What the DLL answered: the call id, or `None` (an `Ack`).
+        call_id: Option<u32>,
     }
 
     impl SendBackend for FakeBackend {
@@ -1302,13 +1346,13 @@ mod tests {
             target: Option<u32>,
             channel: SendChatChannel,
             text: &str,
-        ) -> Result<(), SendError> {
+        ) -> Result<Option<u32>, SendError> {
             self.targets.push(target);
             self.calls.push((channel, text.to_string()));
             std::thread::sleep(self.sleep);
             match self.result.clone() {
                 Some(e) => Err(e),
-                None => Ok(()),
+                None => Ok(self.call_id),
             }
         }
     }
@@ -1321,7 +1365,7 @@ mod tests {
             target: Option<u32>,
             channel: SendChatChannel,
             text: &str,
-        ) -> Result<(), SendError> {
+        ) -> Result<Option<u32>, SendError> {
             self.0.lock().unwrap().send(target, channel, text)
         }
     }
@@ -1339,10 +1383,10 @@ mod tests {
         let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let go = |backend: &mut FakeBackend, t| {
-            send_chat_flow(true, &spacing, backend, t, SendChatChannel::Say, "hi")
+            flow(true, &spacing, backend, t, SendChatChannel::Say, "hi")
         };
-        assert_eq!(go(&mut backend, Some(7)), Ok(()));
-        assert_eq!(go(&mut backend, Some(42)), Ok(()));
+        assert_eq!(go(&mut backend, Some(7)), Ok(SendVerdict::NotConfirmed));
+        assert_eq!(go(&mut backend, Some(42)), Ok(SendVerdict::NotConfirmed));
         assert_eq!(backend.targets, [Some(7), Some(42)]);
         let got = go(&mut backend, Some(7)).unwrap_err();
         assert!(got.starts_with(&too_soon_sentence()));
@@ -1351,7 +1395,7 @@ mod tests {
         let spacing_none = ClientSpacing::default();
         let mut backend = FakeBackend::default();
         let mut go = |t| {
-            send_chat_flow(
+            flow(
                 true,
                 &spacing_none,
                 &mut backend,
@@ -1360,7 +1404,7 @@ mod tests {
                 "hi",
             )
         };
-        assert_eq!(go(None), Ok(()));
+        assert_eq!(go(None), Ok(SendVerdict::NotConfirmed));
         assert!(go(None).is_err());
     }
 
@@ -1371,19 +1415,17 @@ mod tests {
             result: Some(SendError::ClientGone),
             ..Default::default()
         };
-        let go = |b: &mut FakeBackend| {
-            send_chat_flow(true, &spacing, b, Some(7), SendChatChannel::Say, "hi")
-        };
+        let go = |b: &mut FakeBackend| flow(true, &spacing, b, Some(7), SendChatChannel::Say, "hi");
         assert!(go(&mut backend).is_err());
         backend.result = None;
-        assert_eq!(go(&mut backend), Ok(()));
+        assert_eq!(go(&mut backend), Ok(SendVerdict::NotConfirmed));
     }
 
     #[test]
     fn the_flow_refuses_when_the_setting_is_off_before_anything_else() {
         let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
-        let got = send_chat_flow(
+        let got = flow(
             false,
             &spacing,
             &mut backend,
@@ -1399,7 +1441,7 @@ mod tests {
     fn the_flow_passes_the_target_to_the_backend() {
         let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
-        let got = send_chat_flow(
+        let got = flow(
             true,
             &spacing,
             &mut backend,
@@ -1407,9 +1449,9 @@ mod tests {
             SendChatChannel::Say,
             "hi",
         );
-        assert_eq!(got, Ok(()));
+        assert_eq!(got, Ok(SendVerdict::NotConfirmed));
         let spacing = ClientSpacing::default();
-        let got = send_chat_flow(
+        let got = flow(
             true,
             &spacing,
             &mut backend,
@@ -1417,7 +1459,7 @@ mod tests {
             SendChatChannel::Say,
             "hi",
         );
-        assert_eq!(got, Ok(()));
+        assert_eq!(got, Ok(SendVerdict::NotConfirmed));
         assert_eq!(backend.targets, [Some(7), None]);
     }
 
@@ -1425,7 +1467,7 @@ mod tests {
     fn the_flow_checks_the_text_before_the_backend() {
         let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
-        let got = send_chat_flow(
+        let got = flow(
             true,
             &spacing,
             &mut backend,
@@ -1435,7 +1477,7 @@ mod tests {
         );
         assert_eq!(got, Err("보낼 내용이 없습니다.".to_string()));
         let long = "a".repeat(141);
-        let got = send_chat_flow(
+        let got = flow(
             true,
             &spacing,
             &mut backend,
@@ -1451,7 +1493,7 @@ mod tests {
     fn the_flow_sends_the_prepared_text_and_records_only_a_success() {
         let spacing = ClientSpacing::default();
         let mut backend = FakeBackend::default();
-        let got = send_chat_flow(
+        let got = flow(
             true,
             &spacing,
             &mut backend,
@@ -1459,10 +1501,10 @@ mod tests {
             SendChatChannel::Guild,
             "  hi\n",
         );
-        assert_eq!(got, Ok(()));
+        assert_eq!(got, Ok(SendVerdict::NotConfirmed));
         assert_eq!(backend.calls, [(SendChatChannel::Guild, "hi".to_string())]);
 
-        let again = send_chat_flow(
+        let again = flow(
             true,
             &spacing,
             &mut backend,
@@ -1481,7 +1523,7 @@ mod tests {
             result: Some(SendError::Dll(ErrorCode::NoClient)),
             ..Default::default()
         };
-        let got = send_chat_flow(
+        let got = flow(
             true,
             &spacing,
             &mut backend,
@@ -1490,7 +1532,7 @@ mod tests {
             "hi",
         );
         assert_eq!(got, Err(code_text(ErrorCode::NoClient).to_string()));
-        let got = send_chat_flow(
+        let got = flow(
             true,
             &spacing,
             &mut backend,
@@ -1509,12 +1551,12 @@ mod tests {
             sleep: Duration::from_millis(50),
             ..Default::default()
         }));
-        let results: Vec<Result<(), String>> = std::thread::scope(|s| {
+        let results: Vec<Result<SendVerdict, String>> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..2)
                 .map(|_| {
                     s.spawn(|| {
                         let mut shared = Shared(backend.clone());
-                        send_chat_flow(
+                        flow(
                             true,
                             &spacing,
                             &mut shared,
@@ -1546,7 +1588,7 @@ mod tests {
         });
         assert!(spacing.slot(None, Instant::now()).is_poisoned());
         let mut backend = FakeBackend::default();
-        let got = send_chat_flow(
+        let got = flow(
             true,
             &spacing,
             &mut backend,
@@ -1554,7 +1596,7 @@ mod tests {
             SendChatChannel::Say,
             "hi",
         );
-        assert_eq!(got, Ok(()));
+        assert_eq!(got, Ok(SendVerdict::NotConfirmed));
         let _ = Instant::now();
     }
 
@@ -1567,9 +1609,9 @@ mod tests {
         };
         assert_eq!(
             map_send_reply(Reply::Send { id: 1, call_id: 9 }),
-            (Ok(()), false)
+            (Ok(Some(9)), false)
         );
-        assert_eq!(map_send_reply(Reply::Ack { id: 1 }), (Ok(()), false));
+        assert_eq!(map_send_reply(Reply::Ack { id: 1 }), (Ok(None), false));
         assert_eq!(
             map_send_reply(error(ErrorCode::NoClient)),
             (Err(SendError::Dll(ErrorCode::NoClient)), false)
@@ -1586,5 +1628,235 @@ mod tests {
             dll: String::new(),
         };
         assert_eq!(map_send_reply(hello), (Err(SendError::Broken), true));
+    }
+
+    // ---- the verdict ----
+
+    const RT: u64 = 1_790_000_005;
+    const RC: u32 = 0x8000_0011;
+    const EP: crate::game_clients::Endpoint = crate::game_clients::Endpoint {
+        addr: [10, 0, 0, 5],
+        port: 50000,
+    };
+
+    fn return_event(err: u32, cd: u64, fallback: Option<u64>) -> crate::capture::ReturnEvent {
+        crate::capture::ReturnEvent {
+            local: EP,
+            ret: crate::protocol::rpc_return::RpcReturn {
+                call_id: RC,
+                err_code: err,
+                cd_end_time: cd,
+                error_id: 0,
+                server_time: None,
+            },
+            fallback_server_ms: fallback,
+            at: Instant::now(),
+        }
+    }
+
+    /// Runs one World send to `None` while another thread feeds `event` 50 ms later.
+    fn send_with_return(event: crate::capture::ReturnEvent) -> Result<SendVerdict, String> {
+        let hub = VerdictHub::default();
+        hub.learn_route(None, &[EP]);
+        let spacing = ClientSpacing::default();
+        let mut backend = FakeBackend {
+            call_id: Some(RC),
+            ..Default::default()
+        };
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                hub.on_return(&event);
+            });
+            send_chat_flow(
+                true,
+                &spacing,
+                &hub,
+                &mut backend,
+                None,
+                SendChatChannel::World,
+                "hi",
+            )
+        })
+    }
+
+    #[test]
+    fn an_accepted_send_is_sent() {
+        assert_eq!(
+            send_with_return(return_event(0, 0, None)),
+            Ok(SendVerdict::Sent)
+        );
+    }
+
+    #[test]
+    fn a_refusal_with_a_cooldown_is_a_verdict_not_an_error() {
+        let got = send_with_return(return_event(5211, RT, Some(RT * 1000 - 3000)));
+        assert_eq!(got, Ok(SendVerdict::Cooldown { remaining_secs: 3 }));
+    }
+
+    #[test]
+    fn an_armed_gate_refuses_before_the_spacing_slot_and_the_backend() {
+        let hub = VerdictHub::default();
+        hub.gate.arm(
+            None,
+            SendChatChannel::World,
+            Duration::from_secs(5),
+            Instant::now(),
+        );
+        let spacing = ClientSpacing::default();
+        let mut backend = FakeBackend::default();
+        let mut go = |t, c| send_chat_flow(true, &spacing, &hub, &mut backend, t, c, "hi");
+        match go(None, SendChatChannel::World) {
+            Ok(SendVerdict::Cooldown { remaining_secs }) => {
+                assert!((1..=5).contains(&remaining_secs))
+            }
+            other => panic!("{other:?}"),
+        }
+        // Not started: the spacing slot is free, so Say to the same client goes right away.
+        assert_eq!(
+            go(None, SendChatChannel::Say),
+            Ok(SendVerdict::NotConfirmed)
+        );
+        assert_eq!(
+            go(Some(42), SendChatChannel::World),
+            Ok(SendVerdict::NotConfirmed)
+        );
+        assert_eq!(
+            go(Some(43), SendChatChannel::Party),
+            Ok(SendVerdict::NotConfirmed)
+        );
+        assert_eq!(
+            backend.calls.len(),
+            3,
+            "the refused send never reached the DLL"
+        );
+    }
+
+    #[test]
+    fn an_old_dll_without_a_call_id_is_not_confirmed_at_once() {
+        let started = Instant::now();
+        let mut backend = FakeBackend::default();
+        let got = flow(
+            true,
+            &ClientSpacing::default(),
+            &mut backend,
+            None,
+            SendChatChannel::World,
+            "hi",
+        );
+        assert_eq!(got, Ok(SendVerdict::NotConfirmed));
+        assert!(started.elapsed() < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn no_return_is_not_confirmed_after_the_wait() {
+        let mut backend = FakeBackend {
+            call_id: Some(RC),
+            ..Default::default()
+        };
+        let started = Instant::now();
+        let got = flow(
+            true,
+            &ClientSpacing::default(),
+            &mut backend,
+            None,
+            SendChatChannel::World,
+            "hi",
+        );
+        assert_eq!(got, Ok(SendVerdict::NotConfirmed));
+        let took = started.elapsed();
+        assert!(took >= Duration::from_millis(900) && took < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn errors_keep_their_sentences_and_register_nothing() {
+        let spacing = ClientSpacing::default();
+        let hub = VerdictHub::default();
+        let mut backend = FakeBackend {
+            call_id: Some(RC),
+            ..Default::default()
+        };
+        let off = send_chat_flow(
+            false,
+            &spacing,
+            &hub,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            "hi",
+        );
+        assert_eq!(off, Err(SendError::SettingOff.to_string()));
+        let empty = send_chat_flow(
+            true,
+            &spacing,
+            &hub,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            "  ",
+        );
+        assert_eq!(empty, Err("보낼 내용이 없습니다.".to_string()));
+        backend.result = Some(SendError::ClientGone);
+        let gone = send_chat_flow(
+            true,
+            &spacing,
+            &hub,
+            &mut backend,
+            None,
+            SendChatChannel::Say,
+            "hi",
+        );
+        assert_eq!(gone, Err(SendError::ClientGone.to_string()));
+        backend.result = None;
+        let go = |b: &mut FakeBackend| {
+            send_chat_flow(true, &spacing, &hub, b, None, SendChatChannel::Say, "hi")
+        };
+        // The Err above did not start the window; a success does, and the next is TooSoon.
+        let first = std::thread::scope(|s| {
+            let h = s.spawn(|| go(&mut backend));
+            std::thread::sleep(Duration::from_millis(100));
+            assert_eq!(hub.pending_len(), 1, "only the success registered");
+            h.join().unwrap()
+        });
+        assert_eq!(first, Ok(SendVerdict::NotConfirmed));
+    }
+
+    #[test]
+    fn the_spacing_guard_is_not_held_while_waiting_for_the_verdict() {
+        let spacing = ClientSpacing::default();
+        let hub = VerdictHub::default();
+        let backend = Arc::new(Mutex::new(FakeBackend {
+            call_id: Some(RC),
+            ..Default::default()
+        }));
+        std::thread::scope(|s| {
+            let first = s.spawn(|| {
+                let mut b = Shared(backend.clone());
+                send_chat_flow(
+                    true,
+                    &spacing,
+                    &hub,
+                    &mut b,
+                    None,
+                    SendChatChannel::Say,
+                    "hi",
+                )
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            let started = Instant::now();
+            let mut b = Shared(backend.clone());
+            let second = send_chat_flow(
+                true,
+                &spacing,
+                &hub,
+                &mut b,
+                None,
+                SendChatChannel::Say,
+                "hi",
+            );
+            assert!(second.unwrap_err().starts_with(&too_soon_sentence()));
+            assert!(started.elapsed() < Duration::from_millis(200));
+            assert_eq!(first.join().unwrap(), Ok(SendVerdict::NotConfirmed));
+        });
     }
 }

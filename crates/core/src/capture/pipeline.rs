@@ -4,6 +4,7 @@ use crate::game_clients::{ClientFact, Endpoint, Roster};
 use crate::protocol::framing::FrameKind;
 use crate::protocol::own_player::{own_player, OwnPlayer};
 use crate::protocol::parser::{history_pipeline, parsing_pipeline, Port5003Event};
+use crate::protocol::rpc_return::RpcReturn;
 use crate::text::normalize_emotes;
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
 use resonance_types::ChatMessage;
@@ -21,6 +22,42 @@ pub enum PipelineAction {
     /// record arrives and again whenever it changes; `None` when the connection is gone (closed,
     /// or idle past `CLIENT_IDLE_TIMEOUT`).
     OwnPlayer(Endpoint, Option<OwnPlayer>),
+}
+
+/// A Return the sniffer framed, with what the send verdict needs: the client end it came in
+/// on, the server's now when the connection's clock knows it, and when it was framed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReturnEvent {
+    pub local: Endpoint,
+    pub ret: RpcReturn,
+    /// The server's now in ms (from the connection's last live line or Return), when known.
+    pub fallback_server_ms: Option<u64>,
+    pub at: Instant,
+}
+
+/// What each connection's server clock says: the server's Unix time in ms at the moment a line
+/// or Return of that connection was framed.
+#[derive(Debug, Default)]
+struct ServerClock {
+    seen: HashMap<Endpoint, (u64, Instant)>,
+}
+
+impl ServerClock {
+    fn observe(&mut self, local: Endpoint, server_ms: u64, at: Instant) {
+        self.seen.insert(local, (server_ms, at));
+    }
+
+    /// The server's now at `at`: the last observation plus the time since; `None` when the
+    /// connection has none or the sum overflows.
+    fn server_now_ms(&self, local: Endpoint, at: Instant) -> Option<u64> {
+        let (ms, seen_at) = self.seen.get(&local)?;
+        let since = u64::try_from(at.saturating_duration_since(*seen_at).as_millis()).ok()?;
+        ms.checked_add(since)
+    }
+
+    fn forget(&mut self, local: Endpoint) {
+        self.seen.remove(&local);
+    }
 }
 
 /// Where a new message came from. The guild relay sends only live lines.
@@ -42,7 +79,14 @@ pub struct ChatPipeline {
     last_expire: Option<Instant>,
     /// Which connection is which character (read before the duplicate check).
     roster: Roster,
+    /// Each connection's server time, for a Return that carries none.
+    clock: ServerClock,
+    /// Returns framed and not yet taken (at most `MAX_RETURNS`, the oldest go first).
+    returns: Vec<ReturnEvent>,
 }
+
+/// Most queued Returns when nothing takes them (a tool that only replays).
+const MAX_RETURNS: usize = 256;
 
 impl ChatPipeline {
     pub fn new() -> Self {
@@ -52,6 +96,8 @@ impl ChatPipeline {
             keep_unknown_fields: false,
             last_expire: None,
             roster: Roster::new(),
+            clock: ServerClock::default(),
+            returns: Vec::new(),
         }
     }
 
@@ -78,6 +124,11 @@ impl ChatPipeline {
         self.roster.take_changed(Instant::now())
     }
 
+    /// The Returns framed since the last call, in arrival order.
+    pub fn take_returns(&mut self) -> Vec<ReturnEvent> {
+        std::mem::take(&mut self.returns)
+    }
+
     /// Drops the connections idle past `CLIENT_IDLE_TIMEOUT` at `now`; each is reported as
     /// `OwnPlayer(conn, None)`.
     pub fn expire(&mut self, now: Instant) -> Vec<PipelineAction> {
@@ -89,7 +140,10 @@ impl ChatPipeline {
         self.roster
             .take_gone()
             .into_iter()
-            .map(|conn| PipelineAction::OwnPlayer(conn, None))
+            .map(|conn| {
+                self.clock.forget(conn);
+                PipelineAction::OwnPlayer(conn, None)
+            })
             .collect()
     }
 
@@ -176,12 +230,33 @@ impl ChatPipeline {
                     }
                     continue;
                 }
-                // Nothing reads a Return yet.
-                FrameKind::Return(_) => continue,
+                FrameKind::Return(ret) => {
+                    if let Some(ms) = ret.server_time.and_then(|t| t.checked_mul(1000)) {
+                        self.clock.observe(local, ms, now);
+                    }
+                    if self.returns.len() >= MAX_RETURNS {
+                        self.returns.remove(0);
+                    }
+                    self.returns.push(ReturnEvent {
+                        local,
+                        ret,
+                        fallback_server_ms: self.clock.server_now_ms(local, now),
+                        at: now,
+                    });
+                    continue;
+                }
             };
             for event in events {
                 // Guard clause for the event loop using let-else
                 let Port5003Event::Chat(chat) = event;
+                if origin == Origin::Live {
+                    if let Some(ms) = Some(chat.timestamp)
+                        .filter(|t| *t != 0)
+                        .and_then(|t| t.checked_mul(1000))
+                    {
+                        self.clock.observe(local, ms, now);
+                    }
+                }
                 actions.extend(self.feed(chat, origin, Some(local), &is_blocked, &mut assign_pid));
             }
         }
@@ -1180,5 +1255,218 @@ mod tests {
         feed_to(&mut pipeline, &mut seqs, 51000, &own_record_frame(7, None));
         feed_to(&mut pipeline, &mut seqs, 51001, &own_record_frame(9, None));
         assert_eq!(pipeline.take_clients(), None);
+    }
+
+    // ---- Returns to the sender ----
+
+    const RT: u64 = 1_790_000_005;
+    const RC: u32 = 0x8000_0011;
+
+    /// `[len][0x0003][12-byte header: stub 0, call_id, error_id 0][root {1: {5: err, 4: cd}}]`.
+    fn return_frame(call_id: u32, err: u32, cd: u64, show_time: Option<u64>) -> Vec<u8> {
+        let mut reply = Vec::new();
+        if let Some(t) = show_time {
+            reply.extend(pb_msg(3, &pb_int(3, t)));
+        }
+        reply.extend(pb_int(4, cd));
+        reply.extend(pb_int(5, u64::from(err)));
+        let root = pb_msg(1, &reply);
+        let mut body = vec![0u8; 4];
+        body.extend(call_id.to_be_bytes());
+        body.extend([0u8; 4]);
+        body.extend(root);
+        frame_of(0x0003, 0, &body)
+    }
+
+    /// A live chat line carrying the server's timestamp (tag 24).
+    fn live_at(ts: u64, seq: u8) -> Vec<u8> {
+        let mut payload = chat_payload(seq, "hi");
+        payload.extend([0x18]);
+        payload.extend(varint(ts));
+        let mut root = vec![0x12, payload.len() as u8];
+        root.extend(payload);
+        let mut seg = vec![0x0A, root.len() as u8];
+        seg.extend(root);
+        frame(&seg)
+    }
+
+    fn history_at(ts: u64, seq: u8) -> Vec<u8> {
+        let mut payload = chat_payload(seq, "old");
+        payload.extend([0x18]);
+        payload.extend(varint(ts));
+        let mut fields = vec![0x18, 0x01, 0x2A, payload.len() as u8];
+        fields.extend(payload);
+        let mut root = vec![0x0A, fields.len() as u8];
+        root.extend(fields);
+        history_frame(&root)
+    }
+
+    /// Feeds one frame from client `port` (each client keeps its own sequence numbers).
+    fn feed_from(
+        pipeline: &mut ChatPipeline,
+        port: u16,
+        seq: &mut u32,
+        f: &[u8],
+    ) -> Vec<PipelineAction> {
+        let packet = tcp_from_5003_to([10, 0, 0, 5], port, *seq, f);
+        *seq += f.len() as u32;
+        pipeline.feed_network_packet(&packet, |_| false, || 1, || {})
+    }
+
+    #[test]
+    fn a_return_is_queued_not_emitted() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seq = 1;
+        let actions = feed_from(
+            &mut pipeline,
+            50000,
+            &mut seq,
+            &return_frame(RC, 5211, RT, None),
+        );
+        assert!(actions.is_empty());
+        let got = pipeline.take_returns();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].local, ep(50000));
+        assert_eq!(got[0].ret.call_id, RC);
+        assert_eq!(got[0].ret.err_code, 5211);
+        assert_eq!(got[0].ret.cd_end_time, RT);
+        assert!(pipeline.take_returns().is_empty());
+    }
+
+    #[test]
+    fn two_clients_returns_keep_their_own_local_in_order() {
+        let mut pipeline = ChatPipeline::new();
+        let (mut s1, mut s2) = (1, 1);
+        feed_from(&mut pipeline, 50000, &mut s1, &return_frame(RC, 0, 0, None));
+        feed_from(
+            &mut pipeline,
+            50001,
+            &mut s2,
+            &return_frame(RC + 1, 0, 0, None),
+        );
+        let got: Vec<_> = pipeline
+            .take_returns()
+            .iter()
+            .map(|e| (e.local, e.ret.call_id))
+            .collect();
+        assert_eq!(got, [(ep(50000), RC), (ep(50001), RC + 1)]);
+    }
+
+    #[test]
+    fn the_server_clock_counts_from_the_last_observation() {
+        let mut clock = ServerClock::default();
+        let t0 = Instant::now();
+        clock.observe(ep(1), RT * 1000, t0);
+        assert_eq!(
+            clock.server_now_ms(ep(1), t0 + Duration::from_secs(3)),
+            Some(RT * 1000 + 3000)
+        );
+        assert_eq!(clock.server_now_ms(ep(1), t0), Some(RT * 1000));
+        assert_eq!(
+            clock.server_now_ms(ep(2), t0 + Duration::from_secs(3)),
+            None
+        );
+        clock.observe(ep(1), RT * 1000 + 10_000, t0 + Duration::from_secs(1));
+        assert_eq!(
+            clock.server_now_ms(ep(1), t0 + Duration::from_secs(2)),
+            Some(RT * 1000 + 11_000)
+        );
+        clock.forget(ep(1));
+        assert_eq!(clock.server_now_ms(ep(1), t0), None);
+    }
+
+    #[test]
+    fn a_live_line_gives_the_next_return_its_fallback() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seq = 1;
+        feed_from(&mut pipeline, 50000, &mut seq, &live_at(RT, 1));
+        feed_from(
+            &mut pipeline,
+            50000,
+            &mut seq,
+            &return_frame(RC, 5211, RT + 3, None),
+        );
+        let v = pipeline.take_returns()[0]
+            .fallback_server_ms
+            .expect("a fallback");
+        assert!((RT * 1000..RT * 1000 + 1000).contains(&v), "{v}");
+    }
+
+    #[test]
+    fn without_a_live_line_or_with_only_history_there_is_no_fallback() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seq = 1;
+        feed_from(
+            &mut pipeline,
+            50000,
+            &mut seq,
+            &return_frame(RC, 0, 0, None),
+        );
+        feed_from(&mut pipeline, 50001, &mut seq, &history_at(RT, 1));
+        feed_from(
+            &mut pipeline,
+            50001,
+            &mut seq,
+            &return_frame(RC, 0, 0, None),
+        );
+        let got = pipeline.take_returns();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|e| e.fallback_server_ms.is_none()));
+    }
+
+    #[test]
+    fn a_return_with_a_server_time_sets_the_clock_and_a_closed_connection_loses_it() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seq = 1;
+        feed_from(
+            &mut pipeline,
+            50000,
+            &mut seq,
+            &return_frame(RC, 0, 0, Some(RT)),
+        );
+        feed_from(
+            &mut pipeline,
+            50000,
+            &mut seq,
+            &return_frame(RC + 1, 0, 0, None),
+        );
+        let got = pipeline.take_returns();
+        assert_eq!(got[0].fallback_server_ms, Some(RT * 1000));
+        let v = got[1]
+            .fallback_server_ms
+            .expect("clock from the first Return");
+        assert!((RT * 1000..RT * 1000 + 1000).contains(&v));
+
+        let fin = PacketBuilder::ipv4([192, 168, 1, 1], [10, 0, 0, 5], 64)
+            .tcp(5003, 50000, seq, 0)
+            .fin();
+        let mut bytes = Vec::new();
+        fin.write(&mut bytes, &[]).unwrap();
+        pipeline.feed_network_packet(&bytes, |_| false, || 1, || {});
+        feed_from(
+            &mut pipeline,
+            50000,
+            &mut seq,
+            &return_frame(RC + 2, 0, 0, None),
+        );
+        assert_eq!(pipeline.take_returns()[0].fallback_server_ms, None);
+    }
+
+    #[test]
+    fn a_return_does_not_disturb_the_chat_line_after_it() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seq = 1;
+        feed_from(
+            &mut pipeline,
+            50000,
+            &mut seq,
+            &return_frame(RC, 0, 0, None),
+        );
+        let actions = feed_from(&mut pipeline, 50000, &mut seq, &chat_segment(1, "Hello"));
+        let emits = actions
+            .iter()
+            .filter(|a| matches!(a, PipelineAction::EmitNewMessage(..)))
+            .count();
+        assert_eq!(emits, 1);
     }
 }

@@ -9,6 +9,7 @@ mod win;
 use crate::protocol::types::SystemLogLevel;
 use crate::services::downloader::{cancel_module, ensure_module, module_running};
 use crate::{inject_system_message, AppState};
+use resonance_core::capture::ReturnEvent;
 #[cfg(windows)]
 use resonance_core::game_clients::client_views;
 use resonance_core::game_clients::ClientFact;
@@ -18,8 +19,11 @@ use resonance_core::ingame_send::{pick_target, Resident};
 use resonance_core::ingame_send::{send_chat_flow, SendBackend, SendError};
 #[cfg(windows)]
 use resonance_core::ingame_sessions::Sessions;
+#[cfg(windows)]
+use resonance_core::send_hub::endpoints_of;
+use resonance_core::send_hub::VerdictHub;
 use resonance_core::send_text::ClientSpacing;
-use resonance_types::ipc::GameClient;
+use resonance_types::ipc::{GameClient, SendVerdict};
 use resonance_types::SendChatChannel;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +33,16 @@ use tauri::{AppHandle, State};
 /// Spacing between sends, one window per client. `std` mutexes: the flow keeps a client's
 /// guard across the send.
 static SPACING: LazyLock<ClientSpacing> = LazyLock::new(ClientSpacing::default);
+
+/// Where the sniffer's Returns meet `send_chat`: its wait for the verdict and the server's
+/// cooldown per client and channel.
+static VERDICT: LazyLock<VerdictHub> = LazyLock::new(VerdictHub::default);
+
+/// The sniffer hands over each Return it framed; one for a connection no send has used is
+/// ignored.
+pub(crate) fn on_return(ev: &ReturnEvent) {
+    VERDICT.on_return(ev);
+}
 
 /// The sniffer's latest roster: each connection and its character's nickname.
 static CLIENTS: parking_lot::Mutex<Vec<ClientFact>> = parking_lot::Mutex::new(Vec::new());
@@ -127,12 +141,13 @@ impl SendBackend for AppBackend {
         target: Option<u32>,
         channel: SendChatChannel,
         text: &str,
-    ) -> Result<(), SendError> {
+    ) -> Result<Option<u32>, SendError> {
         let clients = win::find_clients()?;
         let pid = pick_target(&clients, target)?;
         let mut sessions = SESSIONS.lock();
         // A session of a game that has closed goes first (closing its pipe).
         sessions.retain_live(&clients);
+        VERDICT.forget_clients(&clients);
         let session = sessions.get_or_connect(pid, || {
             let dll = module_path(&self.app).ok_or(SendError::DllMissing)?;
             if !dll.is_file() {
@@ -140,6 +155,8 @@ impl SendBackend for AppBackend {
             }
             win::Session::connect(pid, &mut RESIDENT.lock(), &dll)
         })?;
+        // Before the DLL is called: the Return can come before its reply is read.
+        VERDICT.learn_route(target, &endpoints_of(&win::tcp::chat_connections(), pid));
         let (result, dropped) = session.send(channel, text);
         if dropped {
             // Closing the pipe makes the DLL unload itself; the next send reconnects.
@@ -156,14 +173,14 @@ impl SendBackend for AppBackend {
         _target: Option<u32>,
         _channel: SendChatChannel,
         _text: &str,
-    ) -> Result<(), SendError> {
+    ) -> Result<Option<u32>, SendError> {
         Err(SendError::OpenFailed)
     }
 }
 
 /// Sends `text` to `channel` in the game `client` (a pid, never shown to the user;
-/// none is fine with one client). Blocks for seconds (a first send loads
-/// the module), so it runs off the main thread.
+/// none is fine with one client) and answers what the server said (waits up to one second
+/// for it). Blocks for seconds (a first send loads the module), so it runs off the main thread.
 #[tauri::command(async)]
 pub fn send_chat(
     app: AppHandle,
@@ -171,11 +188,12 @@ pub fn send_chat(
     channel: SendChatChannel,
     text: String,
     client: Option<u32>,
-) -> Result<(), String> {
+) -> Result<SendVerdict, String> {
     let setting_on = state.config.read().ingame_send;
     send_chat_flow(
         setting_on,
         &SPACING,
+        &VERDICT,
         &mut AppBackend { app },
         client,
         channel,
@@ -248,6 +266,7 @@ fn start(app: &AppHandle) {
         };
         let mut sessions = SESSIONS.lock();
         sessions.retain_live(&clients);
+        VERDICT.forget_clients(&clients);
         for pid in clients {
             if !WANTED.load(Ordering::SeqCst) {
                 break;

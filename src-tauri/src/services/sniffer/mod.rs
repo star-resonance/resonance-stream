@@ -267,6 +267,9 @@ pub fn start_sniffer_worker(app: AppHandle, activity: Arc<SnifferActivity>) -> S
             if let Some(facts) = pipeline.take_clients() {
                 crate::ingame::set_clients(facts);
             }
+            for ev in pipeline.take_returns() {
+                crate::ingame::on_return(&ev);
+            }
 
             // 2. Dispatch Side Effects
             if !actions.is_empty() {
