@@ -1,5 +1,5 @@
-//! The guild relay's worker: one thread that feeds `resonance_core::guild_relay::GuildRelay` with
-//! the settings, the player's guild and the captured lines, sends its requests to the broker and
+//! The guild relay's worker: one thread that feeds `resonance_core::guild_relay::GuildRelays` (one
+//! relay per game connection) with the settings, each connection's guild and the captured lines, sends its requests to the broker and
 //! tells the windows when its status changes (`guild-relay-state`).
 //!
 //! Nothing here logs a guild ID, a URL or a line's text.
@@ -7,7 +7,8 @@
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use parking_lot::Mutex;
 use resonance_core::capture::Origin;
-use resonance_core::guild_relay::{GuildRelay, RelayStatus, Reply};
+use resonance_core::game_clients::Endpoint;
+use resonance_core::guild_relay::{GuildRelays, RelayStatus, Reply};
 use resonance_core::protocol::own_player::OwnPlayer;
 use resonance_types::{ChatMessage, GuildRelayConfig, GuildRelayStatePayload};
 use std::sync::Arc;
@@ -25,8 +26,10 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug)]
 pub enum Event {
     Config(GuildRelayConfig),
-    Player(OwnPlayer),
-    Line(Box<ChatMessage>, Origin),
+    /// A connection's record; `None`: the connection is gone.
+    Player(Endpoint, Option<OwnPlayer>),
+    /// A line and the connection it came in on (`None`: not captured).
+    Line(Box<ChatMessage>, Origin, Option<Endpoint>),
 }
 
 /// The app's way to the worker (Tauri managed state). Sending never blocks: when the queue is
@@ -55,12 +58,12 @@ impl RelayHandle {
         self.send(Event::Config(config));
     }
 
-    pub fn own_player(&self, player: OwnPlayer) {
-        self.send(Event::Player(player));
+    pub fn own_player(&self, conn: Endpoint, player: Option<OwnPlayer>) {
+        self.send(Event::Player(conn, player));
     }
 
-    pub fn line(&self, chat: &ChatMessage, origin: Origin) {
-        self.send(Event::Line(Box::new(chat.clone()), origin));
+    pub fn line(&self, chat: &ChatMessage, origin: Origin, conn: Option<Endpoint>) {
+        self.send(Event::Line(Box::new(chat.clone()), origin, conn));
     }
 
     fn send(&self, event: Event) {
@@ -125,7 +128,7 @@ pub fn parse_retry_after(value: &str) -> Option<u64> {
 /// The app's worker: starts with the saved settings and tells every window about each status
 /// change. Without an HTTP client the handle still works, and its events go nowhere.
 pub fn start(app: &AppHandle, config: GuildRelayConfig) -> RelayHandle {
-    let relay = GuildRelay::new(config).with_local_http(crate::test_env::relay_local_http());
+    let relay = GuildRelays::new(config).with_local_http(crate::test_env::relay_local_http());
     match Http::new() {
         Ok(http) => {
             let app = app.clone();
@@ -144,7 +147,7 @@ pub fn start(app: &AppHandle, config: GuildRelayConfig) -> RelayHandle {
 /// Starts the worker thread. Each status change is kept in the handle, then passed to
 /// `on_status` with its seq. The thread ends when every `RelayHandle` is dropped.
 pub fn spawn(
-    relay: GuildRelay,
+    relay: GuildRelays,
     transport: impl Transport + Send + 'static,
     mut on_status: impl FnMut(GuildRelayStatePayload) + Send + 'static,
 ) -> RelayHandle {
@@ -170,7 +173,7 @@ pub fn spawn(
 /// The worker's loop: take the events, poll the relay, send what it asks for, report a status
 /// change. Returns when the channel is closed.
 fn run(
-    mut relay: GuildRelay,
+    mut relay: GuildRelays,
     rx: &Receiver<Event>,
     transport: &impl Transport,
     mut on_status: impl FnMut(RelayStatus),
@@ -180,7 +183,7 @@ fn run(
     let mut last = relay.status();
     on_status(last);
     // Reports the status when it changed since the last report.
-    let mut report = |relay: &GuildRelay| {
+    let mut report = |relay: &GuildRelays| {
         let status = relay.status();
         if status != last {
             last = status;
@@ -198,21 +201,21 @@ fn run(
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
-        if let Some(request) = relay.poll(now()) {
+        if let Some((conn, request)) = relay.poll(now()) {
             // Before the request, which may take up to TIMEOUT: Settings shows "Checking" meanwhile.
             report(&relay);
             let reply = transport.post(&request.url, &request.body);
-            relay.on_response(now(), request.generation, reply);
+            relay.on_response(conn, now(), request.generation, reply);
         }
         report(&relay);
     }
 }
 
-fn apply(relay: &mut GuildRelay, event: Event) {
+fn apply(relay: &mut GuildRelays, event: Event) {
     match event {
         Event::Config(config) => relay.set_config(config),
-        Event::Player(player) => relay.on_own_player(player),
-        Event::Line(chat, origin) => relay.on_line(&chat, origin),
+        Event::Player(conn, player) => relay.on_own_player(conn, player),
+        Event::Line(chat, origin, conn) => relay.on_line(conn, &chat, origin),
     }
 }
 
@@ -225,16 +228,35 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::Arc;
 
+    const CONN_A: Endpoint = Endpoint {
+        addr: [10, 0, 0, 5],
+        port: 51000,
+    };
+    const CONN_B: Endpoint = Endpoint {
+        addr: [10, 0, 0, 5],
+        port: 51001,
+    };
+
     /// Answers each request with the next reply in line and remembers what was sent.
     #[derive(Clone, Default)]
     struct Fake {
         sent: Arc<Mutex<Vec<(String, String)>>>,
         replies: Arc<Mutex<Vec<Reply>>>,
+        /// Answer by URL (enrolled / accepted) instead of in order: for a test where the order of
+        /// the requests depends on when the events arrive.
+        by_url: bool,
     }
 
     impl Transport for Fake {
         fn post(&self, url: &str, body: &str) -> Reply {
             self.sent.lock().push((url.to_string(), body.to_string()));
+            if self.by_url {
+                return if url.ends_with("/v1/enrolled") {
+                    ok(r#"{"enrolled":true}"#)
+                } else {
+                    ok(r#"{"accepted":1}"#)
+                };
+            }
             let mut replies = self.replies.lock();
             if replies.is_empty() {
                 Reply::Failed
@@ -279,18 +301,21 @@ mod tests {
         let worker = {
             let fake = fake.clone();
             std::thread::spawn(move || {
-                run(GuildRelay::new(config), &rx, &fake, move |s| {
+                run(GuildRelays::new(config), &rx, &fake, move |s| {
                     seen.lock().push(s)
                 })
             })
         };
         let handle = RelayHandle::with_sender(tx);
-        handle.own_player(OwnPlayer {
-            uid: 5,
-            guild_id: Some(77_001),
-        });
-        handle.line(&guild_line("안녕"), Origin::Live);
-        handle.line(&guild_line("old"), Origin::History);
+        handle.own_player(
+            CONN_A,
+            Some(OwnPlayer {
+                uid: 5,
+                guild_id: Some(77_001),
+            }),
+        );
+        handle.line(&guild_line("안녕"), Origin::Live, Some(CONN_A));
+        handle.line(&guild_line("old"), Origin::History, Some(CONN_A));
 
         let deadline = Instant::now() + Duration::from_secs(10);
         while fake.sent.lock().len() < 2 && Instant::now() < deadline {
@@ -315,11 +340,71 @@ mod tests {
     }
 
     #[test]
+    fn two_connections_in_two_guilds_enrol_once_each_and_relay_under_their_own_guild() {
+        let fake = Fake {
+            by_url: true,
+            ..Fake::default()
+        };
+        let (tx, rx) = bounded(QUEUE);
+        let config = GuildRelayConfig {
+            enabled: true,
+            broker_url: "https://broker.test".to_string(),
+        };
+        let worker = {
+            let fake = fake.clone();
+            std::thread::spawn(move || run(GuildRelays::new(config), &rx, &fake, |_| {}))
+        };
+        let handle = RelayHandle::with_sender(tx);
+        let record = |uid, guild| {
+            Some(OwnPlayer {
+                uid,
+                guild_id: Some(guild),
+            })
+        };
+        for _ in 0..3 {
+            handle.own_player(CONN_A, record(7, 100));
+            handle.own_player(CONN_B, record(9, 200));
+        }
+        handle.line(&guild_line("from b"), Origin::Live, Some(CONN_B));
+        handle.line(&guild_line("from a"), Origin::Live, Some(CONN_A));
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while fake.sent.lock().len() < 4 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(handle);
+        worker.join().unwrap();
+
+        let sent = fake.sent.lock().clone();
+        assert_eq!(sent.len(), 4, "{sent:?}");
+        let enrolled: Vec<_> = sent
+            .iter()
+            .filter(|(u, _)| u.ends_with("/v1/enrolled"))
+            .collect();
+        assert_eq!(enrolled.len(), 2, "one enrollment per guild: {sent:?}");
+        let lines_for = |guild: &str, text: &str| {
+            sent.iter().any(|(u, b)| {
+                u.ends_with("/v1/lines")
+                    && b.contains(&format!("\"guildId\":{guild}"))
+                    && b.contains(text)
+            })
+        };
+        assert!(
+            lines_for("100", "from a") && !lines_for("100", "from b"),
+            "{sent:?}"
+        );
+        assert!(
+            lines_for("200", "from b") && !lines_for("200", "from a"),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
     fn the_handle_keeps_the_last_status_and_its_seq_for_a_window_that_opens_late() {
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let seen = emitted.clone();
         let handle = spawn(
-            GuildRelay::new(GuildRelayConfig {
+            GuildRelays::new(GuildRelayConfig {
                 enabled: true,
                 broker_url: "https://broker.test".to_string(),
             }),
@@ -352,7 +437,7 @@ mod tests {
         let (tx, rx) = bounded(QUEUE);
         let worker = std::thread::spawn(move || {
             run(
-                GuildRelay::new(GuildRelayConfig::default()),
+                GuildRelays::new(GuildRelayConfig::default()),
                 &rx,
                 &Fake::default(),
                 |_| {},
@@ -366,8 +451,8 @@ mod tests {
     fn a_full_queue_drops_events_instead_of_blocking_the_capture() {
         let (tx, _rx) = bounded(1);
         let handle = RelayHandle::with_sender(tx);
-        handle.line(&guild_line("a"), Origin::Live);
-        handle.line(&guild_line("b"), Origin::Live); // would block forever if it waited
+        handle.line(&guild_line("a"), Origin::Live, None);
+        handle.line(&guild_line("b"), Origin::Live, None); // would block forever if it waited
     }
 
     #[test]

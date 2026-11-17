@@ -854,7 +854,7 @@ fn shown(text: &str) -> usize {
     replay(text)
         .iter()
         .flat_map(|packet| pipeline.feed_network_packet(packet, |_| false, || 1, || {}))
-        .filter(|action| matches!(action, PipelineAction::EmitNewMessage(_, _)))
+        .filter(|action| matches!(action, PipelineAction::EmitNewMessage(..)))
         .count()
 }
 
@@ -1190,8 +1190,8 @@ mod tests {
                 )
             })
             .filter_map(|action| match action {
-                PipelineAction::EmitNewMessage(chat, _) => Some(chat),
-                PipelineAction::UpdateBlockedMessage(_) | PipelineAction::OwnPlayer(_) => None,
+                PipelineAction::EmitNewMessage(chat, _, _) => Some(chat),
+                PipelineAction::UpdateBlockedMessage(_) | PipelineAction::OwnPlayer(..) => None,
             })
             .collect()
     }
