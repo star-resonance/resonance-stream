@@ -2,6 +2,12 @@
 //! removes the listener; `Listener` keeps it and calls it on a restart and on cleanup, so no
 //! closure is leaked with `forget()`.
 
+use crate::tauri_bridge::listen;
+use leptos::prelude::*;
+use leptos::task::spawn_local;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
+
 /// The pure state of one listener: at most one live (or pending) registration, a generation that
 /// tells a stale registration from the current one, and whether the owner is gone. `T` is what
 /// must be released (dropping it unlistens).
@@ -47,6 +53,77 @@ impl<T> Slot<T> {
         self.closed = true;
         self.generation += 1;
         self.live.take()
+    }
+}
+
+/// One registered listener: the function that removes it, and the handler it calls. Dropping it
+/// unlistens.
+struct Active {
+    unlisten: Option<js_sys::Function>,
+    closure: Option<Closure<dyn FnMut(JsValue)>>,
+}
+
+impl Active {
+    fn new(handle: JsValue, closure: Closure<dyn FnMut(JsValue)>) -> Self {
+        Self {
+            unlisten: handle.dyn_into::<js_sys::Function>().ok(),
+            closure: Some(closure),
+        }
+    }
+}
+
+impl Drop for Active {
+    fn drop(&mut self) {
+        match &self.unlisten {
+            Some(unlisten) => {
+                let _ = unlisten.call0(&JsValue::UNDEFINED);
+            }
+            // `listen` gave no function to remove it with: JS may still hold the handler, which
+            // must stay callable (the old behaviour for this case).
+            None => {
+                if let Some(closure) = self.closure.take() {
+                    closure.forget();
+                }
+            }
+        }
+    }
+}
+
+/// One backend event listener owned by the component (or function) that made it. Make it with
+/// `Listener::new()` where an owner is current; `start` registers (replacing the previous
+/// registration); cleanup of the owner removes it, even when `listen` resolves after that.
+#[derive(Clone, Copy)]
+pub struct Listener(StoredValue<Slot<Active>, LocalStorage>);
+
+impl Listener {
+    pub fn new() -> Self {
+        let slot = StoredValue::new_local(Slot::<Active>::default());
+        on_cleanup(move || {
+            // Dropped outside the slot's borrow: `Active::drop` calls into JS.
+            let live = slot.try_update_value(|s| s.close()).flatten();
+            drop(live);
+        });
+        Self(slot)
+    }
+
+    /// Listens to `event` with `handler`, removing the listener this one started before. Does
+    /// nothing once the owner is gone.
+    pub fn start(self, event: &'static str, handler: impl FnMut(JsValue) + 'static) {
+        let Some(Some((token, old))) = self.0.try_update_value(|s| s.begin()) else {
+            return;
+        };
+        drop(old);
+        let closure = Closure::wrap(Box::new(handler) as Box<dyn FnMut(JsValue)>);
+        let slot = self.0;
+        spawn_local(async move {
+            let handle = listen(event, &closure).await;
+            let active = Active::new(handle, closure);
+            // A disposed slot or a stale token: the value comes back (or, with the slot gone,
+            // is dropped with the closure), and its `Drop` unlistens.
+            if let Some(Some(stale)) = slot.try_update_value(|s| s.attach(token, active)) {
+                drop(stale);
+            }
+        });
     }
 }
 
