@@ -242,11 +242,21 @@ mod tests {
     struct Fake {
         sent: Arc<Mutex<Vec<(String, String)>>>,
         replies: Arc<Mutex<Vec<Reply>>>,
+        /// Answer by URL (enrolled / accepted) instead of in order: for a test where the order of
+        /// the requests depends on when the events arrive.
+        by_url: bool,
     }
 
     impl Transport for Fake {
         fn post(&self, url: &str, body: &str) -> Reply {
             self.sent.lock().push((url.to_string(), body.to_string()));
+            if self.by_url {
+                return if url.ends_with("/v1/enrolled") {
+                    ok(r#"{"enrolled":true}"#)
+                } else {
+                    ok(r#"{"accepted":1}"#)
+                };
+            }
             let mut replies = self.replies.lock();
             if replies.is_empty() {
                 Reply::Failed
@@ -331,13 +341,10 @@ mod tests {
 
     #[test]
     fn two_connections_in_two_guilds_enrol_once_each_and_relay_under_their_own_guild() {
-        let fake = Fake::default();
-        fake.replies.lock().extend([
-            ok(r#"{"enrolled":true}"#),
-            ok(r#"{"enrolled":true}"#),
-            ok(r#"{"accepted":1}"#),
-            ok(r#"{"accepted":1}"#),
-        ]);
+        let fake = Fake {
+            by_url: true,
+            ..Fake::default()
+        };
         let (tx, rx) = bounded(QUEUE);
         let config = GuildRelayConfig {
             enabled: true,
