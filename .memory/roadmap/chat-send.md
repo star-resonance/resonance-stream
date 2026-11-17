@@ -48,6 +48,18 @@ F-R6c #425 (agent rules); F-R2 #422 (control characters); F-TAB #423 (the picker
 **Done when:** on Windows a message reaches the game's chat (Kade's step; CI cannot run the game). **Met:** Kade
 confirmed in game that sending works on v0.6.5-rc.4, and on v0.6.5-rc.5 that the app's own DLL download works.
 
+## Several game clients (DS-0007, DS-0009)
+
+Done: F-MC-1 #414 (one in-game session per pid, an optional send target; with several clients and no target the
+composer's answer is a Korean "choose a client" sentence); F-MC-2 #424 (`game_clients`: each client named by its
+character, "이름 확인 중" while unknown).
+Open: F-MC-3, the composer's nickname picker (shown only with 2 or more clients, never a pid or ip:port; duplicate
+names get " (1)", " (2)" in pid order; each client has its own 1500 ms spacing); F-GR, the guild relay with one
+`own_player` per connection.
+
+**Done when:** with two clients the composer picks the character by nickname and the guild relay does not flap
+(each Kade's check on Windows).
+
 ## M2. Server verdict
 
 Hook `ZRpcImpl.SendBytes` and correlate `call_id` with the Return; the composer shows sent / too frequent /
