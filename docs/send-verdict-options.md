@@ -454,3 +454,55 @@ per-client, per-channel map in `crates/core` beside the spacing, and a timer in 
 `Recommended: B`, because with the verdict read in the app nothing in the pipe needs to change, and
 an unchanged protocol is the cheapest one to keep compatible; if Kade picks section 1 A, take C over
 A (it keeps an old resident DLL usable for sending, which A does not).
+
+## 5. Several clients
+
+### Facts
+
+- **Each game process has its own pipe, session and DLL** (F-MC-1): the pipe is named by the game's
+  pid (`pipe_name`, `ingame_pipe.rs:25-27`), and `send_chat`'s `target` is that pid, `None` only
+  with one client (`SendBackend::send`, `ingame_send.rs:479-487`; `pick_target`, `:97`).
+- **Each DLL seeds its own `call_id` counter** (`CallIds::new`, `send.rs:79-86`), so two DLLs can mint
+  the same id. With random 31-bit seeds the chance that two clients' pending ids meet is tiny, but
+  not zero (estimated).
+- **A Return belongs to the connection it arrived on.** The sniffer keys streams by server and
+  client address and port (`StreamKey`, `stream_tracker.rs:5-8`); the roster names a connection's
+  local end (`Endpoint`, `game_clients.rs:21-24`, `Roster` at `:40`); `chat_connections()` gives each
+  pid's local endpoints on the chat port (`src-tauri/src/ingame/win/tcp.rs:83-86`).
+- **Spacing per client is coming** (F-MC-3, tasks#39, DS-0009 item 2): one 1500 ms window per
+  `target`, and a `client` field on `SendChat`; this doc takes both as given.
+- **`own_player` is one slot today** and flaps between clients; F-GR (tasks#40) gives each
+  connection its own. The verdict does not use it.
+- **The cooldown is the server's, per channel** (`ChatSendResult.cs:8-10`, reported), and the server
+  knows the character by its connection, so it is per character and per channel (derived).
+
+### Options
+
+- **A. Key by `(local endpoint, call_id)`; the endpoint comes from the pid at send time.** When
+  `send_chat` sends to pid `p`, the app reads `chat_connections()` once (a Win32 table read it
+  already makes to list clients) and registers the pending send under `p`'s local endpoint on the
+  chat port. A Return is looked up by the `StreamKey`'s client half and its `call_id`. The matcher
+  in `crates/core` stays pure (no Win32): it sees endpoints and ids only. Two DLLs' equal ids on two
+  connections never cross. The cooldown map is keyed `(pid, channel)`.
+- **B. The DLL reports the verdict on its own pipe.** The pid is known by construction, no mapping.
+  Needs section 1 A or C (a receive hook in every game process).
+- **C. One global verdict, last one wins.** Not recommended: with two clients sending close together
+  a Return for one can be shown as the other's verdict, a wrong "sent" or a wrong cooldown on the
+  other character's channel.
+
+**Behaviour around it (all options):**
+
+- **The client picker changes while a send waits for its verdict.** With section 3's delivery A the
+  verdict is the command's own result and belongs to the client it was sent to; the composer shows
+  it, and the cooldown it starts applies to that client only. Choosing the other client shows that
+  client's own cooldown state (or none).
+- **A client's game closes with a send pending.** Its connection's Return never comes; the pending
+  entry ends as "no verdict" after `VERDICT_WAIT`, and its cooldowns are dropped when the pid leaves
+  `game_clients` (the stream itself is forgotten after `STREAM_IDLE_TIMEOUT`, 60 s,
+  `stream_tracker.rs:13`).
+- **The client reconnects** (new local port): the pending entry under the old endpoint expires as
+  "no verdict"; the next send reads `chat_connections()` again.
+
+`Recommended: A`, because the connection is what a Return truly belongs to, the endpoint is known
+once per send from a table the app already reads, and the matcher stays a pure function tested on
+any OS; it is the only option that works with section 1 B.
