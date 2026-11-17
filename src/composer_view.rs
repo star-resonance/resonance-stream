@@ -84,6 +84,7 @@ pub fn send_request(channel: SendChatChannel, draft: &str) -> SendChat {
     SendChat {
         channel,
         text: draft.to_string(),
+        client: None,
     }
 }
 

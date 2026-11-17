@@ -15,6 +15,10 @@ use crate::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// The sentence for a chosen client that is gone: the backend's `ClientGone` text and the
+/// ui's prompt are this one line, so they cannot drift.
+pub const CLIENT_GONE_LINE: &str = "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.";
+
 /// A connected game client as the ui lists it. `target` goes back unchanged as `send_chat`'s
 /// `client`; the ui never shows or interprets it. `name` is the character's nickname, or a
 /// placeholder while it is not known: never a pid, an address or an exe name.
@@ -71,7 +75,7 @@ commands! {
     UnblockUser = "unblock_user_command" { uid: u64 } -> ();
 
     // Chat sending (through the in-game module). The error is one Korean sentence.
-    SendChat = "send_chat" { channel: SendChatChannel, text: String } -> ();
+    SendChat = "send_chat" { channel: SendChatChannel, text: String, client: Option<u32> } -> ();
     GameClients = "game_clients" {} -> Vec<GameClient>;
 
     // Translator.

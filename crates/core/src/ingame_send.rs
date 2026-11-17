@@ -214,7 +214,7 @@ impl fmt::Display for SendError {
             SendError::Game(GameError::Several) => "게임이 둘 이상 실행 중입니다.",
             SendError::Game(GameError::Is32Bit) => "32비트 게임은 지원하지 않습니다.",
             SendError::ChooseClient => "게임이 둘 이상 연결되어 있습니다. 보낼 게임을 골라 주세요.",
-            SendError::ClientGone => "선택한 게임을 찾을 수 없습니다. 다시 골라 주세요.",
+            SendError::ClientGone => resonance_types::ipc::CLIENT_GONE_LINE,
             SendError::NoPin => "이 앱에는 게임 내 전송 모듈이 들어 있지 않습니다.",
             SendError::DllDownloading => {
                 "게임 내 전송 모듈을 내려받는 중입니다. 끝나면 보낼 수 있습니다."
