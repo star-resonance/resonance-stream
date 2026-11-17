@@ -543,9 +543,9 @@ mod tests {
             target: Option<u32>,
             _channel: SendChatChannel,
             _text: &str,
-        ) -> Result<(), SendError> {
+        ) -> Result<Option<u32>, SendError> {
             self.0.push(target);
-            Ok(())
+            Ok(None)
         }
     }
 
@@ -560,6 +560,7 @@ mod tests {
         send_chat_flow(
             true,
             &spacing,
+            &crate::send_hub::VerdictHub::default(),
             &mut fake,
             Some(target),
             SendChatChannel::World,
