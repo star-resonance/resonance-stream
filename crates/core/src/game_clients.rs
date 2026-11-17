@@ -338,6 +338,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn equal_nicknames_get_ordinals_in_order() {
+        let v =
+            |a: &[&str]| number_duplicates(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(v(&["Aria", "Bob", "Aria"]), ["Aria (1)", "Bob", "Aria (2)"]);
+        assert_eq!(
+            v(&["Aria", "Aria", "Aria"]),
+            ["Aria (1)", "Aria (2)", "Aria (3)"]
+        );
+        assert_eq!(v(&["Aria", "aria"]), ["Aria", "aria"]);
+        assert_eq!(v(&["Aria", "Aria2"]), ["Aria", "Aria2"]);
+        assert!(v(&[]).is_empty());
+        assert_eq!(v(&["Aria"]), ["Aria"]);
+    }
+
+    #[test]
+    fn client_views_numbers_duplicate_nicknames_by_pid() {
+        let named = |pid, name: &str| GameClient {
+            target: pid,
+            name: name.to_string(),
+        };
+        let rows = [(7, A), (42, B)];
+        let both = [fact(A, Some("Aria")), fact(B, Some("Aria"))];
+        assert_eq!(
+            client_views(&[42, 7], &rows, &both),
+            [named(7, "Aria (1)"), named(42, "Aria (2)")]
+        );
+        assert_eq!(
+            client_views(
+                &[7, 42],
+                &rows,
+                &[fact(A, Some("Aria")), fact(B, Some("Bob"))]
+            ),
+            [named(7, "Aria"), named(42, "Bob")]
+        );
+        assert_eq!(
+            client_views(&[7, 42, 50], &rows, &both),
+            [
+                named(7, "Aria (1)"),
+                named(42, "Aria (2)"),
+                named(50, UNKNOWN_NAME)
+            ]
+        );
+        assert_eq!(
+            client_views(&[7, 42, 50], &rows[..1], &both[..1]),
+            [
+                named(7, "Aria"),
+                named(42, "이름 확인 중 1"),
+                named(50, "이름 확인 중 2")
+            ]
+        );
+        assert_eq!(
+            client_views(
+                &[7, 42],
+                &rows,
+                &[fact(A, Some("  Aria ")), fact(B, Some("Aria"))]
+            ),
+            [named(7, "Aria (1)"), named(42, "Aria (2)")]
+        );
+    }
+
     // 9
     #[test]
     fn a_name_never_shows_a_technical_id() {

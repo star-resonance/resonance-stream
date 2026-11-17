@@ -105,6 +105,63 @@ mod tests {
     }
 
     #[test]
+    fn a_clients_window_never_delays_another_client() {
+        let spacing = ClientSpacing::default();
+        let (a, b) = (Some(7), Some(42));
+        let t0 = Instant::now();
+        spacing.record_success(a, t0);
+        assert_eq!(
+            spacing.allow(a, t0 + ms(300)),
+            Err(SendTextError::TooSoon { wait_ms: 1200 })
+        );
+        assert_eq!(spacing.allow(b, t0 + ms(300)), Ok(()));
+        assert_eq!(spacing.allow(None, t0 + ms(300)), Ok(()));
+        assert_eq!(spacing.allow(a, t0 + ms(1500)), Ok(()));
+    }
+
+    #[test]
+    fn one_key_keeps_the_single_window_rules() {
+        let spacing = ClientSpacing::default();
+        let t0 = Instant::now();
+        assert_eq!(spacing.allow(None, t0), Ok(()));
+        assert_eq!(spacing.allow(None, t0), Ok(()));
+        spacing.record_success(None, t0);
+        assert_eq!(
+            spacing.allow(None, t0 + ms(1499)),
+            Err(SendTextError::TooSoon { wait_ms: 1 })
+        );
+        assert_eq!(
+            spacing.allow(None, t0 + ms(300)),
+            Err(SendTextError::TooSoon { wait_ms: 1200 })
+        );
+        spacing.record_success(None, t0 + ms(2000));
+        assert_eq!(
+            spacing.allow(None, t0 + ms(3000)),
+            Err(SendTextError::TooSoon { wait_ms: 500 })
+        );
+    }
+
+    #[test]
+    fn an_idle_slot_is_dropped_when_another_is_fetched() {
+        let spacing = ClientSpacing::default();
+        let t0 = Instant::now();
+        spacing.record_success(Some(7), t0);
+        assert_eq!(spacing.len(), 1);
+        let _b = spacing.slot(Some(42), t0 + ms(2000));
+        assert_eq!(spacing.len(), 1);
+    }
+
+    #[test]
+    fn a_slot_held_by_a_running_send_is_kept() {
+        let spacing = ClientSpacing::default();
+        let t0 = Instant::now();
+        let a = spacing.slot(Some(7), t0);
+        let _b = spacing.slot(Some(42), t0 + ms(2000));
+        assert_eq!(spacing.len(), 2);
+        drop(a);
+    }
+
+    #[test]
     fn spacing_is_1500_ms() {
         assert_eq!(SEND_SPACING, Duration::from_millis(1500));
     }

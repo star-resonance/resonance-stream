@@ -793,6 +793,7 @@ mod tests {
 
     // ---- flows -------------------------------------------------------------
 
+    use crate::send_text::ClientSpacing;
     use resonance_types::ingame_pipe::decode_request;
     use std::collections::VecDeque;
     use std::sync::Arc;
@@ -1304,6 +1305,51 @@ mod tests {
             .chars()
             .take(8)
             .collect()
+    }
+
+    #[test]
+    fn the_flow_spaces_each_client_on_its_own() {
+        let spacing = ClientSpacing::default();
+        let mut backend = FakeBackend::default();
+        let mut go = |backend: &mut FakeBackend, t| {
+            send_chat_flow(true, &spacing, backend, t, SendChatChannel::Say, "hi")
+        };
+        assert_eq!(go(&mut backend, Some(7)), Ok(()));
+        assert_eq!(go(&mut backend, Some(42)), Ok(()));
+        assert_eq!(backend.targets, [Some(7), Some(42)]);
+        let got = go(&mut backend, Some(7)).unwrap_err();
+        assert!(got.starts_with(&too_soon_sentence()));
+        assert_eq!(backend.targets.len(), 2);
+
+        let spacing_none = ClientSpacing::default();
+        let mut backend = FakeBackend::default();
+        let mut go = |t| {
+            send_chat_flow(
+                true,
+                &spacing_none,
+                &mut backend,
+                t,
+                SendChatChannel::Say,
+                "hi",
+            )
+        };
+        assert_eq!(go(None), Ok(()));
+        assert!(go(None).is_err());
+    }
+
+    #[test]
+    fn a_failed_send_to_a_client_does_not_start_its_window() {
+        let spacing = ClientSpacing::default();
+        let mut backend = FakeBackend {
+            result: Some(SendError::ClientGone),
+            ..Default::default()
+        };
+        let go = |b: &mut FakeBackend| {
+            send_chat_flow(true, &spacing, b, Some(7), SendChatChannel::Say, "hi")
+        };
+        assert!(go(&mut backend).is_err());
+        backend.result = None;
+        assert_eq!(go(&mut backend), Ok(()));
     }
 
     #[test]
