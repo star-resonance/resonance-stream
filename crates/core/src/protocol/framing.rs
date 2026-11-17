@@ -274,6 +274,24 @@ mod tests {
         out
     }
 
+    /// `frame_of` with chosen inner-header bytes.
+    fn frame_with_header(ty: u16, header: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut out = frame_of(ty, payload);
+        out[PREFIX_LEN..PREFIX_LEN + header.len()].copy_from_slice(header);
+        out
+    }
+
+    /// What `frame_of`'s 0xEE header and a `{ 4: 5 }`-style reply read as.
+    fn eee_return(cd_end_time: u64, err_code: u32) -> RpcReturn {
+        RpcReturn {
+            call_id: 0xEEEE_EEEE,
+            err_code,
+            cd_end_time,
+            error_id: 0xEEEE_EEEE,
+            server_time: None,
+        }
+    }
+
     fn live(body: &[u8]) -> Vec<u8> {
         frame_of(TYPE_CHAT, &root(body))
     }
@@ -324,13 +342,18 @@ mod tests {
     fn frames_that_are_not_read_are_skipped_by_their_length() {
         let stream = [
             keepalive(),
-            frame_of(TYPE_OWN_LINE, &root(b"echo")),
+            frame_of(TYPE_OWN_LINE, &root(&[0x20, 0x05])),
             live(b"one"),
             keepalive(),
         ]
         .concat();
         let got = FrameAssembler::new().push(&stream);
-        assert_eq!(roots(&got), [&root(b"one")[..]]);
+        let kinds: Vec<FrameKind> = got.iter().map(|f| f.kind).collect();
+        assert_eq!(
+            kinds,
+            [FrameKind::Return(eee_return(5, 0)), FrameKind::Live]
+        );
+        assert_eq!(roots(&got)[1], &root(b"one")[..]);
     }
 
     #[test]
@@ -373,11 +396,72 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_0x0003_echo_stays_skipped() {
+    fn a_plain_0x0003_echo_is_a_return_not_chat_or_history() {
         // `{ 3: chat, 4: server time }`: no field 5, so not history.
         let echo = root(&[0x1A, 0x02, 0x08, 0x01, 0x20, 0x05]);
         let got = FrameAssembler::new().push(&frame_of(TYPE_OWN_LINE, &echo));
-        assert!(got.is_empty());
+        assert!(!got
+            .iter()
+            .any(|f| matches!(f.kind, FrameKind::Live | FrameKind::History)));
+        assert_eq!(
+            got,
+            vec![Frame {
+                kind: FrameKind::Return(eee_return(5, 0)),
+                root: echo
+            }]
+        );
+    }
+
+    #[test]
+    fn a_varint_field_5_is_a_return_not_history() {
+        let refused = root(&[0x28, 0xDB, 0x28]); // { 5: 5211 }
+        let got = FrameAssembler::new().push(&frame_of(TYPE_OWN_LINE, &refused));
+        assert_eq!(
+            got,
+            vec![Frame {
+                kind: FrameKind::Return(eee_return(0, 5211)),
+                root: refused
+            }]
+        );
+    }
+
+    #[test]
+    fn the_return_reads_its_call_id_from_the_inner_header() {
+        let header = [0, 0, 0, 1, 0x80, 0, 0, 0x11, 0, 0, 0, 2];
+        let refused = root(&[0x20, 0x05, 0x28, 0xDB, 0x28]);
+        let got = FrameAssembler::new().push(&frame_with_header(TYPE_OWN_LINE, &header, &refused));
+        let want = RpcReturn {
+            call_id: 0x8000_0011,
+            err_code: 5211,
+            cd_end_time: 5,
+            error_id: 2,
+            server_time: None,
+        };
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, FrameKind::Return(want));
+    }
+
+    #[test]
+    fn the_other_types_keep_their_kind() {
+        let got = FrameAssembler::new().push(&history(b"h"));
+        assert_eq!(got[0].kind, FrameKind::History);
+        let got = FrameAssembler::new().push(&live(b"l"));
+        assert_eq!(got[0].kind, FrameKind::Live);
+        let got = FrameAssembler::new().push(&state(b"s"));
+        assert_eq!(got[0].kind, FrameKind::State);
+    }
+
+    #[test]
+    fn a_return_cut_anywhere_is_joined() {
+        let refused = root(&[0x20, 0x05, 0x28, 0xDB, 0x28]);
+        let whole = frame_of(TYPE_OWN_LINE, &refused);
+        for cut in 1..whole.len() {
+            let mut fa = FrameAssembler::new();
+            let mut got = fa.push(&whole[..cut]);
+            got.extend(fa.push(&whole[cut..]));
+            assert_eq!(got.len(), 1, "cut at {cut}");
+            assert_eq!(got[0].kind, FrameKind::Return(eee_return(5, 5211)));
+        }
     }
 
     #[test]

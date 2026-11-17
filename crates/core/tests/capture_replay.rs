@@ -10,6 +10,7 @@
 
 use resonance_core::capture::{replay, ChatPipeline, PipelineAction};
 use resonance_core::protocol::framing::{Frame, FrameAssembler, FrameKind};
+use resonance_core::protocol::rpc_return::RpcReturn;
 use resonance_types::ChatMessage;
 use std::fs;
 
@@ -116,6 +117,39 @@ fn the_frames_the_app_reads_are_pinned() {
         .map(|f| format!("{:?} {} {:016x}\n", f.kind, f.root.len(), fnv1a(&f.root)))
         .collect();
     insta::assert_snapshot!(table);
+}
+
+/// The 33 plain `0x0003` frames of the corpus are Returns, all blanked by the sanitiser.
+#[test]
+fn the_corpus_holds_33_blanked_returns() {
+    let frames = corpus_frames();
+    let blank = RpcReturn {
+        call_id: 0,
+        err_code: 0,
+        cd_end_time: 0,
+        error_id: 0,
+        server_time: None,
+    };
+    let returns: Vec<&Frame> = frames
+        .iter()
+        .filter(|f| matches!(f.kind, FrameKind::Return(_)))
+        .collect();
+    assert_eq!(returns.len(), 33);
+    for f in &returns {
+        assert_eq!(f.kind, FrameKind::Return(blank));
+    }
+    // A 20-byte frame is a 12-byte header and the root `0A 00`.
+    assert_eq!(returns.iter().filter(|f| f.root.len() == 2).count(), 3);
+    let pinned = frames
+        .iter()
+        .filter(|f| {
+            matches!(
+                f.kind,
+                FrameKind::Live | FrameKind::History | FrameKind::State
+            )
+        })
+        .count();
+    assert_eq!(frames.len(), pinned + 33);
 }
 
 #[test]
