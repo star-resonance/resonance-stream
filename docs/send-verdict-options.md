@@ -203,7 +203,7 @@ Not verified.
   (`…/Game/PandaWireTap.cs:9-17`, `:33-35`; `…/Game/PandaChatProbe.History.cs:23`). Reported.
 - **Login, chat and social traffic go over TCP; scene and combat over UDP/KCP**
   (`…/Game/PandaWireTap.Patching.cs:34-37`, reported). R0 noted that World can run over UDP/KCP
-  (`docs/ingame-design.md:116`, `:708-713`). Our DLL sends only over TCP: a UDP connection is
+  (`docs/ingame-design.md:121-123`, `:710-713`). Our DLL sends only over TCP: a UDP connection is
   refused with `no_client` before anything is sent (R0 section 7). So **every send the DLL makes is
   answered on a TCP connection to port 5003**, which the sniffer already reads (derived).
 - **The sniffer already sees every Return on that connection**, frames it (`0x0003`, 12-byte inner
@@ -259,3 +259,79 @@ verdict needs no new hook, no D-35 change and no code on the game's network thre
 reply off the wire is the long-term option as well, since a game patch that renames methods does
 not touch it. The roadmap's "hook `ZRpcImpl.SendBytes`" (tasks#2) was written before this was known:
 `SendBytes` would not see the DLL's own sends at all.
+
+## 2. Matching a send to its Return
+
+### Facts
+
+- **The key is `call_id`.** A Return carries no service and no method, so `call_id` is the only key
+  (Stellar's layout, section "What the server answers"). The DLL mints ours in the upper half of
+  `u32` from a random seed (`crates/ingame/src/send.rs:64-102`), so the game's own ids, which the
+  DLL's comment says live in the lower half (`send.rs:64-65`), do not collide with them (reported
+  by that comment; the game's ids were never observed: NOT VERIFIED).
+- **Which bytes hold it.** In Stellar's layout the `call_id` is bytes 4-7 of the 12-byte inner header
+  of a `0x0003` frame (frame bytes 10-13), after `stub_id` and before `error_id` (reported). The
+  repository's only fixture cannot confirm it: `crates/core/tests/fixtures/oct03.sanitised.capture.log`
+  holds 33 plain `0x0003` frames (counted by reassembling its streams by TCP sequence), but the
+  sanitiser blanks every inner header and the body of every frame the app does not read
+  (`crates/core/src/capture/sanitise.rs:17-18`), so their `call_id`s and roots are all zeros. Whether
+  the player sent chat in that capture cannot be told. NOT VERIFIED until a raw capture is read.
+- **Timing.** The DLL answers `Reply::Send` after `Send` returns on the game's main thread
+  (`pump.rs:44-56`); the server's Return comes one round trip after the bytes leave. The two race:
+  the sniffer can frame the Return **before** the app has read `Reply::Send` from the pipe (derived;
+  both arrive within milliseconds of each other, estimated). A matcher that drops a Return it does
+  not yet expect loses the verdict.
+- **Stellar's map** is `call_id -> channel`, at most 64 pending, oldest evicted, recorded before the
+  call so that an instant reply finds it (`…/Game/PandaChatProbe.SendResult.cs:18-38`;
+  `…/Game/PandaChatProbe.Send.cs:236`). It has no timeout: an unanswered entry leaves only by
+  eviction (reported).
+- **The spacing today ends at "handed over".** `send_chat_flow` calls `record_success` right after
+  the pipe answers (`ingame_send.rs:509-510`), with `SEND_SPACING` = 1500 ms
+  (`send_text.rs:8`). After a 5211 that window is wrong in both directions: it was started by a
+  send the server refused, and it is shorter than the server's cooldown (5 s observed on World and
+  Local, reported).
+- **The draft is cleared on `Ok`** (`chat_composer.rs:77-79`): if the command returns before the
+  verdict, a refused line is already gone from the input.
+
+### What happens when no Return comes
+
+A Return can be missing for reasons the app cannot tell apart: the raw socket missed the segment, the
+connection dropped and reconnected (the Return died with it), or the server answered nothing (no
+case known: NOT VERIFIED). UDP is not one of them: the DLL never sends over UDP (section 1). In every
+case the line was handed to the game's socket, so the honest state is "sent, not confirmed", not an
+error.
+
+### Options
+
+- **A. Key `(connection, call_id)`; a pending send expires after a timeout and the expiry is an
+  error.** The timeout is `VERDICT_WAIT` = 1000 ms (estimated: a round trip to the game server is
+  tens to a few hundred milliseconds; 1000 ms keeps the whole command under `APP_WAIT_MS` +
+  1000 ms, below R0's 2 s budget plus one second, and well under the observed 5 s cooldown). Simple,
+  but it calls a line the server probably received "failed", and the user sends it again.
+- **B. Match by order (FIFO) per connection, no `call_id`.** Take the next Return on the connection
+  after each send. Wrong whenever the game has its own call in flight (history fetches, social
+  calls: every RPC on that connection returns as `0x0003`), which is often. Not recommended.
+- **C. Key `(connection, call_id)`, an early-Return buffer, and a neutral "no verdict" state after
+  the timeout.** The matcher holds:
+  - `pending`: the sends the app is waiting for, each with its channel and the time it was handed
+    over; at most 64 (Stellar's bound), oldest evicted; each leaves on its Return or after
+    `VERDICT_WAIT`.
+  - `early`: Returns whose `call_id` is in our upper half but not (yet) pending, kept for
+    `VERDICT_WAIT`, at most 64, oldest evicted; a send registered within that time takes its
+    Return from here. Returns in the lower half are the game's own and are not kept.
+  - Each send ends in exactly one state: accepted, refused (with its code and cooldown), or "no
+    verdict" after `VERDICT_WAIT`. "No verdict" is not an error: the composer clears the draft and
+    shows a neutral line (section 3). A Return that comes after its send expired updates only the
+    cooldown (section 3) and is logged at debug level.
+
+  Memory: two maps of at most 64 entries of a few dozen bytes each; nothing grows with traffic.
+
+**The spacing after a verdict.** In every option the 1500 ms window stays as the floor it is today
+(a refused send also started it, which costs nothing). A refusal with a cooldown adds a second,
+per-channel gate that ends at the server's `cd_end_time` (section 3). The app's spacing is never
+taken as the server's cooldown.
+
+`Recommended: C`, because only `call_id` names a Return, the early buffer closes the pipe-versus-wire
+race, and a missing Return is far more likely a missed segment than a lost line, so "no verdict"
+must not read as a failure; it is A with the race and the wording fixed, and the standard pattern for
+correlating asynchronous RPC replies (a bounded pending table with a deadline).
