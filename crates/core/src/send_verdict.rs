@@ -80,8 +80,12 @@ pub fn verdict(ret: &RpcReturn, fallback_server_ms: Option<u64>) -> Verdict {
 }
 
 /// The exact time until the Return's `cd_end_time`; `Some` only for a plausible future end
-/// (up to [`MAX_COOLDOWN`]). Applies to an accepted reply as well as a refusal.
+/// (up to [`MAX_COOLDOWN`]). Applies to an accepted reply as well as a refusal, never to another
+/// error code.
 pub fn cooldown_remaining(ret: &RpcReturn, fallback_server_ms: Option<u64>) -> Option<Duration> {
+    if matches!(ret.outcome(), SendOutcome::Other(_)) {
+        return None;
+    }
     cooldown_left_ms(ret, fallback_server_ms)
         .filter(|left| (1..=MAX_COOLDOWN_MS).contains(left))
         .map(Duration::from_millis)

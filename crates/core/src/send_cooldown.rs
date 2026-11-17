@@ -1,7 +1,7 @@
 //! The server's chat cooldown per client and channel: a send is refused here until the
 //! `cd_end_time` the server gave has passed. Pure, `now` is passed in (as `ClientSpacing`).
 
-use crate::send_verdict::{ClientKey, Verdict};
+use crate::send_verdict::{ClientKey, Verdict, MAX_COOLDOWN};
 use resonance_types::SendChatChannel;
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
@@ -24,6 +24,7 @@ impl CooldownGate {
     ) {
         let mut ends = self.ends.lock().unwrap_or_else(PoisonError::into_inner);
         ends.retain(|_, end| now < *end);
+        let remaining = remaining.min(MAX_COOLDOWN);
         ends.insert((client, channel), now + remaining);
     }
 
