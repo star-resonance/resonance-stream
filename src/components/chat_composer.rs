@@ -1,6 +1,7 @@
 use crate::composer_view::{
-    can_send, channel_options, counter_over, counter_text, enter_sends, module_line, send_request,
-    stored_channel, tab_pick, COUNTER_TITLE,
+    can_send, channel_options, clears_choice, client_from_value, client_options, counter_over,
+    counter_text, enter_sends, module_line, send_plan, send_request, show_picker, stored_channel,
+    tab_pick, SendPlan, COUNTER_TITLE,
 };
 use crate::store::{AppActions, AppSignals};
 use crate::tauri_bridge::{call, listen};
@@ -8,7 +9,7 @@ use crate::ui_types::ProgressPayload;
 use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use resonance_types::ipc::{event, SendChat};
+use resonance_types::ipc::{event, GameClient, GameClients, SendChat, CLIENT_GONE_LINE};
 use resonance_types::SendChatChannel;
 use wasm_bindgen::prelude::*;
 
@@ -35,6 +36,21 @@ pub fn ChatComposer() -> impl IntoView {
     let sending = RwSignal::new(false);
     let error = RwSignal::new(String::new());
     let input_ref = NodeRef::<Input>::new();
+    // The game clients last read and the one chosen (a pid means nothing after a restart, so
+    // neither is saved). The picker shows with two or more clients.
+    let clients = RwSignal::new(Vec::<GameClient>::new());
+    let chosen = RwSignal::new(None::<u32>);
+    // Reads the list (the old one stays on an error) and returns what is now known.
+    let refresh = move || async move {
+        if let Ok(list) = call::<GameClients>(&GameClients {}).await {
+            // The signal is gone once the composer is (setting off).
+            let _ = clients.try_set(list);
+        }
+        clients.try_get_untracked().unwrap_or_default()
+    };
+    spawn_local(async move {
+        refresh().await;
+    });
     // The module's download, while it runs: its progress label is the only thing this listens for.
     let module = RwSignal::new(None::<String>);
     spawn_local(async move {
@@ -71,14 +87,30 @@ pub fn ChatComposer() -> impl IntoView {
             return;
         }
         sending.set(true);
-        let request = send_request(channel(), &draft.get_untracked());
+        let channel = channel();
+        let text = draft.get_untracked();
         spawn_local(async move {
-            match call::<SendChat>(&request).await {
-                Ok(()) => {
-                    draft.set(String::new());
-                    error.set(String::new());
+            // The decision uses the list this refresh read, not the signal.
+            let list = refresh().await;
+            match send_plan(&list, chosen.get_untracked()) {
+                SendPlan::Gone => {
+                    chosen.set(None);
+                    error.set(CLIENT_GONE_LINE.to_string());
                 }
-                Err(e) => error.set(e),
+                SendPlan::Send(client) => {
+                    match call::<SendChat>(&send_request(channel, &text, client)).await {
+                        Ok(()) => {
+                            draft.set(String::new());
+                            error.set(String::new());
+                        }
+                        Err(e) => {
+                            if clears_choice(&e) {
+                                chosen.set(None);
+                            }
+                            error.set(e);
+                        }
+                    }
+                }
             }
             sending.set(false);
             if let Some(input) = input_ref.get_untracked() {
@@ -110,6 +142,29 @@ pub fn ChatComposer() -> impl IntoView {
                         })
                         .collect_view()}
                 </select>
+                <Show when=move || show_picker(&clients.get())>
+                    <select
+                        class="select select-xs w-auto"
+                        on:change=move |ev| chosen.set(client_from_value(&event_target_value(&ev)))
+                    >
+                        <option value="" selected=move || chosen.get().is_none()>
+                            "게임 선택"
+                        </option>
+                        {move || {
+                            client_options(&clients.get())
+                                .into_iter()
+                                .map(|(value, label)| {
+                                    let target = client_from_value(&value);
+                                    view! {
+                                        <option value=value selected=move || chosen.get() == target>
+                                            {label}
+                                        </option>
+                                    }
+                                })
+                                .collect_view()
+                        }}
+                    </select>
+                </Show>
                 <input
                     node_ref=input_ref
                     type="text"

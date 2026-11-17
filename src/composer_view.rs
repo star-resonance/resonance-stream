@@ -3,7 +3,7 @@
 //! component (`components/chat_composer.rs`) only wires signals and events.
 
 use crate::chat_view::Tab;
-use resonance_types::ipc::SendChat;
+use resonance_types::ipc::{GameClient, SendChat, CLIENT_GONE_LINE};
 use resonance_types::{prepare_text, SendChatChannel, SendTextError, MAX_TEXT_UTF16};
 
 /// The counter's tooltip: the limit is the game's, in UTF-16 units.
@@ -79,13 +79,58 @@ pub fn enter_sends(key: &str, shift: bool, composing: bool, key_code: u32) -> bo
     key == "Enter" && !shift && !composing && key_code != 229
 }
 
-/// The request: the draft exactly as typed, no prefix (the command prepares it).
-pub fn send_request(channel: SendChatChannel, draft: &str) -> SendChat {
+/// The request: the draft exactly as typed, no prefix (the command prepares it), and the chosen
+/// client (a `GameClient.target`, handed back unchanged).
+pub fn send_request(channel: SendChatChannel, draft: &str, client: Option<u32>) -> SendChat {
     SendChat {
         channel,
         text: draft.to_string(),
-        client: None,
+        client,
     }
+}
+
+/// Whether the client picker shows: only with two or more clients.
+pub fn show_picker(clients: &[GameClient]) -> bool {
+    clients.len() >= 2
+}
+
+/// The picker's options as (value, label) in list order: the label is the nickname only; the
+/// value is the opaque target as text, never displayed.
+pub fn client_options(clients: &[GameClient]) -> Vec<(String, String)> {
+    clients
+        .iter()
+        .map(|c| (c.target.to_string(), c.name.clone()))
+        .collect()
+}
+
+/// The client an `<option value>` stands for; `None` for the placeholder or anything else.
+pub fn client_from_value(value: &str) -> Option<u32> {
+    value.parse().ok()
+}
+
+/// What a send does with the list just read and the chosen client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendPlan {
+    /// Call `send_chat` with this client.
+    Send(Option<u32>),
+    /// The chosen client is no longer listed: ask to choose again, send nothing.
+    Gone,
+}
+
+/// A chosen client that is not listed is `Gone` (never sent to a survivor); fewer than two
+/// clients send with none; otherwise the choice goes as it is (a `None` gets the backend's
+/// "choose a client" sentence).
+pub fn send_plan(clients: &[GameClient], chosen: Option<u32>) -> SendPlan {
+    match chosen {
+        Some(p) if !clients.iter().any(|c| c.target == p) => SendPlan::Gone,
+        _ if clients.len() < 2 => SendPlan::Send(None),
+        _ => SendPlan::Send(chosen),
+    }
+}
+
+/// Whether a failed send's sentence means the chosen client is gone, so the choice resets.
+pub fn clears_choice(error: &str) -> bool {
+    error == CLIENT_GONE_LINE
 }
 
 /// The picker's options as (value, label), in tab order.
