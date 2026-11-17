@@ -4,6 +4,7 @@
 //! gives it a [`Sink`] for the effects (history, events, archive, translator queue).
 
 use crate::capture::{Origin, PipelineAction};
+use crate::game_clients::Endpoint;
 use crate::history::{ArchiveTarget, ChatHistory};
 use crate::protocol::own_player::OwnPlayer;
 use crate::text::{
@@ -36,11 +37,12 @@ pub trait Sink {
     fn with_ledger<R>(&mut self, f: impl FnOnce(&mut TranslationLedger) -> R) -> R;
     /// Japanese nickname -> romaji, filled as senders arrive.
     fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R;
-    /// The player's own record (uid, guild), for the guild relay. Does nothing by default.
-    fn own_player(&mut self, _player: OwnPlayer) {}
+    /// A connection's own record (uid, guild) for the guild relay; `None`: the connection is
+    /// gone. Does nothing by default.
+    fn own_player(&mut self, _conn: Endpoint, _player: Option<OwnPlayer>) {}
     /// A new line, as captured (the sender's in-game name, no translation), with where it came
     /// from, for the guild relay. Does nothing by default.
-    fn relay_line(&mut self, _chat: &ChatMessage, _origin: Origin) {}
+    fn relay_line(&mut self, _chat: &ChatMessage, _origin: Origin, _conn: Option<Endpoint>) {}
 }
 
 /// The sniffer's side: what becomes of each action the capture pipeline produced.
@@ -49,7 +51,7 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
 
     for action in actions {
         match action {
-            PipelineAction::OwnPlayer(player) => sink.own_player(player),
+            PipelineAction::OwnPlayer(conn, player) => sink.own_player(conn, player),
             PipelineAction::UpdateBlockedMessage(chat) => {
                 let flagged = sink.with_history(|history| {
                     let row = history.get_mut(chat.pid)?;
@@ -63,7 +65,7 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
                     sink.emit_update(&row);
                 }
             }
-            PipelineAction::EmitNewMessage(mut chat, origin) => {
+            PipelineAction::EmitNewMessage(mut chat, origin, conn) => {
                 // Apply Romaji Swap
                 if contains_japanese(&chat.nickname) {
                     let nickname = chat.nickname.clone();
@@ -76,7 +78,7 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
                     chat.nickname_romaji = Some(romaji);
                 }
                 // After the romaji swap: the relay posts the name with its reading, as the app shows it.
-                sink.relay_line(&chat, origin);
+                sink.relay_line(&chat, origin, conn);
 
                 // Dispatch Side Effects. (A duplicate never gets here: the pipeline
                 // dropped it, so it is neither translated nor archived.)
@@ -245,12 +247,16 @@ mod tests {
         fn with_nicknames<R>(&mut self, f: impl FnOnce(&mut HashMap<String, String>) -> R) -> R {
             f(&mut self.nicknames)
         }
-        fn own_player(&mut self, player: OwnPlayer) {
-            self.relayed
-                .push(format!("player {} {:?}", player.uid, player.guild_id));
+        fn own_player(&mut self, conn: Endpoint, player: Option<OwnPlayer>) {
+            self.relayed.push(match player {
+                Some(p) => format!("player {} {} {:?}", conn.port, p.uid, p.guild_id),
+                None => format!("player {} gone", conn.port),
+            });
         }
-        fn relay_line(&mut self, chat: &ChatMessage, origin: Origin) {
-            self.relayed.push(format!("line {} {origin:?}", chat.pid));
+        fn relay_line(&mut self, chat: &ChatMessage, origin: Origin, conn: Option<Endpoint>) {
+            let port = conn.map_or(0, |c| c.port);
+            self.relayed
+                .push(format!("line {} {origin:?} {port}", chat.pid));
             self.relayed_readings.push(chat.nickname_romaji.clone());
         }
     }
@@ -262,18 +268,28 @@ mod tests {
             uid: 424_242,
             guild_id: Some(77_001),
         };
+        let conn = Endpoint {
+            addr: [10, 0, 0, 5],
+            port: 51000,
+        };
         dispatch(
             &mut sink,
             vec![
-                PipelineAction::OwnPlayer(player),
-                PipelineAction::EmitNewMessage(line(1, "Bob", "live"), Origin::Live),
-                PipelineAction::EmitNewMessage(line(2, "Bob", "old"), Origin::History),
+                PipelineAction::OwnPlayer(conn, Some(player)),
+                PipelineAction::EmitNewMessage(line(1, "Bob", "live"), Origin::Live, Some(conn)),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "old"), Origin::History, None),
+                PipelineAction::OwnPlayer(conn, None),
                 PipelineAction::UpdateBlockedMessage(line(1, "Bob", "live")),
             ],
         );
         assert_eq!(
             sink.relayed,
-            ["player 424242 Some(77001)", "line 1 Live", "line 2 History"]
+            [
+                "player 51000 424242 Some(77001)",
+                "line 1 Live 51000",
+                "line 2 History 0",
+                "player 51000 gone"
+            ]
         );
     }
 
@@ -283,8 +299,8 @@ mod tests {
         dispatch(
             &mut sink,
             vec![
-                PipelineAction::EmitNewMessage(line(1, "アズルル", "hi"), Origin::Live),
-                PipelineAction::EmitNewMessage(line(2, "Bob", "hi"), Origin::Live),
+                PipelineAction::EmitNewMessage(line(1, "アズルル", "hi"), Origin::Live, None),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "hi"), Origin::Live, None),
             ],
         );
         assert_eq!(sink.relayed_readings, [Some("Azururu".to_string()), None]);
@@ -301,7 +317,7 @@ mod tests {
     }
 
     fn new_line(pid: u64, message: &str) -> PipelineAction {
-        PipelineAction::EmitNewMessage(line(pid, "Bob", message), Origin::Live)
+        PipelineAction::EmitNewMessage(line(pid, "Bob", message), Origin::Live, None)
     }
 
     #[test]
@@ -346,8 +362,8 @@ mod tests {
         dispatch(
             &mut sink,
             vec![
-                PipelineAction::EmitNewMessage(line(1, "たろう", "gg"), Origin::Live),
-                PipelineAction::EmitNewMessage(line(2, "Bob", "gg"), Origin::Live),
+                PipelineAction::EmitNewMessage(line(1, "たろう", "gg"), Origin::Live, None),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "gg"), Origin::Live, None),
             ],
         );
         let romaji = sink.history.get(1).unwrap().nickname_romaji.clone();
@@ -361,6 +377,7 @@ mod tests {
             vec![PipelineAction::EmitNewMessage(
                 line(3, "たろう", "gg"),
                 Origin::Live,
+                None,
             )],
         );
         assert_eq!(

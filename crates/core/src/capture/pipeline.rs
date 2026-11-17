@@ -8,14 +8,19 @@ use crate::text::normalize_emotes;
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
 use resonance_types::ChatMessage;
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// The shortest time between two looks for idle connections.
+const EXPIRE_EVERY: Duration = Duration::from_secs(10);
 
 pub enum PipelineAction {
     UpdateBlockedMessage(ChatMessage),
-    EmitNewMessage(ChatMessage, Origin),
-    /// Who is playing and in which guild, read from world state: sent when the
-    /// first record arrives and again whenever it changes.
-    OwnPlayer(OwnPlayer),
+    /// A new message, its origin and the connection it came in on (`None`: `feed_chat`, not captured).
+    EmitNewMessage(ChatMessage, Origin, Option<Endpoint>),
+    /// A connection's own player (uid, guild), read from world state: `Some` when its first
+    /// record arrives and again whenever it changes; `None` when the connection is gone (closed,
+    /// or idle past `CLIENT_IDLE_TIMEOUT`).
+    OwnPlayer(Endpoint, Option<OwnPlayer>),
 }
 
 /// Where a new message came from. The guild relay sends only live lines.
@@ -33,8 +38,8 @@ pub struct ChatPipeline {
     tracker: StreamTracker,
     processor: MessageProcessor,
     keep_unknown_fields: bool,
-    /// The last own-player record reported, so an unchanged one is not sent again.
-    own_player: Option<OwnPlayer>,
+    /// When idle connections were last looked for (at most every `EXPIRE_EVERY`).
+    last_expire: Option<Instant>,
     /// Which connection is which character (read before the duplicate check).
     roster: Roster,
 }
@@ -45,7 +50,7 @@ impl ChatPipeline {
             tracker: StreamTracker::new(),
             processor: MessageProcessor::new(),
             keep_unknown_fields: false,
-            own_player: None,
+            last_expire: None,
             roster: Roster::new(),
         }
     }
@@ -73,6 +78,21 @@ impl ChatPipeline {
         self.roster.take_changed(Instant::now())
     }
 
+    /// Drops the connections idle past `CLIENT_IDLE_TIMEOUT` at `now`; each is reported as
+    /// `OwnPlayer(conn, None)`.
+    pub fn expire(&mut self, now: Instant) -> Vec<PipelineAction> {
+        self.roster.expire(now);
+        self.gone_actions()
+    }
+
+    fn gone_actions(&mut self) -> Vec<PipelineAction> {
+        self.roster
+            .take_gone()
+            .into_iter()
+            .map(|conn| PipelineAction::OwnPlayer(conn, None))
+            .collect()
+    }
+
     /// 100% Pure Logic: Takes raw network bytes and returns UI Actions.
     pub fn feed_network_packet(
         &mut self,
@@ -93,6 +113,25 @@ impl ChatPipeline {
         if tcp.source_port != 5003 {
             return actions;
         }
+
+        let now = Instant::now();
+        if let Some(NetHeaders::Ipv4(ipv4, _)) = &headers.net {
+            if tcp.fin || tcp.rst {
+                self.roster.forget(Endpoint {
+                    addr: ipv4.destination,
+                    port: tcp.destination_port,
+                });
+            }
+        }
+        // A silent client is noticed on the next 5003 packet of any client.
+        if self
+            .last_expire
+            .is_none_or(|last| now.saturating_duration_since(last) >= EXPIRE_EVERY)
+        {
+            self.last_expire = Some(now);
+            self.roster.expire(now);
+        }
+        actions.extend(self.gone_actions());
 
         let payload = headers.payload.slice();
         if payload.is_empty() {
@@ -117,7 +156,7 @@ impl ChatPipeline {
             addr: ipv4.destination,
             port: tcp.destination_port,
         };
-        self.roster.see_connection(local, Instant::now());
+        self.roster.see_connection(local, now);
 
         // 3. Assemble fragmented bytes into complete frames (retransmits dropped)
         let frames = self
@@ -131,11 +170,8 @@ impl ChatPipeline {
                 FrameKind::History => (history_pipeline(&frame.root), Origin::History),
                 FrameKind::State => {
                     if let Some(player) = own_player(&frame.root) {
-                        // Per connection, before the (single) own-player slot below.
-                        self.roster.own_uid(local, player.uid, Instant::now());
-                        if self.own_player != Some(player) {
-                            self.own_player = Some(player);
-                            actions.push(PipelineAction::OwnPlayer(player));
+                        if self.roster.own_record(local, player, now) {
+                            actions.push(PipelineAction::OwnPlayer(local, Some(player)));
                         }
                     }
                     continue;
@@ -144,7 +180,7 @@ impl ChatPipeline {
             for event in events {
                 // Guard clause for the event loop using let-else
                 let Port5003Event::Chat(chat) = event;
-                actions.extend(self.feed(chat, origin, &is_blocked, &mut assign_pid));
+                actions.extend(self.feed(chat, origin, Some(local), &is_blocked, &mut assign_pid));
             }
         }
 
@@ -162,13 +198,14 @@ impl ChatPipeline {
         is_blocked: impl Fn(u64) -> bool,
         assign_pid: impl FnMut() -> u64,
     ) -> Option<PipelineAction> {
-        self.feed(chat, Origin::Replay, is_blocked, assign_pid)
+        self.feed(chat, Origin::Replay, None, is_blocked, assign_pid)
     }
 
     fn feed(
         &mut self,
         mut chat: ChatMessage,
         origin: Origin,
+        conn: Option<Endpoint>,
         is_blocked: impl Fn(u64) -> bool,
         mut assign_pid: impl FnMut() -> u64,
     ) -> Option<PipelineAction> {
@@ -188,7 +225,7 @@ impl ChatPipeline {
             ProcessAction::EmitNewMessage => {
                 chat.pid = assign_pid();
                 self.processor.commit_new_message(&chat);
-                Some(PipelineAction::EmitNewMessage(chat, origin))
+                Some(PipelineAction::EmitNewMessage(chat, origin, conn))
             }
         }
     }
@@ -276,7 +313,7 @@ mod tests {
 
         // 4. Assert that the pipeline correctly extracted ALL fields!
         assert_eq!(actions.len(), 1);
-        if let PipelineAction::EmitNewMessage(chat, _) = &actions[0] {
+        if let PipelineAction::EmitNewMessage(chat, _, _) = &actions[0] {
             assert_eq!(chat.pid, 1, "Local UI PID should be 1");
             assert_eq!(
                 chat.sequence_id, 999,
@@ -328,7 +365,7 @@ mod tests {
                 || 1,
                 || {},
             ) {
-                if let PipelineAction::EmitNewMessage(chat, _) = action {
+                if let PipelineAction::EmitNewMessage(chat, _, _) = action {
                     got.push(chat.message);
                 }
             }
@@ -365,7 +402,7 @@ mod tests {
                 || {},
             );
             for action in actions {
-                if let PipelineAction::EmitNewMessage(chat, _) = action {
+                if let PipelineAction::EmitNewMessage(chat, _, _) = action {
                     out.push(chat);
                 }
             }
@@ -546,7 +583,7 @@ mod tests {
         );
         assert_eq!(lookups.get(), 1);
         match &actions[..] {
-            [PipelineAction::EmitNewMessage(chat, _)] => assert!(chat.is_blocked),
+            [PipelineAction::EmitNewMessage(chat, _, _)] => assert!(chat.is_blocked),
             _ => panic!("expected one new message"),
         }
     }
@@ -628,12 +665,12 @@ mod tests {
             for action in
                 pipeline.feed_network_packet(&tcp_from_5003(seq, segment), |_| false, || 1, || {})
             {
-                if let PipelineAction::EmitNewMessage(chat, origin) = action {
+                if let PipelineAction::EmitNewMessage(chat, origin, _) = action {
                     got.push((chat.message, origin));
                 }
             }
         }
-        if let Some(PipelineAction::EmitNewMessage(chat, origin)) =
+        if let Some(PipelineAction::EmitNewMessage(chat, origin, _)) =
             pipeline.feed_chat(chat_from(7, 1000, 1, "replayed"), |_| false, || 1)
         {
             got.push((chat.message, origin));
@@ -663,11 +700,11 @@ mod tests {
 
     fn emitted_chat(action: Option<PipelineAction>) -> ChatMessage {
         match action {
-            Some(PipelineAction::EmitNewMessage(chat, _)) => chat,
+            Some(PipelineAction::EmitNewMessage(chat, _, _)) => chat,
             Some(PipelineAction::UpdateBlockedMessage(_)) => {
                 panic!("expected a new message, got a block update")
             }
-            Some(PipelineAction::OwnPlayer(_)) => {
+            Some(PipelineAction::OwnPlayer(..)) => {
                 panic!("expected a new message, got an own-player record")
             }
             None => panic!("expected a new message, got nothing"),
@@ -824,14 +861,28 @@ mod tests {
         )
     }
 
-    fn own_players(actions: &[PipelineAction]) -> Vec<OwnPlayer> {
+    fn own_players(actions: &[PipelineAction]) -> Vec<(Endpoint, Option<OwnPlayer>)> {
         actions
             .iter()
             .filter_map(|a| match a {
-                PipelineAction::OwnPlayer(p) => Some(*p),
+                PipelineAction::OwnPlayer(c, p) => Some((*c, *p)),
                 _ => None,
             })
             .collect()
+    }
+
+    fn single_client() -> Endpoint {
+        Endpoint {
+            addr: [192, 168, 1, 2],
+            port: 12345,
+        }
+    }
+
+    fn ep(port: u16) -> Endpoint {
+        Endpoint {
+            addr: [10, 0, 0, 5],
+            port,
+        }
     }
 
     #[test]
@@ -849,7 +900,7 @@ mod tests {
         };
 
         let first = feed(own_record_frame(424_242, Some(77_001)));
-        assert_eq!(own_players(&first), [in_guild]);
+        assert_eq!(own_players(&first), [(single_client(), Some(in_guild))]);
         assert_eq!(first.len(), 1, "a record is not a chat line");
 
         let again = feed(own_record_frame(424_242, Some(77_001)));
@@ -858,10 +909,181 @@ mod tests {
         let left = feed(own_record_frame(424_242, None));
         assert_eq!(
             own_players(&left),
-            [OwnPlayer {
-                uid: 424_242,
-                guild_id: None
-            }]
+            [(
+                single_client(),
+                Some(OwnPlayer {
+                    uid: 424_242,
+                    guild_id: None
+                })
+            )]
+        );
+    }
+
+    fn p7() -> OwnPlayer {
+        OwnPlayer {
+            uid: 7,
+            guild_id: Some(100),
+        }
+    }
+
+    fn p9() -> OwnPlayer {
+        OwnPlayer {
+            uid: 9,
+            guild_id: Some(200),
+        }
+    }
+
+    /// Two clients' state frames, alternating three times (the old single slot flapped on each).
+    fn interleaved(
+        pipeline: &mut ChatPipeline,
+        seqs: &mut HashMap<u16, u32>,
+    ) -> Vec<PipelineAction> {
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            out.extend(feed_to(
+                pipeline,
+                seqs,
+                51000,
+                &own_record_frame(7, Some(100)),
+            ));
+            out.extend(feed_to(
+                pipeline,
+                seqs,
+                51001,
+                &own_record_frame(9, Some(200)),
+            ));
+        }
+        out
+    }
+
+    // F-GR 3
+    #[test]
+    fn two_clients_report_each_record_once_however_they_interleave() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seqs = HashMap::new();
+        let actions = interleaved(&mut pipeline, &mut seqs);
+        assert_eq!(
+            own_players(&actions),
+            [(ep(51000), Some(p7())), (ep(51001), Some(p9()))]
+        );
+        let moved = feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51000,
+            &own_record_frame(7, Some(101)),
+        );
+        assert_eq!(
+            own_players(&moved),
+            [(
+                ep(51000),
+                Some(OwnPlayer {
+                    uid: 7,
+                    guild_id: Some(101)
+                })
+            )]
+        );
+        let b_again = feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51001,
+            &own_record_frame(9, Some(200)),
+        );
+        assert!(own_players(&b_again).is_empty());
+    }
+
+    // F-GR 4
+    #[test]
+    fn a_line_carries_the_connection_it_came_in_on() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seqs = HashMap::new();
+        interleaved(&mut pipeline, &mut seqs);
+        let conn_of = |actions: Vec<PipelineAction>| match actions.as_slice() {
+            [PipelineAction::EmitNewMessage(_, Origin::Live, conn)] => *conn,
+            _ => panic!("expected one live line"),
+        };
+        let on_b = feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51001,
+            &chat_segment_by(9, "Bob", 1, "b"),
+        );
+        assert_eq!(conn_of(on_b), Some(ep(51001)));
+        let on_a = feed_to(
+            &mut pipeline,
+            &mut seqs,
+            51000,
+            &chat_segment_by(7, "Aria", 2, "a"),
+        );
+        assert_eq!(conn_of(on_a), Some(ep(51000)));
+        match pipeline.feed_chat(chat_from(7, 1000, 3, "replayed"), |_| false, || 1) {
+            Some(PipelineAction::EmitNewMessage(_, Origin::Replay, None)) => {}
+            _ => panic!("a replayed line has no connection"),
+        }
+    }
+
+    /// A packet from port 5003 to `10.0.0.5:port` with no payload and the given flag.
+    fn bare_packet(port: u16, seq: u32, flag: &str) -> Vec<u8> {
+        let builder =
+            PacketBuilder::ipv4([192, 168, 1, 1], [10, 0, 0, 5], 64).tcp(5003, port, seq, 0);
+        let builder = match flag {
+            "fin" => builder.fin(),
+            "rst" => builder.rst(),
+            _ => builder.ack(1),
+        };
+        let mut out = Vec::new();
+        builder.write(&mut out, &[]).unwrap();
+        out
+    }
+
+    // F-GR 6
+    #[test]
+    fn a_closed_connection_reports_its_record_gone() {
+        for flag in ["fin", "rst"] {
+            let mut pipeline = ChatPipeline::new();
+            let mut seqs = HashMap::new();
+            interleaved(&mut pipeline, &mut seqs);
+            let _ = pipeline.take_clients();
+            let gone = pipeline.feed_network_packet(
+                &bare_packet(51000, 9_999, flag),
+                |_| false,
+                || 1,
+                || {},
+            );
+            assert_eq!(own_players(&gone), [(ep(51000), None)], "{flag}");
+            let ack = pipeline.feed_network_packet(
+                &bare_packet(51000, 9_999, "ack"),
+                |_| false,
+                || 1,
+                || {},
+            );
+            assert!(ack.is_empty());
+            let clients = pipeline.take_clients().expect("the list changed");
+            assert!(clients.iter().all(|c| c.local != ep(51000)));
+            let b = feed_to(
+                &mut pipeline,
+                &mut seqs,
+                51001,
+                &own_record_frame(9, Some(200)),
+            );
+            assert!(own_players(&b).is_empty(), "b is untouched");
+        }
+    }
+
+    // F-GR 7
+    #[test]
+    fn idle_connections_report_their_records_gone() {
+        let mut pipeline = ChatPipeline::new();
+        let mut seqs = HashMap::new();
+        interleaved(&mut pipeline, &mut seqs);
+        let later = Instant::now()
+            + crate::game_clients::CLIENT_IDLE_TIMEOUT
+            + std::time::Duration::from_secs(1);
+        let gone = pipeline.expire(later);
+        assert_eq!(own_players(&gone), [(ep(51000), None), (ep(51001), None)]);
+        let again = interleaved(&mut pipeline, &mut seqs);
+        assert_eq!(
+            own_players(&again),
+            [(ep(51000), Some(p7())), (ep(51001), Some(p9()))]
         );
     }
 
