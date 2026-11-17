@@ -97,8 +97,13 @@ impl VerdictHub {
         routes.retain(|_, k| *k != key);
         for e in endpoints {
             if routes.len() >= MAX_ROUTES && !routes.contains_key(e) {
-                if let Some(victim) = routes.keys().next().copied() {
-                    routes.remove(&victim);
+                // Another client's route goes, never one just learned for this key.
+                let victim = routes.iter().find(|(_, k)| **k != key).map(|(e, _)| *e);
+                match victim {
+                    Some(victim) => {
+                        routes.remove(&victim);
+                    }
+                    None => continue,
                 }
             }
             routes.insert(*e, key);
