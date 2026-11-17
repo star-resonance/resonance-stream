@@ -5,11 +5,11 @@
 use crate::capture::ReturnEvent;
 use crate::game_clients::Endpoint;
 use crate::send_cooldown::CooldownGate;
-use crate::send_verdict::{ClientKey, Resolved, Verdict, VerdictMatcher};
+use crate::send_verdict::{ClientKey, Resolved, Verdict, VerdictMatcher, VERDICT_WAIT};
 use resonance_types::ipc::SendVerdict;
 use resonance_types::SendChatChannel;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 /// Most endpoint routes kept.
@@ -38,11 +38,11 @@ impl From<Verdict> for SendVerdict {
     fn from(v: Verdict) -> Self {
         match v {
             Verdict::Sent => SendVerdict::Sent,
-            Verdict::TooFrequent => SendVerdict::Sent,
+            Verdict::TooFrequent => SendVerdict::TooFrequent,
             Verdict::Cooldown { remaining } => SendVerdict::Cooldown {
                 remaining_secs: remaining.as_secs() as u32,
             },
-            Verdict::NotConfirmed => SendVerdict::Sent,
+            Verdict::NotConfirmed => SendVerdict::NotConfirmed,
             Verdict::Other(n) => SendVerdict::Refused { code: n },
         }
     }
@@ -50,34 +50,93 @@ impl From<Verdict> for SendVerdict {
 
 /// The endpoints of `pid`'s connections in the TCP table.
 pub fn endpoints_of(conns: &[(u32, Endpoint)], pid: u32) -> Vec<Endpoint> {
-    let _ = (conns, pid);
-    Vec::new()
+    conns
+        .iter()
+        .filter(|(p, _)| *p == pid)
+        .map(|(_, e)| *e)
+        .collect()
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl State {
+    /// Files a resolved send for its waiter and arms the gate from `now` when it carries a
+    /// cooldown.
+    fn settle(&mut self, gate: &CooldownGate, r: Resolved, now: Instant) {
+        if let Some(c) = r.cooldown {
+            gate.arm(r.client, r.channel, c, now);
+        }
+        let key = (r.client, r.call_id);
+        if self.done.insert(key, r).is_none() {
+            self.order.push_back(key);
+        }
+        while self.done.len() > MAX_DONE {
+            match self.order.pop_front() {
+                Some(old) => {
+                    self.done.remove(&old);
+                }
+                None => break,
+            }
+        }
+    }
+
+    fn take(&mut self, key: Key) -> Option<Resolved> {
+        let r = self.done.remove(&key)?;
+        self.order.retain(|k| *k != key);
+        Some(r)
+    }
 }
 
 impl VerdictHub {
+    /// Remembers that `endpoints` belong to the client `key` (the newest send to that client);
+    /// an older route of the same key is replaced.
     pub fn learn_route(&self, key: ClientKey, endpoints: &[Endpoint]) {
-        let _ = (key, endpoints);
+        let mut routes = lock(&self.routes);
+        routes.retain(|_, k| *k != key);
+        for e in endpoints {
+            if routes.len() >= MAX_ROUTES && !routes.contains_key(e) {
+                if let Some(victim) = routes.keys().next().copied() {
+                    routes.remove(&victim);
+                }
+            }
+            routes.insert(*e, key);
+        }
     }
 
     pub fn route(&self, e: Endpoint) -> Option<ClientKey> {
-        let _ = e;
-        None
+        lock(&self.routes).get(&e).copied()
     }
 
+    /// The cooldown gate's answer for a send about to go out.
     pub fn check(
         &self,
         key: ClientKey,
         channel: SendChatChannel,
         now: Instant,
     ) -> Result<(), Verdict> {
-        let _ = (key, channel, now);
-        Ok(())
+        self.gate.check(key, channel, now)
     }
 
+    /// A Return the sniffer framed. Ignored when no send has taught a route to its connection.
     pub fn on_return(&self, ev: &ReturnEvent) {
-        let _ = ev;
+        let Some(key) = self.route(ev.local) else {
+            log::debug!("return {:#x}.. has no route", ev.ret.call_id >> 16);
+            return;
+        };
+        let mut st = lock(&self.state);
+        let got = st
+            .matcher
+            .on_return(key, &ev.ret, ev.fallback_server_ms, ev.at);
+        if let Some(r) = got {
+            st.settle(&self.gate, r, ev.at);
+            drop(st);
+            self.wake.notify_all();
+        }
     }
 
+    /// Registers a send the DLL answered with `call_id`.
     pub fn register(
         &self,
         key: ClientKey,
@@ -85,9 +144,19 @@ impl VerdictHub {
         channel: SendChatChannel,
         sent_at: Instant,
     ) {
-        let _ = (key, call_id, channel, sent_at);
+        let mut st = lock(&self.state);
+        let resolved = st.matcher.register(key, call_id, channel, sent_at);
+        if resolved.is_empty() {
+            return;
+        }
+        for r in resolved {
+            st.settle(&self.gate, r, sent_at);
+        }
+        drop(st);
+        self.wake.notify_all();
     }
 
+    /// Waits until the send's Return came or [`VERDICT_WAIT`] since `sent_at` passed.
     pub fn wait(
         &self,
         key: ClientKey,
@@ -95,16 +164,38 @@ impl VerdictHub {
         now: impl Fn() -> Instant,
         sent_at: Instant,
     ) -> Verdict {
-        let _ = (key, call_id, now, sent_at);
-        Verdict::NotConfirmed
+        let mut st = lock(&self.state);
+        loop {
+            if let Some(r) = st.take((key, call_id)) {
+                return r.verdict;
+            }
+            let at = now();
+            let deadline = sent_at + VERDICT_WAIT;
+            if at >= deadline {
+                for r in st.matcher.poll(at) {
+                    st.settle(&self.gate, r, at);
+                }
+                return st
+                    .take((key, call_id))
+                    .map_or(Verdict::NotConfirmed, |r| r.verdict);
+            }
+            st = self
+                .wake
+                .wait_timeout(st, deadline - at)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
     }
 
     pub fn pending_len(&self) -> usize {
-        0
+        lock(&self.state).matcher.pending_len()
     }
 
+    /// Drops the gate keys and routes of clients that are no longer running; `None` stays.
     pub fn forget_clients(&self, live: &[u32]) {
-        let _ = live;
+        let keep = |k: ClientKey| k.is_none_or(|p| live.contains(&p));
+        self.gate.retain_clients(keep);
+        lock(&self.routes).retain(|_, k| keep(*k));
     }
 }
 
@@ -112,7 +203,6 @@ impl VerdictHub {
 mod tests {
     use super::*;
     use crate::protocol::rpc_return::RpcReturn;
-    use crate::send_verdict::VERDICT_WAIT;
     use std::sync::Arc;
     use std::time::Duration;
 
