@@ -4,6 +4,7 @@ use crate::game_clients::{ClientFact, Endpoint, Roster};
 use crate::protocol::framing::FrameKind;
 use crate::protocol::own_player::{own_player, OwnPlayer};
 use crate::protocol::parser::{history_pipeline, parsing_pipeline, Port5003Event};
+use crate::protocol::rpc_return::RpcReturn;
 use crate::text::normalize_emotes;
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
 use resonance_types::ChatMessage;
@@ -21,6 +22,17 @@ pub enum PipelineAction {
     /// record arrives and again whenever it changes; `None` when the connection is gone (closed,
     /// or idle past `CLIENT_IDLE_TIMEOUT`).
     OwnPlayer(Endpoint, Option<OwnPlayer>),
+}
+
+/// A Return the sniffer framed, with what the send verdict needs: the client end it came in
+/// on, the server's now when the connection's clock knows it, and when it was framed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReturnEvent {
+    pub local: Endpoint,
+    pub ret: RpcReturn,
+    /// The server's now in ms (from the connection's last live line or Return), when known.
+    pub fallback_server_ms: Option<u64>,
+    pub at: Instant,
 }
 
 /// Where a new message came from. The guild relay sends only live lines.

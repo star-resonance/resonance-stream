@@ -23,6 +23,7 @@ pub mod paste;
 pub mod protocol;
 pub mod replay;
 pub mod send_cooldown;
+pub mod send_hub;
 pub mod send_text;
 pub mod send_verdict;
 pub mod server_pins;
