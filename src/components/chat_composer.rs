@@ -5,8 +5,9 @@ use crate::composer_view::{
     shown_status, status_of, stored_channel, tab_pick, CooldownBlock, SendPlan, Status, Tone,
     COUNTER_TITLE,
 };
+use crate::event_listener::Listener;
 use crate::store::{AppActions, AppSignals};
-use crate::tauri_bridge::{call, listen};
+use crate::tauri_bridge::call;
 use crate::ui_types::ProgressPayload;
 use leptos::html::Input;
 use leptos::leptos_dom::helpers::IntervalHandle;
@@ -15,7 +16,6 @@ use leptos::task::spawn_local;
 use resonance_types::ipc::{event, GameClient, GameClients, SendChat, CLIENT_GONE_LINE};
 use resonance_types::SendChatChannel;
 use std::time::Duration;
-use wasm_bindgen::prelude::*;
 
 /// The wall clock in ms. A clock change during a countdown (at most 10 minutes) can move it; the
 /// backend's gate stays the authority and answers `Cooldown` again if the ui ends early.
@@ -69,21 +69,15 @@ pub fn ChatComposer() -> impl IntoView {
     });
     // The module's download, while it runs: its progress label is the only thing this listens for.
     let module = RwSignal::new(None::<String>);
-    spawn_local(async move {
-        let closure = Closure::wrap(Box::new(move |event_obj: JsValue| {
-            if let Ok(ev) = serde_wasm_bindgen::from_value::<serde_json::Value>(event_obj) {
-                if let Ok(payload) =
-                    serde_json::from_value::<ProgressPayload>(ev["payload"].clone())
-                {
-                    if payload.current_file.starts_with("게임 내 전송 모듈") {
-                        // The signal is gone once the composer is (setting off).
-                        let _ = module.try_set(module_line(&payload.current_file, payload.percent));
-                    }
+    Listener::new().start(event::DOWNLOAD_PROGRESS, move |event_obj| {
+        if let Ok(ev) = serde_wasm_bindgen::from_value::<serde_json::Value>(event_obj) {
+            if let Ok(payload) = serde_json::from_value::<ProgressPayload>(ev["payload"].clone()) {
+                if payload.current_file.starts_with("게임 내 전송 모듈") {
+                    // The signal is gone once the composer is (setting off).
+                    let _ = module.try_set(module_line(&payload.current_file, payload.percent));
                 }
             }
-        }) as Box<dyn FnMut(JsValue)>);
-        listen(event::DOWNLOAD_PROGRESS, &closure).await;
-        closure.forget();
+        }
     });
 
     // A tab change to a chat channel moves the picker to it; any other tab leaves it. Not on the

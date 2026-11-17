@@ -7,6 +7,7 @@ pub mod config_signals;
 pub mod dictionary_edit;
 pub mod dictionary_status;
 pub mod download_progress;
+pub mod event_listener;
 pub mod favorites;
 pub mod favorites_sync;
 pub mod hooks;

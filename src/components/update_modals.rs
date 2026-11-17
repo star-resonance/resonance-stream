@@ -1,9 +1,10 @@
 //! "Update available" modals for the app and the AI model.
 
 use crate::download_progress::{bar_label, bar_value, is_cancelled, RELEASES_URL};
+use crate::event_listener::Listener;
 use crate::status_signals::UpdateSignals;
 use crate::store::AppSignals;
-use crate::tauri_bridge::{call, listen};
+use crate::tauri_bridge::call;
 use crate::ui_types::ProgressPayload;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -12,7 +13,7 @@ use resonance_types::ipc::{
     RestartToApplyUpdate,
 };
 use resonance_types::UpdateTarget;
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsValue;
 
 /// App update: release notes, skip, download with progress, restart to apply;
 /// a failed download or signature check ends in an error step (3) with a retry.
@@ -34,29 +35,33 @@ pub fn AppUpdateModal() -> impl IntoView {
     let set_status_text = signals.setup.set_status_text;
 
     // --- APP UPDATE LOGIC ---
+    // The download's progress listener: a retry replaces it; it ends with the app (the modal is
+    // mounted for the whole run), so a finished download's listener stays until then.
+    let listener = Listener::new();
     let start_app_update = move |download_url: String| {
         set_app_update_step.set(1);
         set_app_update_progress.set(0);
 
-        spawn_local(async move {
-            let progress_closure = Closure::wrap(Box::new(move |event_obj: JsValue| {
-                if let Ok(ev) = serde_wasm_bindgen::from_value::<serde_json::Value>(event_obj) {
-                    if let Ok(payload) =
-                        serde_json::from_value::<ProgressPayload>(ev["payload"].clone())
-                    {
-                        if payload.current_file.contains("앱 업데이트") {
-                            // Only the bar: "done" is the command succeeding,
-                            // i.e. the signature check passing, not 100 % of
-                            // the bytes.
-                            set_app_update_progress.set(payload.percent);
-                        }
+        let on_progress = move |event_obj: JsValue| {
+            if let Ok(ev) = serde_wasm_bindgen::from_value::<serde_json::Value>(event_obj) {
+                if let Ok(payload) =
+                    serde_json::from_value::<ProgressPayload>(ev["payload"].clone())
+                {
+                    if payload.current_file.contains("앱 업데이트") {
+                        // Only the bar: "done" is the command succeeding,
+                        // i.e. the signature check passing, not 100 % of
+                        // the bytes.
+                        set_app_update_progress.set(payload.percent);
                     }
                 }
-            }) as Box<dyn FnMut(JsValue)>);
+            }
+        };
 
-            listen(event::DOWNLOAD_PROGRESS, &progress_closure).await;
-            progress_closure.forget(); // Keep alive during download
-
+        spawn_local(async move {
+            // Registered before the download starts, so no early progress is missed.
+            listener
+                .register(event::DOWNLOAD_PROGRESS, on_progress)
+                .await;
             match call(&DownloadAppUpdate { download_url }).await {
                 Ok(()) => set_app_update_step.set(2),
                 Err(reason) => {
@@ -223,29 +228,31 @@ pub fn ModelUpdateModal() -> impl IntoView {
     } = signals.updates;
 
     // --- MODEL UPDATE LOGIC ---
+    let listener = Listener::new();
     let start_model_update = move || {
         set_model_update_step.set(1);
         set_model_update_progress.set(0);
 
-        spawn_local(async move {
-            let progress_closure = Closure::wrap(Box::new(move |event_obj: JsValue| {
-                if let Ok(ev) = serde_wasm_bindgen::from_value::<serde_json::Value>(event_obj) {
-                    if let Ok(payload) =
-                        serde_json::from_value::<ProgressPayload>(ev["payload"].clone())
-                    {
-                        if payload.current_file.contains("AI 모델") {
-                            set_model_update_progress.set(payload.percent);
-                            if payload.percent >= 100 {
-                                set_model_update_step.set(2);
-                            }
+        let on_progress = move |event_obj: JsValue| {
+            if let Ok(ev) = serde_wasm_bindgen::from_value::<serde_json::Value>(event_obj) {
+                if let Ok(payload) =
+                    serde_json::from_value::<ProgressPayload>(ev["payload"].clone())
+                {
+                    if payload.current_file.contains("AI 모델") {
+                        set_model_update_progress.set(payload.percent);
+                        if payload.percent >= 100 {
+                            set_model_update_step.set(2);
                         }
                     }
                 }
-            }) as Box<dyn FnMut(JsValue)>);
+            }
+        };
 
-            listen(event::DOWNLOAD_PROGRESS, &progress_closure).await;
-            progress_closure.forget(); // Keep alive during download
-
+        spawn_local(async move {
+            // Registered before the download starts, so no early progress is missed.
+            listener
+                .register(event::DOWNLOAD_PROGRESS, on_progress)
+                .await;
             // The backend takes the model's address and hash from the verified metadata.
             let _ = call(&DownloadModel {}).await;
         });
