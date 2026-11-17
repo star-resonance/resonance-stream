@@ -6,11 +6,12 @@
 //! enrolled; a line seen before that waits in memory and is dropped if the answer is no.
 
 use crate::capture::Origin;
+use crate::game_clients::Endpoint;
 use crate::protocol::own_player::OwnPlayer;
 use crate::test_env::is_local_http_url;
 pub use resonance_types::RelayStatus;
 use resonance_types::{Channel, ChatMessage, GuildRelayConfig};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 /// The broker used when the setting is empty: `GUILD_RELAY_BROKER_URL` when the app is built
 /// (CI passes the repository variable of that name, the Worker deployed in #369), else none.
@@ -361,6 +362,115 @@ impl GuildRelay {
             .map_or(BACKOFF_START_MS, |b| (b * 2).min(BACKOFF_MAX_MS));
         self.backoff_ms = Some(backoff);
         self.next_at = now + wait_ms.unwrap_or(backoff);
+    }
+}
+
+/// One [`GuildRelay`] per game connection (F-GR): two clients in two guilds each get their
+/// own enrollment and queue, so one connection's record never overwrites the other's and the
+/// relay does not restart on every state frame. Per connection, not per guild, so a line seen
+/// before the connection's first record is kept and every rule stays the single relay's.
+pub struct GuildRelays {
+    config: GuildRelayConfig,
+    default_url: String,
+    allow_local_http: bool,
+    relays: BTreeMap<Endpoint, GuildRelay>,
+}
+
+impl GuildRelays {
+    pub fn new(config: GuildRelayConfig) -> Self {
+        Self {
+            config,
+            default_url: DEFAULT_BROKER_URL.to_string(),
+            allow_local_http: false,
+            relays: BTreeMap::new(),
+        }
+    }
+
+    /// The broker an empty setting means (tests; the app uses `DEFAULT_BROKER_URL`).
+    pub fn with_default_url(mut self, url: &str) -> Self {
+        self.default_url = url.to_string();
+        self
+    }
+
+    /// Also accept `http://` to this machine, as [`GuildRelay::with_local_http`].
+    pub fn with_local_http(mut self, allow: bool) -> Self {
+        self.allow_local_http = allow;
+        self
+    }
+
+    fn fresh(&self) -> GuildRelay {
+        GuildRelay::new(self.config.clone())
+            .with_default_url(&self.default_url)
+            .with_local_http(self.allow_local_http)
+    }
+
+    fn relay(&mut self, conn: Endpoint) -> &mut GuildRelay {
+        if !self.relays.contains_key(&conn) {
+            let relay = self.fresh();
+            self.relays.insert(conn, relay);
+        }
+        self.relays.get_mut(&conn).expect("just inserted")
+    }
+
+    /// New settings for every relay.
+    pub fn set_config(&mut self, config: GuildRelayConfig) {
+        self.config = config.clone();
+        for relay in self.relays.values_mut() {
+            relay.set_config(config.clone());
+        }
+    }
+
+    /// `Some`: the connection's record (its relay is made when missing). `None`: the connection
+    /// is gone; its relay and waiting lines go with it.
+    pub fn on_own_player(&mut self, conn: Endpoint, player: Option<OwnPlayer>) {
+        match player {
+            Some(player) => self.relay(conn).on_own_player(player),
+            None => {
+                self.relays.remove(&conn);
+            }
+        }
+    }
+
+    /// A new line from `conn`; one with no connection (a replay) is ignored.
+    pub fn on_line(&mut self, conn: Option<Endpoint>, chat: &ChatMessage, origin: Origin) {
+        if let Some(conn) = conn {
+            self.relay(conn).on_line(chat, origin);
+        }
+    }
+
+    /// The next request of the first connection (in endpoint order) that has one.
+    pub fn poll(&mut self, now: u64) -> Option<(Endpoint, RelayRequest)> {
+        self.relays
+            .iter_mut()
+            .find_map(|(conn, relay)| relay.poll(now).map(|request| (*conn, request)))
+    }
+
+    /// The answer to a request of `conn`; ignored when the connection is gone.
+    pub fn on_response(&mut self, conn: Endpoint, now: u64, generation: u64, reply: Reply) {
+        if let Some(relay) = self.relays.get_mut(&conn) {
+            relay.on_response(now, generation, reply);
+        }
+    }
+
+    /// With no connection, a fresh relay's status; with one, its; with several, the furthest
+    /// along (`Off` and `NoBroker` are the same for all).
+    pub fn status(&self) -> RelayStatus {
+        fn rank(status: RelayStatus) -> u8 {
+            match status {
+                RelayStatus::Relaying => 6,
+                RelayStatus::Checking => 5,
+                RelayStatus::Retrying => 4,
+                RelayStatus::Rejected => 3,
+                RelayStatus::NotEnrolled => 2,
+                RelayStatus::WaitingForGuild => 1,
+                RelayStatus::NoBroker | RelayStatus::Off => 0,
+            }
+        }
+        self.relays
+            .values()
+            .map(GuildRelay::status)
+            .max_by_key(|s| rank(*s))
+            .unwrap_or_else(|| self.fresh().status())
     }
 }
 
