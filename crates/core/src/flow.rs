@@ -4,6 +4,7 @@
 //! gives it a [`Sink`] for the effects (history, events, archive, translator queue).
 
 use crate::capture::{Origin, PipelineAction};
+use crate::game_clients::Endpoint;
 use crate::history::{ArchiveTarget, ChatHistory};
 use crate::protocol::own_player::OwnPlayer;
 use crate::text::{
@@ -40,7 +41,7 @@ pub trait Sink {
     fn own_player(&mut self, _player: OwnPlayer) {}
     /// A new line, as captured (the sender's in-game name, no translation), with where it came
     /// from, for the guild relay. Does nothing by default.
-    fn relay_line(&mut self, _chat: &ChatMessage, _origin: Origin) {}
+    fn relay_line(&mut self, _chat: &ChatMessage, _origin: Origin, _conn: Option<Endpoint>) {}
 }
 
 /// The sniffer's side: what becomes of each action the capture pipeline produced.
@@ -63,7 +64,7 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
                     sink.emit_update(&row);
                 }
             }
-            PipelineAction::EmitNewMessage(mut chat, origin) => {
+            PipelineAction::EmitNewMessage(mut chat, origin, conn) => {
                 // Apply Romaji Swap
                 if contains_japanese(&chat.nickname) {
                     let nickname = chat.nickname.clone();
@@ -76,7 +77,7 @@ pub fn dispatch<S: Sink>(sink: &mut S, actions: Vec<PipelineAction>) {
                     chat.nickname_romaji = Some(romaji);
                 }
                 // After the romaji swap: the relay posts the name with its reading, as the app shows it.
-                sink.relay_line(&chat, origin);
+                sink.relay_line(&chat, origin, conn);
 
                 // Dispatch Side Effects. (A duplicate never gets here: the pipeline
                 // dropped it, so it is neither translated nor archived.)
@@ -249,7 +250,7 @@ mod tests {
             self.relayed
                 .push(format!("player {} {:?}", player.uid, player.guild_id));
         }
-        fn relay_line(&mut self, chat: &ChatMessage, origin: Origin) {
+        fn relay_line(&mut self, chat: &ChatMessage, origin: Origin, _conn: Option<Endpoint>) {
             self.relayed.push(format!("line {} {origin:?}", chat.pid));
             self.relayed_readings.push(chat.nickname_romaji.clone());
         }
@@ -266,8 +267,8 @@ mod tests {
             &mut sink,
             vec![
                 PipelineAction::OwnPlayer(player),
-                PipelineAction::EmitNewMessage(line(1, "Bob", "live"), Origin::Live),
-                PipelineAction::EmitNewMessage(line(2, "Bob", "old"), Origin::History),
+                PipelineAction::EmitNewMessage(line(1, "Bob", "live"), Origin::Live, None),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "old"), Origin::History, None),
                 PipelineAction::UpdateBlockedMessage(line(1, "Bob", "live")),
             ],
         );
@@ -283,8 +284,8 @@ mod tests {
         dispatch(
             &mut sink,
             vec![
-                PipelineAction::EmitNewMessage(line(1, "アズルル", "hi"), Origin::Live),
-                PipelineAction::EmitNewMessage(line(2, "Bob", "hi"), Origin::Live),
+                PipelineAction::EmitNewMessage(line(1, "アズルル", "hi"), Origin::Live, None),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "hi"), Origin::Live, None),
             ],
         );
         assert_eq!(sink.relayed_readings, [Some("Azururu".to_string()), None]);
@@ -301,7 +302,7 @@ mod tests {
     }
 
     fn new_line(pid: u64, message: &str) -> PipelineAction {
-        PipelineAction::EmitNewMessage(line(pid, "Bob", message), Origin::Live)
+        PipelineAction::EmitNewMessage(line(pid, "Bob", message), Origin::Live, None)
     }
 
     #[test]
@@ -346,8 +347,8 @@ mod tests {
         dispatch(
             &mut sink,
             vec![
-                PipelineAction::EmitNewMessage(line(1, "たろう", "gg"), Origin::Live),
-                PipelineAction::EmitNewMessage(line(2, "Bob", "gg"), Origin::Live),
+                PipelineAction::EmitNewMessage(line(1, "たろう", "gg"), Origin::Live, None),
+                PipelineAction::EmitNewMessage(line(2, "Bob", "gg"), Origin::Live, None),
             ],
         );
         let romaji = sink.history.get(1).unwrap().nickname_romaji.clone();
@@ -361,6 +362,7 @@ mod tests {
             vec![PipelineAction::EmitNewMessage(
                 line(3, "たろう", "gg"),
                 Origin::Live,
+                None,
             )],
         );
         assert_eq!(

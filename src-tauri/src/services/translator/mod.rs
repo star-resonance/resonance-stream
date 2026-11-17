@@ -447,7 +447,12 @@ impl Sink for AppSink<'_> {
         }
     }
 
-    fn relay_line(&mut self, chat: &ChatMessage, origin: resonance_core::capture::Origin) {
+    fn relay_line(
+        &mut self,
+        chat: &ChatMessage,
+        origin: resonance_core::capture::Origin,
+        _conn: Option<resonance_core::game_clients::Endpoint>,
+    ) {
         if let Some(relay) = self
             .app
             .try_state::<crate::services::guild_relay::RelayHandle>()

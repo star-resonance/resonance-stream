@@ -12,7 +12,8 @@ use std::time::Instant;
 
 pub enum PipelineAction {
     UpdateBlockedMessage(ChatMessage),
-    EmitNewMessage(ChatMessage, Origin),
+    /// A new message, its origin and the connection it came in on (`None`: `feed_chat`, not captured).
+    EmitNewMessage(ChatMessage, Origin, Option<Endpoint>),
     /// Who is playing and in which guild, read from world state: sent when the
     /// first record arrives and again whenever it changes.
     OwnPlayer(OwnPlayer),
@@ -144,7 +145,7 @@ impl ChatPipeline {
             for event in events {
                 // Guard clause for the event loop using let-else
                 let Port5003Event::Chat(chat) = event;
-                actions.extend(self.feed(chat, origin, &is_blocked, &mut assign_pid));
+                actions.extend(self.feed(chat, origin, Some(local), &is_blocked, &mut assign_pid));
             }
         }
 
@@ -162,13 +163,14 @@ impl ChatPipeline {
         is_blocked: impl Fn(u64) -> bool,
         assign_pid: impl FnMut() -> u64,
     ) -> Option<PipelineAction> {
-        self.feed(chat, Origin::Replay, is_blocked, assign_pid)
+        self.feed(chat, Origin::Replay, None, is_blocked, assign_pid)
     }
 
     fn feed(
         &mut self,
         mut chat: ChatMessage,
         origin: Origin,
+        conn: Option<Endpoint>,
         is_blocked: impl Fn(u64) -> bool,
         mut assign_pid: impl FnMut() -> u64,
     ) -> Option<PipelineAction> {
@@ -188,7 +190,7 @@ impl ChatPipeline {
             ProcessAction::EmitNewMessage => {
                 chat.pid = assign_pid();
                 self.processor.commit_new_message(&chat);
-                Some(PipelineAction::EmitNewMessage(chat, origin))
+                Some(PipelineAction::EmitNewMessage(chat, origin, conn))
             }
         }
     }
@@ -276,7 +278,7 @@ mod tests {
 
         // 4. Assert that the pipeline correctly extracted ALL fields!
         assert_eq!(actions.len(), 1);
-        if let PipelineAction::EmitNewMessage(chat, _) = &actions[0] {
+        if let PipelineAction::EmitNewMessage(chat, _, _) = &actions[0] {
             assert_eq!(chat.pid, 1, "Local UI PID should be 1");
             assert_eq!(
                 chat.sequence_id, 999,
@@ -328,7 +330,7 @@ mod tests {
                 || 1,
                 || {},
             ) {
-                if let PipelineAction::EmitNewMessage(chat, _) = action {
+                if let PipelineAction::EmitNewMessage(chat, _, _) = action {
                     got.push(chat.message);
                 }
             }
@@ -365,7 +367,7 @@ mod tests {
                 || {},
             );
             for action in actions {
-                if let PipelineAction::EmitNewMessage(chat, _) = action {
+                if let PipelineAction::EmitNewMessage(chat, _, _) = action {
                     out.push(chat);
                 }
             }
@@ -546,7 +548,7 @@ mod tests {
         );
         assert_eq!(lookups.get(), 1);
         match &actions[..] {
-            [PipelineAction::EmitNewMessage(chat, _)] => assert!(chat.is_blocked),
+            [PipelineAction::EmitNewMessage(chat, _, _)] => assert!(chat.is_blocked),
             _ => panic!("expected one new message"),
         }
     }
@@ -628,12 +630,12 @@ mod tests {
             for action in
                 pipeline.feed_network_packet(&tcp_from_5003(seq, segment), |_| false, || 1, || {})
             {
-                if let PipelineAction::EmitNewMessage(chat, origin) = action {
+                if let PipelineAction::EmitNewMessage(chat, origin, _) = action {
                     got.push((chat.message, origin));
                 }
             }
         }
-        if let Some(PipelineAction::EmitNewMessage(chat, origin)) =
+        if let Some(PipelineAction::EmitNewMessage(chat, origin, _)) =
             pipeline.feed_chat(chat_from(7, 1000, 1, "replayed"), |_| false, || 1)
         {
             got.push((chat.message, origin));
@@ -663,7 +665,7 @@ mod tests {
 
     fn emitted_chat(action: Option<PipelineAction>) -> ChatMessage {
         match action {
-            Some(PipelineAction::EmitNewMessage(chat, _)) => chat,
+            Some(PipelineAction::EmitNewMessage(chat, _, _)) => chat,
             Some(PipelineAction::UpdateBlockedMessage(_)) => {
                 panic!("expected a new message, got a block update")
             }
