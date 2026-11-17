@@ -63,9 +63,7 @@ names get " (1)", " (2)" in pid order; each client has its own 1500 ms spacing);
 ## M2. Server verdict
 
 Hook `ZRpcImpl.SendBytes` and correlate `call_id` with the Return; the composer shows sent / too frequent /
-cooldown. The stable-release path for the DLL is split: the release path (signed, listed, carried by Promote,
-announced in `latest.json`) is F-R8a-1; the updater fetching it is F-R8a-2; the opt-in download for an exe without it is
-F-R8a-3.
+cooldown. Next: R-M2, an options doc for the hook and the `call_id` correlation; no build task before Kade has read it.
 
 **Done when:** a send during the cooldown shows it.
 
