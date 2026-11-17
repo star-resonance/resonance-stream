@@ -231,6 +231,30 @@ pub fn countdown_line(left_secs: u32) -> String {
     format!("아직 보낼 수 없습니다. {left_secs}초 뒤에 다시 보내 주세요.")
 }
 
+/// How the status line is coloured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Error,
+    Notice,
+}
+
+/// The status line: a sentence and its tone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub tone: Tone,
+    pub text: String,
+}
+
+/// The line a verdict stores; a `Cooldown` is shown live from its block, not stored.
+pub fn status_of(_verdict: &SendVerdict) -> Option<Status> {
+    None
+}
+
+/// What the line shows: the live countdown while one runs, else the stored status.
+pub fn shown_status(_stored: Option<&Status>, _left_secs: u32) -> Option<Status> {
+    None
+}
+
 /// The picker's options as (value, label), in tab order.
 pub fn channel_options() -> Vec<(&'static str, &'static str)> {
     SendChatChannel::ALL
@@ -574,5 +598,68 @@ mod tests {
         assert!(!can_send_now("hi", false, 2));
         assert!(!can_send_now("hi", true, 0));
         assert!(!can_send_now("", false, 0));
+    }
+
+    fn st(tone: Tone, text: &str) -> Status {
+        Status {
+            tone,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_verdict_stores_its_line_and_a_cooldown_none() {
+        assert_eq!(status_of(&SendVerdict::Sent), None);
+        assert_eq!(status_of(&cd(3)), None);
+        assert_eq!(
+            status_of(&SendVerdict::NotConfirmed),
+            Some(st(Tone::Notice, "보냈지만 서버의 확인을 받지 못했습니다."))
+        );
+        for v in [
+            SendVerdict::TooFrequent,
+            SendVerdict::Refused { code: 9999 },
+        ] {
+            assert_eq!(status_of(&v), Some(st(Tone::Error, &verdict_line(&v))));
+        }
+        assert!(!status_of(&SendVerdict::Refused { code: 9999 })
+            .unwrap()
+            .text
+            .contains("9999"));
+    }
+
+    #[test]
+    fn the_countdown_wins_the_line_and_is_never_a_notice() {
+        let notice = st(Tone::Notice, "n");
+        let error = st(Tone::Error, "e");
+        assert_eq!(shown_status(None, 0), None);
+        assert_eq!(
+            shown_status(None, 3),
+            Some(st(Tone::Error, &countdown_line(3)))
+        );
+        assert_eq!(shown_status(Some(&notice), 0), Some(notice.clone()));
+        assert_eq!(
+            shown_status(Some(&error), 2),
+            Some(st(Tone::Error, &countdown_line(2)))
+        );
+        assert_eq!(
+            shown_status(Some(&notice), 1),
+            Some(st(Tone::Error, &countdown_line(1)))
+        );
+    }
+
+    #[test]
+    fn the_draft_and_the_line_for_every_verdict() {
+        // (verdict, clears the draft, stored tone)
+        let table = [
+            (SendVerdict::Sent, true, None),
+            (SendVerdict::NotConfirmed, true, Some(Tone::Notice)),
+            (SendVerdict::TooFrequent, false, Some(Tone::Error)),
+            (cd(3), false, None),
+            (SendVerdict::Refused { code: 1 }, false, Some(Tone::Error)),
+        ];
+        for (v, clears, tone) in table {
+            assert_eq!(clears_draft(&v), clears, "{v:?}");
+            assert_eq!(status_of(&v).map(|s| s.tone), tone, "{v:?}");
+        }
     }
 }
