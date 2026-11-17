@@ -31,12 +31,19 @@ pub struct GameClient {
 
 /// What the server said about one chat send (the `send_chat` command's answer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
 pub enum SendVerdict {
     Sent,
     TooFrequent,
-    Cooldown { remaining_secs: u32 },
+    /// Whole seconds left, 1 to 600.
+    Cooldown {
+        #[serde(rename = "remainingSecs")]
+        remaining_secs: u32,
+    },
     NotConfirmed,
-    Refused { code: u32 },
+    Refused {
+        code: u32,
+    },
 }
 
 /// A Tauri command: its registered name and what it answers. A command that returns
