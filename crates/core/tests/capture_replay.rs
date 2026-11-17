@@ -9,6 +9,7 @@
 //! address.
 
 use resonance_core::capture::{replay, ChatPipeline, PipelineAction};
+use resonance_core::protocol::framing::{Frame, FrameAssembler, FrameKind};
 use resonance_types::ChatMessage;
 use std::fs;
 
@@ -58,6 +59,56 @@ fn the_sanitised_corpus_decodes_the_same_every_time() {
                 m.channel, m.nickname, m.uid, m.level, m.sequence_id, m.timestamp, m.message
             )
         })
+        .collect();
+    insta::assert_snapshot!(table);
+}
+
+/// The frames of the corpus's one stream, in order: the packets' payloads in TCP sequence
+/// (a retransmit or the overlap of a resent segment is dropped; the corpus has no gaps).
+fn corpus_frames() -> Vec<Frame> {
+    let text = fs::read_to_string(CORPUS).expect("the sanitised corpus is in git");
+    let mut assembler = FrameAssembler::new();
+    let mut next: Option<u32> = None;
+    let mut frames = Vec::new();
+    for packet in replay(&text) {
+        let ip_len = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
+        let ihl = usize::from(packet[0] & 0x0F) * 4;
+        let tcp = &packet[ihl..];
+        let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
+        let data = usize::from(tcp[12] >> 4) * 4;
+        let mut payload = &packet[ihl + data..ip_len.min(packet.len())];
+        let mut at = seq;
+        if let Some(n) = next {
+            let ahead = seq.wrapping_sub(n) as i32;
+            assert!(ahead <= 0, "the corpus has no sequence gap");
+            let seen = ahead.unsigned_abs() as usize;
+            if seen >= payload.len() {
+                continue;
+            }
+            payload = &payload[seen..];
+            at = n;
+        }
+        next = Some(at.wrapping_add(payload.len() as u32));
+        frames.extend(assembler.push(payload));
+    }
+    frames
+}
+
+/// FNV-1a, 64 bit.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// What "the existing chat decoding stays byte-for-byte the same" is compared against: every
+/// frame that is chat, history or world state, with its root's length and hash.
+#[test]
+fn the_frames_the_app_reads_are_pinned() {
+    let table: String = corpus_frames()
+        .iter()
+        .filter(|f| matches!(f.kind, FrameKind::Live | FrameKind::History | FrameKind::State))
+        .map(|f| format!("{:?} {} {:016x}\n", f.kind, f.root.len(), fnv1a(&f.root)))
         .collect();
     insta::assert_snapshot!(table);
 }
