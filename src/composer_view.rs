@@ -3,7 +3,7 @@
 //! component (`components/chat_composer.rs`) only wires signals and events.
 
 use crate::chat_view::Tab;
-use resonance_types::ipc::{GameClient, SendChat, CLIENT_GONE_LINE};
+use resonance_types::ipc::{GameClient, SendChat, SendVerdict, CLIENT_GONE_LINE};
 use resonance_types::{prepare_text, SendChatChannel, SendTextError, MAX_TEXT_UTF16};
 
 /// The counter's tooltip: the limit is the game's, in UTF-16 units.
@@ -131,6 +131,18 @@ pub fn send_plan(clients: &[GameClient], chosen: Option<u32>) -> SendPlan {
 /// Whether a failed send's sentence means the chosen client is gone, so the choice resets.
 pub fn clears_choice(error: &str) -> bool {
     error == CLIENT_GONE_LINE
+}
+
+/// The status-line sentence for what the server said; empty when it took the message.
+pub fn verdict_line(verdict: &SendVerdict) -> String {
+    let _ = verdict;
+    String::new()
+}
+
+/// Whether the draft is cleared: the message went out (the server's word or not).
+pub fn clears_draft(verdict: &SendVerdict) -> bool {
+    let _ = verdict;
+    false
 }
 
 /// The picker's options as (value, label), in tab order.
@@ -332,5 +344,40 @@ mod tests {
             assert_eq!(tab_pick(false, label, "party"), None, "{label}");
         }
         assert_eq!(tab_pick(false, "신입", "guild"), None);
+    }
+    #[test]
+    fn each_verdict_has_its_own_sentence() {
+        assert_eq!(verdict_line(&SendVerdict::Sent), "");
+        let cooldown = verdict_line(&SendVerdict::Cooldown { remaining_secs: 3 });
+        assert_eq!(
+            cooldown,
+            "아직 보낼 수 없습니다. 3초 뒤에 다시 보내 주세요."
+        );
+        assert!(cooldown.contains("3초"));
+        let lines = [
+            verdict_line(&SendVerdict::Sent),
+            cooldown,
+            verdict_line(&SendVerdict::TooFrequent),
+            verdict_line(&SendVerdict::NotConfirmed),
+            verdict_line(&SendVerdict::Refused { code: 9999 }),
+        ];
+        assert_eq!(lines[2], "너무 자주 보냈습니다. 잠시 후 다시 보내 주세요.");
+        assert_eq!(lines[3], "보냈지만 서버의 확인을 받지 못했습니다.");
+        assert_eq!(lines[4], "서버가 메시지를 받지 않았습니다.");
+        assert!(!lines[4].contains("9999"));
+        for (i, a) in lines.iter().enumerate() {
+            for b in &lines[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn the_draft_is_cleared_only_when_the_message_went_out() {
+        assert!(clears_draft(&SendVerdict::Sent));
+        assert!(clears_draft(&SendVerdict::NotConfirmed));
+        assert!(!clears_draft(&SendVerdict::TooFrequent));
+        assert!(!clears_draft(&SendVerdict::Cooldown { remaining_secs: 3 }));
+        assert!(!clears_draft(&SendVerdict::Refused { code: 1 }));
     }
 }

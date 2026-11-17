@@ -92,7 +92,7 @@ commands! {
     UnblockUser = "unblock_user_command" { uid: u64 } -> ();
 
     // Chat sending (through the in-game module). The error is one Korean sentence.
-    SendChat = "send_chat" { channel: SendChatChannel, text: String, client: Option<u32> } -> ();
+    SendChat = "send_chat" { channel: SendChatChannel, text: String, client: Option<u32> } -> SendVerdict;
     GameClients = "game_clients" {} -> Vec<GameClient>;
 
     // Translator.
@@ -352,6 +352,8 @@ mod tests {
 
     #[test]
     fn send_chat_takes_a_channel_text_and_client() {
+        fn answers_a_verdict<C: Command<Reply = SendVerdict>>() {}
+        answers_a_verdict::<SendChat>();
         assert_eq!(SendChat::NAME, "send_chat");
         assert!(COMMAND_NAMES.contains(&"send_chat"));
         assert_eq!(

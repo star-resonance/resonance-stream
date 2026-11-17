@@ -99,7 +99,7 @@ pub fn ChatComposer() -> impl IntoView {
                 }
                 SendPlan::Send(client) => {
                     match call::<SendChat>(&send_request(channel, &text, client)).await {
-                        Ok(()) => {
+                        Ok(_) => {
                             draft.set(String::new());
                             error.set(String::new());
                         }
