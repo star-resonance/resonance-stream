@@ -152,6 +152,55 @@ pub fn clears_draft(verdict: &SendVerdict) -> bool {
     matches!(verdict, SendVerdict::Sent | SendVerdict::NotConfirmed)
 }
 
+/// A cooldown the server answered for one client and channel, until a wall-clock time (ms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CooldownBlock {
+    pub client: Option<u32>,
+    pub channel: SendChatChannel,
+    pub until_ms: u64,
+}
+
+/// The block a verdict makes; only a `Cooldown` of at least one second does.
+pub fn block_from(
+    _verdict: &SendVerdict,
+    _client: Option<u32>,
+    _channel: SendChatChannel,
+    _arrived_ms: u64,
+) -> Option<CooldownBlock> {
+    None
+}
+
+/// Adds a block, replacing the one for the same client and channel.
+pub fn add_block(_blocks: &mut Vec<CooldownBlock>, _new: CooldownBlock) {}
+
+/// Whole seconds left (rounded up) for exactly this client and channel; 0 when none.
+pub fn seconds_left(
+    _blocks: &[CooldownBlock],
+    _client: Option<u32>,
+    _channel: SendChatChannel,
+    _now_ms: u64,
+) -> u32 {
+    0
+}
+
+/// Whether any block is still running (the timer runs exactly then).
+pub fn counting(_blocks: &[CooldownBlock], _now_ms: u64) -> bool {
+    false
+}
+
+/// Drops the blocks that have ended.
+pub fn prune(_blocks: &mut Vec<CooldownBlock>, _now_ms: u64) {}
+
+/// The client the next send goes with; a stale choice has no block.
+pub fn send_target(_clients: &[GameClient], _chosen: Option<u32>) -> Option<u32> {
+    None
+}
+
+/// Whether Send is allowed: `can_send` and no cooldown left.
+pub fn can_send_now(_draft: &str, _sending: bool, _left_secs: u32) -> bool {
+    false
+}
+
 /// The picker's options as (value, label), in tab order.
 pub fn channel_options() -> Vec<(&'static str, &'static str)> {
     SendChatChannel::ALL
@@ -386,5 +435,109 @@ mod tests {
         assert!(!clears_draft(&SendVerdict::TooFrequent));
         assert!(!clears_draft(&SendVerdict::Cooldown { remaining_secs: 3 }));
         assert!(!clears_draft(&SendVerdict::Refused { code: 1 }));
+    }
+
+    const W: SendChatChannel = SendChatChannel::World;
+    const P: SendChatChannel = SendChatChannel::Party;
+    const A: Option<u32> = Some(7);
+    const B: Option<u32> = Some(42);
+    const T: u64 = 1_000_000;
+
+    fn cd(n: u32) -> SendVerdict {
+        SendVerdict::Cooldown { remaining_secs: n }
+    }
+
+    fn block(client: Option<u32>, channel: SendChatChannel, secs: u64) -> CooldownBlock {
+        CooldownBlock {
+            client,
+            channel,
+            until_ms: T + secs * 1000,
+        }
+    }
+
+    #[test]
+    fn only_a_cooldown_makes_a_block_and_its_end_is_clamped() {
+        assert_eq!(block_from(&cd(3), A, W, T), Some(block(A, W, 3)));
+        assert_eq!(block_from(&cd(0), A, W, T), None);
+        assert_eq!(
+            block_from(&cd(5000), A, W, T).unwrap().until_ms,
+            T + 600_000
+        );
+        for v in [
+            SendVerdict::Sent,
+            SendVerdict::TooFrequent,
+            SendVerdict::NotConfirmed,
+            SendVerdict::Refused { code: 9999 },
+        ] {
+            assert_eq!(block_from(&v, A, W, T), None, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn seconds_left_rounds_up_and_never_underflows() {
+        let b = [block(A, W, 3)];
+        for (now, want) in [
+            (T, 3),
+            (T + 1, 3),
+            (T + 1000, 2),
+            (T + 2000, 1),
+            (T + 2999, 1),
+            (T + 3000, 0),
+            (T + 9000, 0),
+            (T - 5000, 8),
+        ] {
+            assert_eq!(seconds_left(&b, A, W, now), want, "now={now}");
+        }
+        assert_eq!(seconds_left(&[], A, W, T), 0);
+    }
+
+    #[test]
+    fn a_block_applies_to_its_own_client_and_channel_only() {
+        let b = [block(A, W, 3)];
+        assert_eq!(seconds_left(&b, A, P, T), 0);
+        assert_eq!(seconds_left(&b, B, W, T), 0);
+        assert_eq!(seconds_left(&b, None, W, T), 0);
+        assert_eq!(seconds_left(&b, A, W, T), 3);
+        let two = [block(A, W, 3), block(B, P, 10)];
+        assert_eq!(seconds_left(&two, A, W, T), 3);
+        assert_eq!(seconds_left(&two, B, P, T), 10);
+    }
+
+    #[test]
+    fn add_block_keeps_one_entry_per_key_and_prune_drops_the_ended() {
+        let mut v = vec![block(A, W, 3)];
+        add_block(&mut v, block(A, W, 8));
+        assert_eq!(v, vec![block(A, W, 8)]);
+        add_block(&mut v, block(A, P, 3));
+        assert_eq!(v.len(), 2);
+        let mut v = vec![block(A, W, 3), block(B, P, 10)];
+        prune(&mut v, T + 3000);
+        assert_eq!(v, vec![block(B, P, 10)]);
+        prune(&mut v, T + 10_000);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn the_timer_runs_exactly_while_a_block_runs() {
+        assert!(!counting(&[], T));
+        let b = [block(A, W, 3)];
+        assert!(counting(&b, T));
+        assert!(counting(&b, T + 2999));
+        assert!(!counting(&b, T + 3000));
+        let two = [block(A, W, 3), block(B, P, 10)];
+        assert!(counting(&two, T + 5000));
+    }
+
+    #[test]
+    fn the_send_target_and_the_send_gate() {
+        let two = [c(7, "Aria"), c(42, "Bob")];
+        assert_eq!(send_target(&two, Some(42)), B);
+        assert_eq!(send_target(&two, None), None);
+        assert_eq!(send_target(&[c(7, "Aria")], None), None);
+        assert_eq!(send_target(&two, Some(9)), None);
+        assert!(can_send_now("hi", false, 0));
+        assert!(!can_send_now("hi", false, 2));
+        assert!(!can_send_now("hi", true, 0));
+        assert!(!can_send_now("", false, 0));
     }
 }
