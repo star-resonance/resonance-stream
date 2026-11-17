@@ -2,8 +2,9 @@
 
 include!(concat!(env!("OUT_DIR"), "/ingame_pin.rs"));
 
-/// The DLL file to load instead of `<exe dir>/ingame/resonance_ingame.dll`:
-/// the build-time path, in a debug build only (a dev convenience).
+/// The file to load instead of the downloaded module of this version,
+/// `<app data>\bin\ingame\<version>\resonance_ingame.dll`: the build-time path,
+/// in a debug build only (a dev convenience).
 pub fn dll_path_override() -> Option<&'static str> {
     if cfg!(debug_assertions) {
         INGAME_DLL_BUILD_PATH
