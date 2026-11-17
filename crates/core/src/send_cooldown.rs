@@ -4,7 +4,7 @@
 use crate::send_verdict::{ClientKey, Verdict};
 use resonance_types::SendChatChannel;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Default)]
@@ -13,29 +13,45 @@ pub struct CooldownGate {
 }
 
 impl CooldownGate {
-    /// Blocks `(client, channel)` for `remaining` from `now`, replacing an earlier end.
+    /// Blocks `(client, channel)` for `remaining` from `now`, replacing an earlier end (longer or
+    /// shorter: the server's latest word wins). Keys already ended at `now` are dropped.
     pub fn arm(
         &self,
-        _client: ClientKey,
-        _channel: SendChatChannel,
-        _remaining: Duration,
-        _now: Instant,
+        client: ClientKey,
+        channel: SendChatChannel,
+        remaining: Duration,
+        now: Instant,
     ) {
+        let mut ends = self.ends.lock().unwrap_or_else(PoisonError::into_inner);
+        ends.retain(|_, end| now < *end);
+        ends.insert((client, channel), now + remaining);
     }
 
-    /// Ok when a send may go out; otherwise the cooldown left (whole seconds, rounded up).
-    /// Never writes.
+    /// Ok when a send may go out; otherwise the cooldown left (whole seconds, rounded up, at
+    /// least 1). Never writes.
     pub fn check(
         &self,
-        _client: ClientKey,
-        _channel: SendChatChannel,
-        _now: Instant,
+        client: ClientKey,
+        channel: SendChatChannel,
+        now: Instant,
     ) -> Result<(), Verdict> {
-        Ok(())
+        let ends = self.ends.lock().unwrap_or_else(PoisonError::into_inner);
+        match ends.get(&(client, channel)) {
+            Some(end) if now < *end => Err(Verdict::Cooldown {
+                remaining: Duration::from_secs(
+                    (*end - now).as_millis().div_ceil(1000).max(1) as u64
+                ),
+            }),
+            _ => Ok(()),
+        }
     }
 
+    /// How many keys are kept.
     pub fn len(&self) -> usize {
-        self.ends.lock().map(|m| m.len()).unwrap_or(0)
+        self.ends
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
