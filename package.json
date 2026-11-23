@@ -13,9 +13,9 @@
   "license": "MIT",
   "type": "commonjs",
   "devDependencies": {
-    "autoprefixer": "^10.6.2",
-    "daisyui": "^5.7.50",
-    "postcss": "^8.5.32",
+    "autoprefixer": "^10.7.0",
+    "daisyui": "^5.8.1",
+    "postcss": "^8.5.33",
     "tailwindcss": "^4.2.1"
   },
   "dependencies": {
